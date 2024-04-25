@@ -16,12 +16,12 @@ IMPLOT_SRC += ${IMPLOT}/implot_items.cpp
 BACKEND_SRC := ${IMGUI}/backends/imgui_impl_glfw.cpp
 BACKEND_SRC += ${IMGUI}/backends/imgui_impl_opengl3.cpp
 
-LIBS      += -lglfw -lGL
 
 UTILS     := ./utils/
 INCLCUDES := -I${UTILS} -I${UTILS}/ap -I${UTILS}/co -I${UTILS}/generic -I.
 INCLCUDES += -I${IMGUI} -I${IMGUI}/backends/ -I${IMPLOT}
 LIBS      := -lpthread -ldl -lglfw -lcurl
+LIBS      += -lglfw -lGL
 
 SRCS      := $(wildcard ./*.cpp)
 SRCS      += $(wildcard ${UTILS}/*.cpp)
