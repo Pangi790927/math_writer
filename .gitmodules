@@ -4,3 +4,6 @@
 [submodule "utils"]
 	path = utils
 	url = git@github.com:Pangi790927/utils.git
+[submodule "implot"]
+	path = implot
+	url = https://github.com/epezent/implot.git
