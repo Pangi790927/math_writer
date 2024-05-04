@@ -2,6 +2,20 @@
 
 #define NOVIZ true
 
+#define KEY_TOGGLE(key)                                                                             \
+[]{                                                                                                 \
+    static bool key_state = false;                                                                  \
+    static bool toggle_state = false;                                                               \
+    if (key_state == false && ImGui::IsKeyPressed(key)) {                                           \
+        key_state = true;                                                                           \
+        toggle_state = !toggle_state;                                                               \
+    }                                                                                               \
+    else if (ImGui::IsKeyReleased(key)) {                                                           \
+        key_state = false;                                                                          \
+    }                                                                                               \
+    return toggle_state;                                                                            \
+}()
+
 const char *codes[] = {
     "\x00","\x01","\x02","\x03","\x04","\x05","\x06","\x07","\x08","\x09","\x0A","\x0B","\x0C","\x0D","\x0E","\x0F",
     "\x10","\x11","\x12","\x13","\x14","\x15","\x16","\x17","\x18","\x19","\x1A","\x1B","\x1C","\x1D","\x1E","\x1F",
@@ -21,6 +35,148 @@ const char *codes[] = {
     "\xF0","\xF1","\xF2","\xF3","\xF4","\xF5","\xF6","\xF7","\xF8","\xF9","\xFA","\xFB","\xFC","\xFD","\xFE","\xFF",
 };
 
+/*  I have 7 fonts, 3 with mathematics, 4 for words but in need of some signs(ex: '{', '}')
+    I'm interested in the math parts, so the first thing should be to map the 3 fonts to some
+    numbers and symbols to make it clear.
+*/
+
+struct math_symbol_t {
+    int font;
+    int code;
+    char str[16];
+};
+
+math_symbol_t math_symbols[] = {
+    { 0, 0xAE, "\\alpha" },
+    { 0, 0xAF, "\\beta" },
+    { 0, 0xB0, "\\gamma" },
+    { 0, 0xB1, "\\delta" },
+    { 0, 0xB2, "\\epsilon" },
+    { 0, 0xB3, "\\zeta" },
+    { 0, 0xB4, "\\eta" },
+    { 0, 0xB5, "\\theta" },
+    { 0, 0xB6, "\\iota" },
+    { 0, 0xB7, "\\kappa" },
+    { 0, 0xB8, "\\lambda" },
+    { 0, 0xB9, "\\mu" },
+    { 0, 0xBA, "\\nu" },
+    { 0, 0xBB, "\\xi" },
+    { 0, 0xBC, "\\pi" },
+    { 0, 0xBD, "\\rho" },
+    { 0, 0xBE, "\\sigma" },
+    { 0, 0xBF, "\\tau" },
+    { 0, 0xC0, "\\upsilon" },
+    { 0, 0xC1, "\\phi" },
+    { 0, 0xC2, "\\chi" },
+    { 0, 0xC3, "\\psi" },
+    { 0, 0x21, "\\omega" },
+
+    { 0, 0xA1, "\\Gamma" },
+    { 0, 0xA2, "\\Delta" },
+    { 0, 0xA3, "\\Theta" },
+    { 0, 0xA4, "\\Lambda" },
+    { 0, 0xA5, "\\Xi" },
+    { 0, 0xA6, "\\Pi" },
+    { 0, 0xA7, "\\Sigma" },
+    { 0, 0xA8, "\\Upsilon" },
+    { 0, 0xA9, "\\Phi" },
+    { 0, 0xAA, "\\Psi" },
+    { 0, 0xAB, "\\Omega" },
+
+    { 0, 0x40, "\\partial"}, /* derivative */
+
+    /* Arrow parts */
+    { 0, 0x28, "_arrow_left_part_up"},
+    { 0, 0x29, "_arrow_left_part_down"},
+    { 0, 0x2A, "_arrow_right_part_up"},
+    { 0, 0x2B, "_arrow_right_part_down"},
+
+    { 0, 0x3F, "_star_sym"},
+    { 0, 0x7E, "_vector_hat"},
+
+    /* TODO: font0: {0..9} {a..z} {A..Z} {.} {,} {<} {>} */
+    /* TODO: font0: figure out what is with the '/' sign there */
+
+    /* TODO: font1: {A..Z} */
+
+    { 1, 0x21, "_arrow_right" },
+    { 1, 0x21, "_arrow_up" },
+    { 1, 0x21, "_arrow_down" },
+    { 1, 0x21, "_arrow_left_right" },
+    { 1, 0x21, "_arrow_right_corner_up" },
+    { 1, 0x21, "_arrow_right_corner_down" },
+    { 1, 0x21, "_aprox_eq" },
+    { 1, 0x21, "_double_arrow_left" },
+    { 1, 0x21, "_double_arrow_right" },
+    { 1, 0x21, "_double_arrow_up" },
+    { 1, 0x21, "_double_arrow_down" },
+    { 1, 0x21, "_double_arrow_left_right" },
+    { 1, 0x21, "_arrow_left_corner_up" },
+    { 1, 0x21, "_arrow_left_corner_down" },
+    { 1, 0x2F, "\\propto" },
+    { 1, 0x30, "this: ' " },
+    { 1, 0x31, "infinity" },
+    { 1, 0x31, "part of set" },
+    { 1, 0x31, "part of set rev" },
+    { 1, 0x31, "delta as operator" },
+    { 1, 0x31, "reverse delta" },
+    { 1, 0x31, "this: / " },
+    { 1, 0x31, "????" },
+    { 1, 0x31, "\\forall" },
+    { 1, 0x31, "\\exists" },
+    { 1, 0x31, "negate" },
+    { 1, 0x31, "empty set" },
+    { 1, 0x31, "strange R" },
+    { 1, 0x31, "strange something" },
+    { 1, 0x31, "T" },
+    { 1, 0x31, "T reversed" },
+    { 1, 0x40, "\\aleph" },
+    { 1, 0x5B, "union" },
+    { 1, 0x5B, "intersect" },
+    { 1, 0x5B, "union +" },
+    { 1, 0x5B, "and" },
+    { 1, 0x5B, "or" },
+    { 1, 0x5B, "T to the left" },
+    { 1, 0x5B, "T to the right" },
+
+    { 1, 0x66, "{" },
+    { 1, 0x67, "}" },
+    { 1, 0x71, "pi reversed" },
+    { 1, 0x72, "laplacian" },
+
+    { 1, 0xA1, "minus" },
+    { 1, 0xA1, "dot - product" },
+    { 1, 0xA1, "times" },
+    { 1, 0xA1, "star" },
+    { 1, 0xA1, "division" },
+    { 1, 0xA1, "romb" },
+    { 1, 0xA1, "+/-" },
+    { 1, 0xA1, "-/+" },
+    { 1, 0xA1, "+ in circle" },
+    { 1, 0xA1, "- in circle" },
+
+    { 1, 0xAE, "/ in circle" },
+    { 1, 0xAE, "dot in circle" },
+    { 1, 0xAE, "empty circle" },
+    { 1, 0xB4, "congruence" },
+    { 1, 0xB5, "included or equal" },
+    { 1, 0xB5, "includes or equal" },
+    { 1, 0xB5, "less than" },
+    { 1, 0xB5, "greater than" },
+    { 1, 0xB5, "strange less than" },
+    { 1, 0xB5, "strange greater than" },
+    { 1, 0xB5, "aprox" },
+    { 1, 0xB5, "double aprox" },
+    { 1, 0xB5, "includes" },
+    { 1, 0xB5, "included" },
+    { 1, 0xB5, "much lesser" },
+    { 1, 0xB5, "much greater" },
+    { 1, 0xB5, "strange less" },
+    { 1, 0xB5, "strange greater" },
+    { 1, 0xB5, "arrow left" },
+
+};
+
 int main(int argc, char const *argv[]) {
     imgui_init();
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
@@ -30,18 +186,54 @@ int main(int argc, char const *argv[]) {
     ImFont* font_default = io.Fonts->AddFontDefault();
     
     ImFontConfig config;
-    config.OversampleH = 2;
-    config.OversampleV = 1;
-    config.GlyphExtraSpacing.x = 1.0f;
+    config.MergeMode = true;
 
-    ImFont* font1 = io.Fonts->AddFontFromFileTTF("fonts/cmbx10.ttf", size_pixels);
-    ImFont* font2 = io.Fonts->AddFontFromFileTTF("fonts/cmex10.ttf", size_pixels);
-    ImFont* font3 = io.Fonts->AddFontFromFileTTF("fonts/cmmi10.ttf", size_pixels);
-    ImFont* font4 = io.Fonts->AddFontFromFileTTF("fonts/cmr10.ttf" , size_pixels);
-    ImFont* font5 = io.Fonts->AddFontFromFileTTF("fonts/cmsy10.ttf", size_pixels);
-    ImFont* font6 = io.Fonts->AddFontFromFileTTF("fonts/cmti10.ttf", size_pixels);
-    ImFont* font7 = io.Fonts->AddFontFromFileTTF("fonts/cmtt10.ttf", size_pixels);
-    // io.Fonts->Build();
+    /* Font - Roman
+        * Has some math operators/Symbols
+        * Usefull for description parts of the app
+    */
+    ImFont* font1 = io.Fonts->AddFontFromFileTTF("fonts/cmr10.ttf" , size_pixels);
+
+    /* Font - Bold Extended
+        * Has some math operators/Symbols
+        * Usefull for description parts of the app
+    */
+    ImFont* font2 = io.Fonts->AddFontFromFileTTF("fonts/cmbx10.ttf", size_pixels);
+
+    /* Font - Text Italic
+        * Has some math operators/Symbols
+        * Usefull for description parts of the app
+    */
+    ImFont* font3 = io.Fonts->AddFontFromFileTTF("fonts/cmti10.ttf", size_pixels);
+
+    /* Font - Typewriter Type
+        * Has some math operators/Symbols
+        * Usefull for description parts of the app
+        * Has constant spacing, can be used for code writing
+    */
+    ImFont* font4 = io.Fonts->AddFontFromFileTTF("fonts/cmtt10.ttf", size_pixels);
+    
+    /* Font - Math Italic
+        * Used for formulas (the variable names)
+        * Has more/all greek
+        * has some operators
+    */
+    ImFont* font5 = io.Fonts->AddFontFromFileTTF("fonts/cmmi10.ttf", size_pixels);
+
+    /* Font - Math Symbols
+        * Used for formulas
+        * A lot of signs
+    */
+    ImFont* font6 = io.Fonts->AddFontFromFileTTF("fonts/cmsy10.ttf", size_pixels);
+
+    /* Font - Math Extension
+        * Used for formulas
+        * big operators
+        * brackets
+    */
+    ImFont* font7 = io.Fonts->AddFontFromFileTTF("fonts/cmex10.ttf", size_pixels);
+
+    ImFont* fonts[] = { font1, font2, font3, font4, font5, font6, font7 };
 
     while (!glfwWindowShouldClose(imgui_window)) {
         glfwPollEvents();
@@ -61,84 +253,89 @@ int main(int argc, char const *argv[]) {
 
         ImGui::Begin("Data aquisition", NULL, main_flags);
 
-        auto font = font7;
+        ImGui::Text("Press R to hide/unhide the boxes");
 
-        ImGui::PushFont(font);
+        for (int k = 0; k < 7; k++) {
+            auto font = fonts[k];
+            ImGui::PushFont(font);
 
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
-        static float sz = 36.0f;
-        static float thickness = 1.0f;
+            static float sz = 36.0f;
+            static float thickness = 1.0f;
 
-        ImVec2 p1 = ImGui::GetCursorScreenPos();
-        ImVec2 p2 = ImGui::GetMousePos();
-        float th = thickness;
+            ImVec2 p1 = ImGui::GetCursorScreenPos();
+            ImVec2 p2 = ImGui::GetMousePos();
+            float th = thickness;
 
-        ImVec4 col = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
-        ImU32 col32 = ImColor(col);
-        draw_list->AddLine(ImVec2(0, 0), ImVec2(0, 0), col32, th);
+            ImVec4 col = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
+            ImU32 col32 = ImColor(col);
+            draw_list->AddLine(ImVec2(0, 0), ImVec2(0, 0), col32, th);
 
-        float off_y = 0;
-        float max_off_x = 0;
-        p1 = ImGui::GetCursorScreenPos();
-        for (int i = 0; i < 16; i++) {
-            float off_x = 0;
-            bool at_least_one = false;
-            for (int j = 0; j < 16; j++) {
-                int code = i*16 + j;
+            float off_y = 0;
+            float max_off_x = 0;
+            p1 = ImGui::GetCursorScreenPos();
+            for (int i = 0; i < 16; i++) {
+                float off_x = 0;
+                bool at_least_one = false;
+                for (int j = 0; j < 16; j++) {
+                    int code = i*16 + j;
 
-                float r = 1.;
-                float g = 1.;
-                float b = 1.;
+                    float r = 1.;
+                    float g = 1.;
+                    float b = 1.;
 
-                auto glyph = font->FindGlyphNoFallback(code);
-                if (!glyph)
-                    continue;
+                    auto glyph = font->FindGlyphNoFallback(code);
+                    if (!glyph)
+                        continue;
 
-                at_least_one = true;
-                if (!glyph->Visible)
-                    r = 0;
+                    at_least_one = true;
+                    if (!glyph->Visible)
+                        r = 0;
 
-                ImVec2 box_origin = ImVec2(p1.x + off_x, p1.y + off_y);
+                    ImVec2 box_origin = ImVec2(p1.x + off_x, p1.y + off_y);
 
-                ImVec2 box_bot = ImVec2(p1.x + glyph->X0 + off_x, p1.y + off_y + glyph->Y0);
-                ImVec2 box_top = ImVec2(p1.x + glyph->X1 + off_x, p1.y + off_y + glyph->Y1);
-                off_x += glyph->AdvanceX;
+                    ImVec2 box_bot = ImVec2(p1.x + glyph->X0 + off_x, p1.y + off_y + glyph->Y0);
+                    ImVec2 box_top = ImVec2(p1.x + glyph->X1 + off_x, p1.y + off_y + glyph->Y1);
+                    off_x += glyph->AdvanceX;
 
 
-                /* OBS: RenderChar is the only method that works, for unknown reasons, maybe I can
-                fix it? */
-                font->RenderChar(draw_list, font->FontSize, box_origin, 0xff00ffff, code);
+                    /* OBS: RenderChar is the only method that works, for unknown reasons, maybe I can
+                    fix it? */
+                    font->RenderChar(draw_list, font->FontSize, box_origin, 0xff00ffff, code);
 
-                // draw_list->AddText(font, font->FontSize, box_origin, 0xffff00ff, codes[code], NULL);
+                    // draw_list->AddText(font, font->FontSize, box_origin, 0xffff00ff, codes[code], NULL);
 
-                col = ImVec4(r, g, b, 1.0f);
-                ImU32 col32 = ImColor(col);
-                draw_list->AddLine(ImVec2(box_bot.x, box_bot.y), ImVec2(box_top.x, box_bot.y), col32, th);
-                draw_list->AddLine(ImVec2(box_top.x, box_bot.y), ImVec2(box_top.x, box_top.y), col32, th);
-                draw_list->AddLine(ImVec2(box_top.x, box_top.y), ImVec2(box_bot.x, box_top.y), col32, th);
-                draw_list->AddLine(ImVec2(box_bot.x, box_top.y), ImVec2(box_bot.x, box_bot.y), col32, th);
+                    col = ImVec4(r, g, b, 1.0f);
+                    ImU32 col32 = ImColor(col);
+                    if (KEY_TOGGLE(ImGuiKey_R)) {
+                        draw_list->AddLine(ImVec2(box_bot.x, box_bot.y), ImVec2(box_top.x, box_bot.y), col32, th);
+                        draw_list->AddLine(ImVec2(box_top.x, box_bot.y), ImVec2(box_top.x, box_top.y), col32, th);
+                        draw_list->AddLine(ImVec2(box_top.x, box_top.y), ImVec2(box_bot.x, box_top.y), col32, th);
+                        draw_list->AddLine(ImVec2(box_bot.x, box_top.y), ImVec2(box_bot.x, box_bot.y), col32, th);
+                    }
 
-                // draw_list->AddLine(p1, ImVec2(p1.x, p1.y + 100), 0xffffff00, th);
-                // draw_list->AddLine(p1, p2, col32, th);
+                    // draw_list->AddLine(p1, ImVec2(p1.x, p1.y + 100), 0xffffff00, th);
+                    // draw_list->AddLine(p1, p2, col32, th);
 
-                // draw_list->AddLine(ImVec2(p1.x - 100, p1.y), ImVec2(p1.x, p1.y), 0xffff0000);
+                    // draw_list->AddLine(ImVec2(p1.x - 100, p1.y), ImVec2(p1.x, p1.y), 0xffff0000);
 
-                // draw_list->AddLine(ImVec2(p1.x - 10, p1.y + font->Ascent),
-                //         ImVec2(p1.x + 10, p1.y + font->Ascent), 0xff00ff00, th);
+                    // draw_list->AddLine(ImVec2(p1.x - 10, p1.y + font->Ascent),
+                    //         ImVec2(p1.x + 10, p1.y + font->Ascent), 0xff00ff00, th);
 
-                // draw_list->AddLine(ImVec2(p1.x + 10, p1.y + font->Ascent - font->Descent),
-                //         ImVec2(p1.x - 10, p1.y + font->Ascent - font->Descent), 0xff0000ff, th);
+                    // draw_list->AddLine(ImVec2(p1.x + 10, p1.y + font->Ascent - font->Descent),
+                    //         ImVec2(p1.x - 10, p1.y + font->Ascent - font->Descent), 0xff0000ff, th);
 
+                }
+                if (at_least_one) {
+                    off_y += -font->Descent + font->Ascent;
+                }
+                max_off_x = std::max(max_off_x, off_x);
             }
-            if (at_least_one) {
-                off_y += -font->Descent + font->Ascent;
-            }
-            max_off_x = std::max(max_off_x, off_x);
+            ImGui::Dummy(ImVec2(max_off_x, off_y));
+
+            ImGui::PopFont();
         }
-        ImGui::Dummy(ImVec2(max_off_x, off_y));
-
-        ImGui::PopFont();
 
         bool true_val = true;
         ImGui::ShowMetricsWindow(&true_val);
