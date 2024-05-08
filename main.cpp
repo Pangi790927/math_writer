@@ -6,6 +6,13 @@
 
 #define NOVIZ true
 
+/* TODO:
+    -> Comment text
+    -> Definition
+    -> Add formula
+    -> Add basic transformation as configurable maybe? (example: (a + b)^2 -> a^2 + 2ab + b^2)
+ */
+
 #define KEY_TOGGLE(key)                                                                             \
 []{                                                                                                 \
     static bool key_state = false;                                                                  \
@@ -232,7 +239,7 @@ math_symbol_t math_symbols[] = {
     { 1, 0xA1, "- in circle" },
 
     { 1, 0xAE, "/ in circle" },
-    { 1, 0xAE, "dot in circle" },
+    { 1, 0xAE, ". in circle" },
     { 1, 0xAE, "empty circle" },
     { 1, 0xB4, "congruence" },
     { 1, 0xB5, "included or equal" },
@@ -279,6 +286,10 @@ const char *math_elements[] = {
     "diffpow",          /* diferential superscript: ', '', ''', (n) */
     "transpose",
     "matrix",
+    "matrix_det",
+    "log",
+    "lg",
+    "ln",
 };
 
 /* there will be 3 levels for the exponentiation/subscripts size, made by 3 loadings of the font.
@@ -405,24 +416,23 @@ int main(int argc, char const *argv[]) {
         draw_list->AddLine(ImVec2(0, 100), ImVec2(400, 100), 0xff'ffff00, 1);
         draw_list->AddLine(ImVec2(100, 0), ImVec2(100, 400), 0xff'0000ff, 1);
 
-        const char str[] = "\x28\x58\x59\x5A\x29";
+
+        // ok pharanteses: () \xB5\xB6 [] \xB7\xB8 {} \xBD\xBE
+        // \x58 - sum
+        // \x59 - prod
+        // \x5B - mass union
+        // \x5C - mass intersect
+        // \x5A - integral
+        // \x49 - circle integral
+        // all from FONT_MATH_EX
+        // all of them need to be centered to be used
+        // const char str[] =
+        //         "\xC3\xB5\xB3\xA1\xA2\xB4\xB6\x21"
+        //         "\x22\xB7\x68\xA3\xA4\x69\xB8\x23"
+        //         "\x28\xBD\x6E\xA9\xAA\x6F\xBE\x29"
+        //         "\x58\x59\x5B\x5C\x5A\x49";
 
         float off = 0;
-        for (auto c : str) {
-            uint8_t code = c;
-            // DBG("code: 0x%x sym: [%c]", code, c);
-            if (!c)
-                break;
-            off += draw_symbol(
-                symbol_t{
-                    .pos = ImVec2(100+off, 100),
-                    .code = code,
-                    .font_lvl = FONT_LVL_SUB0,
-                    .font_sub = FONT_MATH_EX
-                }
-            );
-        }
-        off = 0;
         const char str2[] = "\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7\xB8\xB9\xBA\xBB\xBC\xBD\xBE\xBF";
         for (auto c : str2) {
             uint8_t code = c;
