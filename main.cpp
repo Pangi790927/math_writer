@@ -1,4 +1,8 @@
+#define IMGUI_DEFINE_MATH_OPERATORS
+
 #include "imgui_helpers.h"
+#include "imgui_internal.h"
+#include "misc_utils.h"
 
 #define NOVIZ true
 
@@ -16,7 +20,7 @@
     return toggle_state;                                                                            \
 }()
 
-const char *codes[] = {
+static const char *codes[] = {
     "\x00","\x01","\x02","\x03","\x04","\x05","\x06","\x07","\x08","\x09","\x0A","\x0B","\x0C","\x0D","\x0E","\x0F",
     "\x10","\x11","\x12","\x13","\x14","\x15","\x16","\x17","\x18","\x19","\x1A","\x1B","\x1C","\x1D","\x1E","\x1F",
     "\x20","\x21","\x22","\x23","\x24","\x25","\x26","\x27","\x28","\x29","\x2A","\x2B","\x2C","\x2D","\x2E","\x2F",
@@ -35,6 +39,78 @@ const char *codes[] = {
     "\xF0","\xF1","\xF2","\xF3","\xF4","\xF5","\xF6","\xF7","\xF8","\xF9","\xFA","\xFB","\xFC","\xFD","\xFE","\xFF",
 };
 
+static const char *font_paths[] = {
+    /* Font - Roman
+        * Has some math operators/Symbols
+        * Usefull for description parts of the app
+    */
+    "fonts/cmr10.ttf",
+
+    /* Font - Bold Extended
+        * Has some math operators/Symbols
+        * Usefull for description parts of the app
+    */
+    "fonts/cmbx10.ttf",
+
+    /* Font - Text Italic
+        * Has some math operators/Symbols
+        * Usefull for description parts of the app
+    */
+    "fonts/cmti10.ttf",
+
+    /* Font - Typewriter Type
+        * Has some math operators/Symbols
+        * Usefull for description parts of the app
+        * Has constant spacing, can be used for code writing
+    */
+    "fonts/cmtt10.ttf",
+
+    /* Font - Math Italic
+        * Used for formulas (the variable names)
+        * Has more/all greek
+        * has some operators
+    */
+    "fonts/cmmi10.ttf",
+
+    /* Font - Math Symbols
+        * Used for formulas
+        * A lot of signs
+    */
+    "fonts/cmsy10.ttf",
+
+    /* Font - Math Extension
+        * Used for formulas
+        * big operators
+        * brackets
+    */
+    "fonts/cmex10.ttf",
+};
+
+enum : int {
+    FONT_NORMAL,
+    FONT_BOLD,
+    FONT_ITALIC,
+    FONT_MONO,
+
+    FONT_MATH,
+    FONT_SYMBOLS,
+    FONT_MATH_EX,
+};
+
+enum : int {
+    FONT_LVL_SUB0,
+    FONT_LVL_SUB1,
+    FONT_LVL_SUB2,
+
+    FONT_LVL_CNT,
+};
+
+static float font_lvl_mul[] = { 1., 3./4., 9./16. };
+static float font_sub_mul[] = { 1., 1., 1., 1., 1., 1., 2.5 };
+
+static std::vector<std::vector<ImFont*>> fonts(
+        (int)FONT_LVL_CNT, std::vector<ImFont*>(ARR_SZ(font_paths)));
+
 /*  I have 7 fonts, 3 with mathematics, 4 for words but in need of some signs(ex: '{', '}')
     I'm interested in the math parts, so the first thing should be to map the 3 fonts to some
     numbers and symbols to make it clear.
@@ -43,7 +119,7 @@ const char *codes[] = {
 struct math_symbol_t {
     int font;
     int code;
-    char str[16];
+    char str[64];
 };
 
 math_symbol_t math_symbols[] = {
@@ -177,63 +253,125 @@ math_symbol_t math_symbols[] = {
 
 };
 
+const char *math_elements[] = {
+    "variable",         /* optional subscripts */
+    "function",         /* has variable as name, has arguments */
+    "dfunction",        /* as function, but has discrete argument */
+    "fraction",         /* has terms */
+    "addition",         /* includes +,- */
+    "multiplication",   /* includes * */
+    "diffop",           /* d/dx */
+    "exponentiation",   /* or raise to power */
+    "integral",         /* has lower, upper, body */
+    "sum",
+    "prod",
+    "limit",
+    "min", "max", "argmin", "argmax",
+    "sin", "cos", "tan", "cot",
+    "sinh", "cosh", "tanh", "coth",
+    "asin", "acos", "atan", "acot",
+    "sqrt",
+    "equation",
+    "equation_system",
+    "inequation",
+    "inequation_system",
+    "modul",
+    "diffpow",          /* diferential superscript: ', '', ''', (n) */
+    "transpose",
+    "matrix",
+};
+
+/* there will be 3 levels for the exponentiation/subscripts size, made by 3 loadings of the font.
+The ratios will be 1, 0.5, 0.25 */
+
+/* Those symbols have a line passing through them, the whole formula must be aligned to this line */
+/* Those symbols are the building blocks for all mathematics symbols, the difference is that those
+are allowed to intersect eachother and don't represent anything */
+struct symbol_t {
+    ImVec2 pos;         /* position of the symbol, at the left start of the baseline */
+
+    uint32_t code;      /* code of the symbol */
+    uint32_t font_lvl;  /* selects the size of the font */
+    uint32_t font_sub;  /* selects the respective font from font_paths */
+};
+
+struct symbol_sz_t {
+    float adv;          /* how much advance needs to be made till the next glyph */
+    float asc;          /* Asecnt */
+    float desc;         /* Descent */
+    ImVec2 bl, tr;      /* bottom left and top right bounding box of the symbol */
+};
+
+symbol_sz_t get_symbol_sz(const symbol_t& s) {
+    auto font = fonts[s.font_lvl][s.font_sub];
+    auto glyph = font->FindGlyphNoFallback(s.code);
+    if (!glyph)
+        return {};
+
+    return symbol_sz_t{
+        .adv = glyph->AdvanceX,
+        .asc = font->Ascent,
+        .desc = font->Descent,
+        .bl = ImVec2(glyph->X0, glyph->Y1),
+        .tr = ImVec2(glyph->X1, glyph->Y0),
+    };
+}
+
+float draw_symbol(const symbol_t& s) {
+    auto ssz = get_symbol_sz(s);
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return 0;
+
+    auto pos = s.pos;
+    pos.y -= ssz.asc;
+
+    // DBG("bl.x: %f bl.y: %f tr.x: %f tr.y: %f", ssz.bl.x, ssz.bl.y, ssz.tr.x, ssz.tr.y);
+
+    const ImRect bb(ssz.bl + pos, ssz.tr + pos);
+    ImGui::ItemAdd(bb, 0);
+
+    ImVec2 bl = ssz.bl + pos;
+    ImVec2 tr = ssz.tr + pos;
+
+    /* OBS: RenderChar is the only method that works, for unknown reasons, maybe I can
+    fix it?(in imgui). For now the thing will be made out of raw drawing */
+    auto font = fonts[s.font_lvl][s.font_sub];
+    ImGui::PushFont(font);
+    
+    font->RenderChar(draw_list, font->FontSize, pos, 0xff'ffff00, s.code);
+    if (KEY_TOGGLE(ImGuiKey_R)) {
+        // DBG("bl.x %f, bl.y %f tr.x %f, tr.y %f", bl.x, bl.y, tr.x, tr.y);
+        draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), 0xff'00ffff, 1);
+        draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), 0xff'00ffff, 1);
+        draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), 0xff'00ffff, 1);
+        draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), 0xff'00ffff, 1);
+        draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.asc), ImVec2(tr.x, bl.y + ssz.asc), 0xff'ff0000, 1);
+        draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.desc), ImVec2(tr.x, bl.y + ssz.desc), 0xff'00ff00, 1);
+    }
+    ImGui::PopFont();
+    return ssz.adv;
+}
+
 int main(int argc, char const *argv[]) {
     imgui_init();
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
-    float size_pixels = 72;
     ImGuiIO& io = ImGui::GetIO();
     ImFont* font_default = io.Fonts->AddFontDefault();
     
     ImFontConfig config;
     config.MergeMode = true;
 
-    /* Font - Roman
-        * Has some math operators/Symbols
-        * Usefull for description parts of the app
-    */
-    ImFont* font1 = io.Fonts->AddFontFromFileTTF("fonts/cmr10.ttf" , size_pixels);
-
-    /* Font - Bold Extended
-        * Has some math operators/Symbols
-        * Usefull for description parts of the app
-    */
-    ImFont* font2 = io.Fonts->AddFontFromFileTTF("fonts/cmbx10.ttf", size_pixels);
-
-    /* Font - Text Italic
-        * Has some math operators/Symbols
-        * Usefull for description parts of the app
-    */
-    ImFont* font3 = io.Fonts->AddFontFromFileTTF("fonts/cmti10.ttf", size_pixels);
-
-    /* Font - Typewriter Type
-        * Has some math operators/Symbols
-        * Usefull for description parts of the app
-        * Has constant spacing, can be used for code writing
-    */
-    ImFont* font4 = io.Fonts->AddFontFromFileTTF("fonts/cmtt10.ttf", size_pixels);
-    
-    /* Font - Math Italic
-        * Used for formulas (the variable names)
-        * Has more/all greek
-        * has some operators
-    */
-    ImFont* font5 = io.Fonts->AddFontFromFileTTF("fonts/cmmi10.ttf", size_pixels);
-
-    /* Font - Math Symbols
-        * Used for formulas
-        * A lot of signs
-    */
-    ImFont* font6 = io.Fonts->AddFontFromFileTTF("fonts/cmsy10.ttf", size_pixels);
-
-    /* Font - Math Extension
-        * Used for formulas
-        * big operators
-        * brackets
-    */
-    ImFont* font7 = io.Fonts->AddFontFromFileTTF("fonts/cmex10.ttf", size_pixels);
-
-    ImFont* fonts[] = { font1, font2, font3, font4, font5, font6, font7 };
+    float size_pixels = 42;
+    for (int i = 0; i < fonts.size(); i++) {
+        for (int j = 0; j < fonts[i].size(); j++) {
+            fonts[i][j] = io.Fonts->AddFontFromFileTTF(font_paths[j],
+                    font_lvl_mul[i] * size_pixels * font_sub_mul[j]);
+         }
+    }
 
     while (!glfwWindowShouldClose(imgui_window)) {
         glfwPollEvents();
@@ -254,12 +392,59 @@ int main(int argc, char const *argv[]) {
         ImGui::Begin("Data aquisition", NULL, main_flags);
 
         ImGui::Text("Press R to hide/unhide the boxes");
+        if (io->InputQueueCharacters.Size > 0) {
+            for (int n = 0; n < io->InputQueueCharacters.Size; n++) {
+                unsigned int c = (unsigned int)io->InputQueueCharacters[n];
+            }
 
-        for (int k = 0; k < 7; k++) {
-            auto font = fonts[k];
+            // Consume characters
+            io->InputQueueCharacters.resize(0);
+        }
+
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        draw_list->AddLine(ImVec2(0, 100), ImVec2(400, 100), 0xff'ffff00, 1);
+        draw_list->AddLine(ImVec2(100, 0), ImVec2(100, 400), 0xff'0000ff, 1);
+
+        const char str[] = "\x28\x58\x59\x5A\x29";
+
+        float off = 0;
+        for (auto c : str) {
+            uint8_t code = c;
+            // DBG("code: 0x%x sym: [%c]", code, c);
+            if (!c)
+                break;
+            off += draw_symbol(
+                symbol_t{
+                    .pos = ImVec2(100+off, 100),
+                    .code = code,
+                    .font_lvl = FONT_LVL_SUB0,
+                    .font_sub = FONT_MATH_EX
+                }
+            );
+        }
+        off = 0;
+        const char str2[] = "\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7\xB8\xB9\xBA\xBB\xBC\xBD\xBE\xBF";
+        for (auto c : str2) {
+            uint8_t code = c;
+            // DBG("code: 0x%x sym: [%c]", code, c);
+            if (!c)
+                break;
+            off += draw_symbol(
+                symbol_t{
+                    .pos = ImVec2(100+off, 100),
+                    .code = code,
+                    .font_lvl = FONT_LVL_SUB0,
+                    .font_sub = FONT_MATH
+                }
+            );
+        }
+
+        for (int k = 0; k < 21; k++) {
+            break;
+
+            auto font = fonts[k/7][k%7];
             ImGui::PushFont(font);
 
-            ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
             static float sz = 36.0f;
             static float thickness = 1.0f;
