@@ -110,6 +110,9 @@ enum : int {
     FONT_LVL_SUB2,
 
     FONT_LVL_CNT,
+
+    /* This is used sometimes for some control characters */
+    FONT_LVL_SPECIAL = 0xfffffff,
 };
 
 static float font_lvl_mul[] = { 1., 3./4., 9./16. };
@@ -299,8 +302,6 @@ The ratios will be 1, 0.5, 0.25 */
 /* Those symbols are the building blocks for all mathematics symbols, the difference is that those
 are allowed to intersect eachother and don't represent anything */
 struct symbol_t {
-    ImVec2 pos;         /* position of the symbol, at the left start of the baseline */
-
     uint32_t code;      /* code of the symbol */
     uint32_t font_lvl;  /* selects the size of the font */
     uint32_t font_sub;  /* selects the respective font from font_paths */
@@ -313,7 +314,7 @@ struct symbol_sz_t {
     ImVec2 bl, tr;      /* bottom left and top right bounding box of the symbol */
 };
 
-symbol_sz_t get_symbol_sz(const symbol_t& s) {
+symbol_sz_t symbol_get_sz(const symbol_t& s) {
     auto font = fonts[s.font_lvl][s.font_sub];
     auto glyph = font->FindGlyphNoFallback(s.code);
     if (!glyph)
@@ -328,15 +329,18 @@ symbol_sz_t get_symbol_sz(const symbol_t& s) {
     };
 }
 
-float draw_symbol(const symbol_t& s) {
-    auto ssz = get_symbol_sz(s);
+ImFont *symbol_get_font(const symbol_t& s) {
+    return fonts[s.font_lvl][s.font_sub];
+}
+
+void symbol_draw(ImVec2 pos, const symbol_t& s) {
+    auto ssz = symbol_get_sz(s);
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
-        return 0;
+        return ;
 
-    auto pos = s.pos;
     pos.y -= ssz.asc;
 
     // DBG("bl.x: %f bl.y: %f tr.x: %f tr.y: %f", ssz.bl.x, ssz.bl.y, ssz.tr.x, ssz.tr.y);
@@ -349,7 +353,7 @@ float draw_symbol(const symbol_t& s) {
 
     /* OBS: RenderChar is the only method that works, for unknown reasons, maybe I can
     fix it?(in imgui). For now the thing will be made out of raw drawing */
-    auto font = fonts[s.font_lvl][s.font_sub];
+    auto font = symbol_get_font(s);
     ImGui::PushFont(font);
     
     font->RenderChar(draw_list, font->FontSize, pos, 0xff'ffff00, s.code);
@@ -359,14 +363,212 @@ float draw_symbol(const symbol_t& s) {
         draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), 0xff'00ffff, 1);
         draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), 0xff'00ffff, 1);
         draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), 0xff'00ffff, 1);
-        draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.asc), ImVec2(tr.x, bl.y + ssz.asc), 0xff'ff0000, 1);
-        draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.desc), ImVec2(tr.x, bl.y + ssz.desc), 0xff'00ff00, 1);
+        // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.asc), ImVec2(tr.x, bl.y + ssz.asc), 0xff'ff0000, 1);
+        // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.desc), ImVec2(tr.x, bl.y + ssz.desc), 0xff'00ff00, 1);
     }
     ImGui::PopFont();
-    return ssz.adv;
+}
+
+struct comment_text_t {
+    std::vector<symbol_t *> chars;    
+};
+
+symbol_t comment_normal[128] = {};
+symbol_t comment_italic[128] = {};
+symbol_t comment_bold[128] = {};
+symbol_t comment_special[128] = {};
+
+void init_comment_text() {
+    for (uint8_t code = 0x20; code < 0x7F; code++) {
+        uint32_t font_sub = FONT_NORMAL;
+        uint32_t font_lvl = FONT_LVL_SUB2;
+
+        uint8_t _code = code;
+        if (code == '<' ) { _code = 0x3C; font_sub = FONT_MATH; }
+        if (code == '>' ) { _code = 0x3E; font_sub = FONT_MATH; }
+        if (code == '\\') { _code = 0x6E; font_sub = FONT_SYMBOLS; }
+        if (code == '{' ) { _code = 0x66; font_sub = FONT_SYMBOLS; }
+        if (code == '}' ) { _code = 0x67; font_sub = FONT_SYMBOLS; }
+        if (code == '_' ) { _code = 0x5F; font_sub = FONT_MONO; }
+        if (code == '|' ) { _code = 0x6A; font_sub = FONT_SYMBOLS; }
+        if (code == '`' ) { _code = 0xB5; font_sub = FONT_NORMAL; }
+
+        comment_normal[code] = symbol_t{ .code = _code, .font_lvl = font_lvl, .font_sub = font_sub };
+        comment_bold[code] = comment_normal[code];
+        if (comment_bold[code].font_sub == FONT_NORMAL)
+            comment_bold[code].font_sub = FONT_BOLD;
+        comment_italic[code] = comment_normal[code];
+        if (comment_italic[code].font_sub == FONT_NORMAL)
+            comment_italic[code].font_sub = FONT_ITALIC;
+    }
+    comment_special['\n'] = symbol_t{ .code = '\n', .font_lvl = FONT_LVL_SPECIAL };
+}
+
+void draw_blinker(ImVec2 pos, float sz) {
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    draw_list->AddLine(ImVec2(pos), pos + ImVec2(0, -sz), 0xff'00ffff, 1);
+}
+
+void comment_text() {
+    static comment_text_t text;
+    static int cursor_pos = 0;
+
+    auto *io = &ImGui::GetIO();
+    if (io->InputQueueCharacters.Size > 0) {
+        for (int n = 0; n < io->InputQueueCharacters.Size; n++) {
+            unsigned int c = (unsigned int)io->InputQueueCharacters[n];
+
+            text.chars.insert(text.chars.begin() + cursor_pos, &comment_bold[c]);
+            cursor_pos++;
+        }
+
+        // Consume characters
+        io->InputQueueCharacters.resize(0);
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
+        if (cursor_pos > 0) {
+            cursor_pos--;
+            text.chars.erase(text.chars.begin() + cursor_pos);
+        }
+    }
+    bool is_ctrl = ImGui::IsKeyPressed(ImGuiKey_LeftCtrl)
+                || ImGui::IsKeyPressed(ImGuiKey_RightCtrl)
+                || ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
+                || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
+        auto cursor_on_whitespace = [&] {
+            return cursor_pos != text.chars.size() && isspace(text.chars[cursor_pos]->code);
+        };
+        auto cursor_on_alpha = [&] {
+            return cursor_pos != text.chars.size() && isalnum(text.chars[cursor_pos]->code);
+        };
+        auto move_right = [&]{
+            if (cursor_pos < text.chars.size())
+                cursor_pos++;
+        };
+        if (!is_ctrl) {
+            move_right();
+        }
+        else {
+            while (cursor_on_whitespace() && cursor_pos != text.chars.size())
+                move_right();
+            do
+                move_right();
+            while (cursor_on_alpha());
+        }
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) {
+        auto cursor_on_whitespace = [&] {
+            return cursor_pos != 0 && isspace(text.chars[cursor_pos-1]->code);
+        };
+        auto cursor_on_alpha = [&] {
+            return cursor_pos != 0 && isalnum(text.chars[cursor_pos-1]->code);
+        };
+        auto move_left = [&]{
+            if (cursor_pos > 0)
+                cursor_pos--;
+        };
+        if (!is_ctrl) {
+            move_left();
+        }
+        else {
+            while (cursor_on_whitespace())
+                move_left();
+            do
+                move_left();
+            while (cursor_on_alpha() && cursor_pos > 0);
+        }
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
+        int dist = 0;
+        while (cursor_pos != 0 && text.chars[cursor_pos-1]->code != '\n') {
+            cursor_pos--;
+            dist++;
+        }
+        if (cursor_pos != 0 && text.chars[cursor_pos-1]->code == '\n')
+            cursor_pos--;
+        int maxdist = 0;
+        while (cursor_pos != 0 && text.chars[cursor_pos-1]->code != '\n') {
+            cursor_pos--;
+            maxdist++;
+        }
+        if (dist > maxdist)
+            dist = maxdist;
+        cursor_pos += dist;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+        int dist = 0;
+        while (cursor_pos != 0 && text.chars[cursor_pos-1]->code != '\n') {
+            cursor_pos--;
+            dist++;
+        }
+        while (cursor_pos != text.chars.size() && text.chars[cursor_pos]->code != '\n') {
+            cursor_pos++;
+        }
+        if (cursor_pos != text.chars.size())
+            cursor_pos++;
+        while (dist && cursor_pos != text.chars.size() && text.chars[cursor_pos]->code != '\n') {
+            cursor_pos++;
+            dist--;
+        }
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+        text.chars.insert(text.chars.begin() + cursor_pos, &comment_special['\n']);
+        cursor_pos++;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
+        for (int i = 0; i < 4; i++) {
+            text.chars.insert(text.chars.begin() + cursor_pos, &comment_normal[' ']);
+            cursor_pos++;
+        }
+    }
+    
+    ImVec2 _pos = ImVec2(0, 30);
+    ImVec2 pos = _pos;
+    ImVec2 win_end = ImGui::GetContentRegionMax();
+    float min_space = symbol_get_font(comment_bold['a'])->FontSize;
+    for (auto psym : text.chars) {
+        if (psym->font_lvl == FONT_LVL_SPECIAL)
+            continue;
+        min_space = std::max(min_space, symbol_get_font(*psym)->FontSize);
+    }
+    pos.y += min_space;
+
+    ImVec2 blinker_pos = pos + ImVec2(2, 0);
+    for (int i = 0; i < text.chars.size(); i++) {
+        auto psym = text.chars[i];
+        if (psym->font_lvl == FONT_LVL_SPECIAL) {
+            pos.x = _pos.x;
+            pos.y += min_space;
+        }
+        else if (pos.x + symbol_get_sz(*psym).adv > win_end.x) {
+            pos.x = _pos.x;
+            pos.y += min_space;
+        }
+        else {
+            symbol_draw(ImVec2(pos.x, pos.y), *psym);
+            pos.x += symbol_get_sz(*psym).adv;
+        }
+        if (i+1 == cursor_pos)
+            blinker_pos = pos + ImVec2(2, 0);
+    }
+    draw_blinker(blinker_pos, min_space);
+
+    // <>\\_`{}|
+    // <    mit,0x3C
+    // >    mit,0x3E
+    // \    sym,0x6E
+    // {    sym,0x66
+    // }    sym,0x67
+    // _    mon,0xB6
+    // |    mit,0x6A
+    // `    def,0xB5
 }
 
 int main(int argc, char const *argv[]) {
+    init_comment_text();
+
     imgui_init();
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -403,19 +605,10 @@ int main(int argc, char const *argv[]) {
         ImGui::Begin("Data aquisition", NULL, main_flags);
 
         ImGui::Text("Press R to hide/unhide the boxes");
-        if (io->InputQueueCharacters.Size > 0) {
-            for (int n = 0; n < io->InputQueueCharacters.Size; n++) {
-                unsigned int c = (unsigned int)io->InputQueueCharacters[n];
-            }
-
-            // Consume characters
-            io->InputQueueCharacters.resize(0);
-        }
 
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddLine(ImVec2(0, 100), ImVec2(400, 100), 0xff'ffff00, 1);
-        draw_list->AddLine(ImVec2(100, 0), ImVec2(100, 400), 0xff'0000ff, 1);
 
+        comment_text();
 
         // ok pharanteses: () \xB5\xB6 [] \xB7\xB8 {} \xBD\xBE
         // \x58 - sum
@@ -426,27 +619,22 @@ int main(int argc, char const *argv[]) {
         // \x49 - circle integral
         // all from FONT_MATH_EX
         // all of them need to be centered to be used
-        // const char str[] =
-        //         "\xC3\xB5\xB3\xA1\xA2\xB4\xB6\x21"
-        //         "\x22\xB7\x68\xA3\xA4\x69\xB8\x23"
-        //         "\x28\xBD\x6E\xA9\xAA\x6F\xBE\x29"
-        //         "\x58\x59\x5B\x5C\x5A\x49";
+        const char str2[] =
+                "\xC3\xB5\xB3\xA1\xA2\xB4\xB6\x21"
+                "\x22\xB7\x68\xA3\xA4\x69\xB8\x23"
+                "\x28\xBD\x6E\xA9\xAA\x6F\xBE\x29"
+                "\x58\x59\x5B\x5C\x5A\x49";
 
         float off = 0;
-        const char str2[] = "\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7\xB8\xB9\xBA\xBB\xBC\xBD\xBE\xBF";
+        // const char str2[] = "\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7\xB8\xB9\xBA\xBB\xBC\xBD\xBE\xBF";
         for (auto c : str2) {
             uint8_t code = c;
             // DBG("code: 0x%x sym: [%c]", code, c);
-            if (!c)
+            // if (!c)
                 break;
-            off += draw_symbol(
-                symbol_t{
-                    .pos = ImVec2(100+off, 100),
-                    .code = code,
-                    .font_lvl = FONT_LVL_SUB0,
-                    .font_sub = FONT_MATH
-                }
-            );
+            auto sym = symbol_t{ .code = code, .font_lvl = FONT_LVL_SUB0, .font_sub = FONT_MATH_EX };
+            symbol_draw(ImVec2(100 + off, 100), sym);
+            off += symbol_get_sz(sym).adv;
         }
 
         for (int k = 0; k < 21; k++) {
