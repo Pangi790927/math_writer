@@ -413,7 +413,17 @@ void comment_text() {
     static comment_text_t text;
     static int cursor_pos = 0;
     static std::string ascii_text;
+    static bool is_italic = false;
+    static bool is_bold = false;
 
+    auto get_charset = [&]() {
+        if (is_italic)
+            return comment_italic;
+        if (is_bold)
+            return comment_bold;
+        return comment_normal;
+    };
+    /* TODO: add some indicators for italic, bold, etc */
     auto insert_char = [&](unsigned int c, auto charset) {
         text.chars.insert(text.chars.begin() + cursor_pos, &charset[c]);
         ascii_text += (char)c;
@@ -424,7 +434,7 @@ void comment_text() {
     if (io->InputQueueCharacters.Size > 0) {
         for (int n = 0; n < io->InputQueueCharacters.Size; n++) {
             unsigned int c = (unsigned int)io->InputQueueCharacters[n];
-            insert_char(c, comment_normal);
+            insert_char(c, get_charset());
         }
 
         // Consume characters
@@ -518,6 +528,20 @@ void comment_text() {
             dist--;
         }
     }
+    if (is_ctrl && ImGui::IsKeyPressed(ImGuiKey_B)) {
+        if (is_bold)
+            is_bold = false;
+        else
+            is_bold = true;
+        is_italic = false;
+    }
+    if (is_ctrl && ImGui::IsKeyPressed(ImGuiKey_I)) {
+        if (is_italic)
+            is_italic = false;
+        else
+            is_italic = true;
+        is_bold = false;
+    }
     if (is_ctrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
         DBG("ascii_text: %s", ascii_text.c_str());
     }
@@ -526,7 +550,7 @@ void comment_text() {
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
         for (int i = 0; i < 4; i++) {
-            insert_char(' ', comment_normal);
+            insert_char(' ', get_charset());
         }
     }
     
@@ -754,3 +778,17 @@ int main(int argc, char const *argv[]) {
 //     7. write the latex exporter
 
 // This was edited  and saved with my app, real finally works. somewhat...
+
+// This is aitalinormal etext.
+//     This is bold text.
+// This is italic tetxt.
+// This is bold again.
+// This is normal text again.
+// This is italic again.
+// Back to normal.
+
+// This text can exit the screen very easily ily, There is no problem in doing so , writing a lot of text will be a problem, at least copy must work this is thoo anoying, ereally mean it , must be fixed. How really annoying this is,. Selecting text mis bprobably a must , but for now, I'll enable saving the current line and in the futureentire box and pasting at cursor, iI thingk this accan be enough for now.
+
+
+
+// . How can I do selections? And why does a character disaeppear when mobing ving outside of the screen? EHh? Well , the solution would be to remembreer the last cursor positoion before pn when pressing shift and when drawing draw all the positions between the tow wo cursors in a nother way. Cpoopy would copy this area, copying a line will move area, and I'll implement the rest of the things I rememgber liking, copy foover selection, copy etc.delete selection 
