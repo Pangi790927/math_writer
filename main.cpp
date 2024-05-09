@@ -356,16 +356,16 @@ void symbol_draw(ImVec2 pos, const symbol_t& s) {
     auto font = symbol_get_font(s);
     ImGui::PushFont(font);
     
-    font->RenderChar(draw_list, font->FontSize, pos, 0xff'ffff00, s.code);
-    if (KEY_TOGGLE(ImGuiKey_R)) {
-        // DBG("bl.x %f, bl.y %f tr.x %f, tr.y %f", bl.x, bl.y, tr.x, tr.y);
-        draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), 0xff'00ffff, 1);
-        draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), 0xff'00ffff, 1);
-        draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), 0xff'00ffff, 1);
-        draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), 0xff'00ffff, 1);
-        // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.asc), ImVec2(tr.x, bl.y + ssz.asc), 0xff'ff0000, 1);
-        // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.desc), ImVec2(tr.x, bl.y + ssz.desc), 0xff'00ff00, 1);
-    }
+    font->RenderChar(draw_list, font->FontSize, pos, 0xff'eeeeee, s.code);
+    // if (KEY_TOGGLE(ImGuiKey_R)) {
+    //     // DBG("bl.x %f, bl.y %f tr.x %f, tr.y %f", bl.x, bl.y, tr.x, tr.y);
+    //     draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), 0xff'00ffff, 1);
+    //     draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), 0xff'00ffff, 1);
+    //     draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), 0xff'00ffff, 1);
+    //     draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), 0xff'00ffff, 1);
+    //     // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.asc), ImVec2(tr.x, bl.y + ssz.asc), 0xff'ff0000, 1);
+    //     // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.desc), ImVec2(tr.x, bl.y + ssz.desc), 0xff'00ff00, 1);
+    // }
     ImGui::PopFont();
 }
 
@@ -412,14 +412,19 @@ void draw_blinker(ImVec2 pos, float sz) {
 void comment_text() {
     static comment_text_t text;
     static int cursor_pos = 0;
+    static std::string ascii_text;
+
+    auto insert_char = [&](unsigned int c, auto charset) {
+        text.chars.insert(text.chars.begin() + cursor_pos, &charset[c]);
+        ascii_text += (char)c;
+        cursor_pos++;
+    };
 
     auto *io = &ImGui::GetIO();
     if (io->InputQueueCharacters.Size > 0) {
         for (int n = 0; n < io->InputQueueCharacters.Size; n++) {
             unsigned int c = (unsigned int)io->InputQueueCharacters[n];
-
-            text.chars.insert(text.chars.begin() + cursor_pos, &comment_bold[c]);
-            cursor_pos++;
+            insert_char(c, comment_normal);
         }
 
         // Consume characters
@@ -513,14 +518,15 @@ void comment_text() {
             dist--;
         }
     }
+    if (is_ctrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
+        DBG("ascii_text: %s", ascii_text.c_str());
+    }
     if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
-        text.chars.insert(text.chars.begin() + cursor_pos, &comment_special['\n']);
-        cursor_pos++;
+        insert_char('\n', comment_special);
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
         for (int i = 0; i < 4; i++) {
-            text.chars.insert(text.chars.begin() + cursor_pos, &comment_normal[' ']);
-            cursor_pos++;
+            insert_char(' ', comment_normal);
         }
     }
     
@@ -604,9 +610,7 @@ int main(int argc, char const *argv[]) {
 
         ImGui::Begin("Data aquisition", NULL, main_flags);
 
-        ImGui::Text("Press R to hide/unhide the boxes");
-
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        // ImGui::Text("Press R to hide/unhide the boxes");
 
         comment_text();
 
@@ -637,88 +641,88 @@ int main(int argc, char const *argv[]) {
             off += symbol_get_sz(sym).adv;
         }
 
-        for (int k = 0; k < 21; k++) {
-            break;
+        // for (int k = 0; k < 21; k++) {
+        //     break;
 
-            auto font = fonts[k/7][k%7];
-            ImGui::PushFont(font);
-
-
-            static float sz = 36.0f;
-            static float thickness = 1.0f;
-
-            ImVec2 p1 = ImGui::GetCursorScreenPos();
-            ImVec2 p2 = ImGui::GetMousePos();
-            float th = thickness;
-
-            ImVec4 col = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
-            ImU32 col32 = ImColor(col);
-            draw_list->AddLine(ImVec2(0, 0), ImVec2(0, 0), col32, th);
-
-            float off_y = 0;
-            float max_off_x = 0;
-            p1 = ImGui::GetCursorScreenPos();
-            for (int i = 0; i < 16; i++) {
-                float off_x = 0;
-                bool at_least_one = false;
-                for (int j = 0; j < 16; j++) {
-                    int code = i*16 + j;
-
-                    float r = 1.;
-                    float g = 1.;
-                    float b = 1.;
-
-                    auto glyph = font->FindGlyphNoFallback(code);
-                    if (!glyph)
-                        continue;
-
-                    at_least_one = true;
-                    if (!glyph->Visible)
-                        r = 0;
-
-                    ImVec2 box_origin = ImVec2(p1.x + off_x, p1.y + off_y);
-
-                    ImVec2 box_bot = ImVec2(p1.x + glyph->X0 + off_x, p1.y + off_y + glyph->Y0);
-                    ImVec2 box_top = ImVec2(p1.x + glyph->X1 + off_x, p1.y + off_y + glyph->Y1);
-                    off_x += glyph->AdvanceX;
+        //     auto font = fonts[k/7][k%7];
+        //     ImGui::PushFont(font);
 
 
-                    /* OBS: RenderChar is the only method that works, for unknown reasons, maybe I can
-                    fix it? */
-                    font->RenderChar(draw_list, font->FontSize, box_origin, 0xff00ffff, code);
+        //     static float sz = 36.0f;
+        //     static float thickness = 1.0f;
 
-                    // draw_list->AddText(font, font->FontSize, box_origin, 0xffff00ff, codes[code], NULL);
+        //     ImVec2 p1 = ImGui::GetCursorScreenPos();
+        //     ImVec2 p2 = ImGui::GetMousePos();
+        //     float th = thickness;
 
-                    col = ImVec4(r, g, b, 1.0f);
-                    ImU32 col32 = ImColor(col);
-                    if (KEY_TOGGLE(ImGuiKey_R)) {
-                        draw_list->AddLine(ImVec2(box_bot.x, box_bot.y), ImVec2(box_top.x, box_bot.y), col32, th);
-                        draw_list->AddLine(ImVec2(box_top.x, box_bot.y), ImVec2(box_top.x, box_top.y), col32, th);
-                        draw_list->AddLine(ImVec2(box_top.x, box_top.y), ImVec2(box_bot.x, box_top.y), col32, th);
-                        draw_list->AddLine(ImVec2(box_bot.x, box_top.y), ImVec2(box_bot.x, box_bot.y), col32, th);
-                    }
+        //     ImVec4 col = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
+        //     ImU32 col32 = ImColor(col);
+        //     draw_list->AddLine(ImVec2(0, 0), ImVec2(0, 0), col32, th);
 
-                    // draw_list->AddLine(p1, ImVec2(p1.x, p1.y + 100), 0xffffff00, th);
-                    // draw_list->AddLine(p1, p2, col32, th);
+        //     float off_y = 0;
+        //     float max_off_x = 0;
+        //     p1 = ImGui::GetCursorScreenPos();
+        //     for (int i = 0; i < 16; i++) {
+        //         float off_x = 0;
+        //         bool at_least_one = false;
+        //         for (int j = 0; j < 16; j++) {
+        //             int code = i*16 + j;
 
-                    // draw_list->AddLine(ImVec2(p1.x - 100, p1.y), ImVec2(p1.x, p1.y), 0xffff0000);
+        //             float r = 1.;
+        //             float g = 1.;
+        //             float b = 1.;
 
-                    // draw_list->AddLine(ImVec2(p1.x - 10, p1.y + font->Ascent),
-                    //         ImVec2(p1.x + 10, p1.y + font->Ascent), 0xff00ff00, th);
+        //             auto glyph = font->FindGlyphNoFallback(code);
+        //             if (!glyph)
+        //                 continue;
 
-                    // draw_list->AddLine(ImVec2(p1.x + 10, p1.y + font->Ascent - font->Descent),
-                    //         ImVec2(p1.x - 10, p1.y + font->Ascent - font->Descent), 0xff0000ff, th);
+        //             at_least_one = true;
+        //             if (!glyph->Visible)
+        //                 r = 0;
 
-                }
-                if (at_least_one) {
-                    off_y += -font->Descent + font->Ascent;
-                }
-                max_off_x = std::max(max_off_x, off_x);
-            }
-            ImGui::Dummy(ImVec2(max_off_x, off_y));
+        //             ImVec2 box_origin = ImVec2(p1.x + off_x, p1.y + off_y);
 
-            ImGui::PopFont();
-        }
+        //             ImVec2 box_bot = ImVec2(p1.x + glyph->X0 + off_x, p1.y + off_y + glyph->Y0);
+        //             ImVec2 box_top = ImVec2(p1.x + glyph->X1 + off_x, p1.y + off_y + glyph->Y1);
+        //             off_x += glyph->AdvanceX;
+
+
+        //             /* OBS: RenderChar is the only method that works, for unknown reasons, maybe I can
+        //             fix it? */
+        //             font->RenderChar(draw_list, font->FontSize, box_origin, 0xff00ffff, code);
+
+        //             // draw_list->AddText(font, font->FontSize, box_origin, 0xffff00ff, codes[code], NULL);
+
+        //             col = ImVec4(r, g, b, 1.0f);
+        //             ImU32 col32 = ImColor(col);
+        //             if (KEY_TOGGLE(ImGuiKey_R)) {
+        //                 draw_list->AddLine(ImVec2(box_bot.x, box_bot.y), ImVec2(box_top.x, box_bot.y), col32, th);
+        //                 draw_list->AddLine(ImVec2(box_top.x, box_bot.y), ImVec2(box_top.x, box_top.y), col32, th);
+        //                 draw_list->AddLine(ImVec2(box_top.x, box_top.y), ImVec2(box_bot.x, box_top.y), col32, th);
+        //                 draw_list->AddLine(ImVec2(box_bot.x, box_top.y), ImVec2(box_bot.x, box_bot.y), col32, th);
+        //             }
+
+        //             // draw_list->AddLine(p1, ImVec2(p1.x, p1.y + 100), 0xffffff00, th);
+        //             // draw_list->AddLine(p1, p2, col32, th);
+
+        //             // draw_list->AddLine(ImVec2(p1.x - 100, p1.y), ImVec2(p1.x, p1.y), 0xffff0000);
+
+        //             // draw_list->AddLine(ImVec2(p1.x - 10, p1.y + font->Ascent),
+        //             //         ImVec2(p1.x + 10, p1.y + font->Ascent), 0xff00ff00, th);
+
+        //             // draw_list->AddLine(ImVec2(p1.x + 10, p1.y + font->Ascent - font->Descent),
+        //             //         ImVec2(p1.x - 10, p1.y + font->Ascent - font->Descent), 0xff0000ff, th);
+
+        //         }
+        //         if (at_least_one) {
+        //             off_y += -font->Descent + font->Ascent;
+        //         }
+        //         max_off_x = std::max(max_off_x, off_x);
+        //     }
+        //     ImGui::Dummy(ImVec2(max_off_x, off_y));
+
+        //     ImGui::PopFont();
+        // }
 
         bool true_val = true;
         ImGui::ShowMetricsWindow(&true_val);
@@ -731,3 +735,22 @@ int main(int argc, char const *argv[]) {
     imgui_uninit();
     return 0;
 }
+
+
+// This is fine as a text writer, cand  do:.
+// TODO LIST_LIST:
+//     1.  write this comment section
+//         1.1 Add greadd geGreek leters: alpha , beta gama,
+//         1.1 add aother symbols
+//         1.2332 Createcreate the bounding box of this comment seciontion oand of other s
+//         1.34 maybe transfer this to stb or whateever else was it (in imgui input box)
+//         1.5 copy, paste, etc.
+//         1.56 
+//     2. write the definition writer, it must be able to save tokens as functions, variables, named constants and more
+//     3.  write the function equiation writer: must be able to draw nice equiaations
+//     4. write the controls for the greneral window stuff, : how to change betwween different modes of writing()comment , definition, equation
+//     5. write the controls for different equations manipulations
+//     6. write the file save functionality
+//     7. write the latex exporter
+
+// This was edited  and saved with my app, real finally works. somewhat...
