@@ -4,8 +4,6 @@
 #include "imgui_internal.h"
 #include "misc_utils.h"
 
-#define NOVIZ true
-
 /* TODO:
     -> Comment text
     -> Definition
@@ -186,44 +184,48 @@ math_symbol_t math_symbols[] = {
     /* TODO: font1: {A..Z} */
 
     { 1, 0x21, "_arrow_right" },
-    { 1, 0x21, "_arrow_up" },
-    { 1, 0x21, "_arrow_down" },
-    { 1, 0x21, "_arrow_left_right" },
-    { 1, 0x21, "_arrow_right_corner_up" },
-    { 1, 0x21, "_arrow_right_corner_down" },
-    { 1, 0x21, "_aprox_eq" },
-    { 1, 0x21, "_double_arrow_left" },
-    { 1, 0x21, "_double_arrow_right" },
-    { 1, 0x21, "_double_arrow_up" },
-    { 1, 0x21, "_double_arrow_down" },
-    { 1, 0x21, "_double_arrow_left_right" },
-    { 1, 0x21, "_arrow_left_corner_up" },
-    { 1, 0x21, "_arrow_left_corner_down" },
+    { 1, 0x22, "_arrow_up" },
+    { 1, 0x23, "_arrow_down" },
+    { 1, 0x24, "_arrow_left_right" },
+    { 1, 0x25, "_arrow_right_corner_up" },
+    { 1, 0x26, "_arrow_right_corner_down" },
+    { 1, 0x27, "_aprox_eq" },
+    { 1, 0x28, "_double_arrow_left" },
+    { 1, 0x29, "_double_arrow_right" },
+    { 1, 0x2A, "_double_arrow_up" },
+    { 1, 0x2B, "_double_arrow_down" },
+    { 1, 0x2C, "_double_arrow_left_right" },
+    { 1, 0x2D, "_arrow_left_corner_up" },
+    { 1, 0x2E, "_arrow_left_corner_down" },
     { 1, 0x2F, "\\propto" },
     { 1, 0x30, "this: ' " },
     { 1, 0x31, "infinity" },
-    { 1, 0x31, "part of set" },
-    { 1, 0x31, "part of set rev" },
-    { 1, 0x31, "delta as operator" },
-    { 1, 0x31, "reverse delta" },
-    { 1, 0x31, "this: / " },
-    { 1, 0x31, "????" },
-    { 1, 0x31, "\\forall" },
-    { 1, 0x31, "\\exists" },
-    { 1, 0x31, "negate" },
-    { 1, 0x31, "empty set" },
-    { 1, 0x31, "strange R" },
-    { 1, 0x31, "strange something" },
-    { 1, 0x31, "T" },
-    { 1, 0x31, "T reversed" },
+    { 1, 0x32, "part of set" },
+    { 1, 0x33, "part of set rev" },
+    { 1, 0x34, "delta as operator" },
+    { 1, 0x35, "reverse delta" },
+    { 1, 0x36, "this: / " },
+    { 1, 0x37, "????" },
+    { 1, 0x38, "\\forall" },
+    { 1, 0x39, "\\exists" },
+    { 1, 0x3A, "negate" },
+    { 1, 0x3B, "empty set" },
+    { 1, 0x3C, "strange R" },
+    { 1, 0x3D, "strange something" },
+    { 1, 0x3E, "T" },
+    { 1, 0x3F, "T reversed" },
     { 1, 0x40, "\\aleph" },
     { 1, 0x5B, "union" },
-    { 1, 0x5B, "intersect" },
-    { 1, 0x5B, "union +" },
-    { 1, 0x5B, "and" },
-    { 1, 0x5B, "or" },
-    { 1, 0x5B, "T to the left" },
-    { 1, 0x5B, "T to the right" },
+    { 1, 0x5C, "intersect" },
+    { 1, 0x5D, "union +" },
+    { 1, 0x5E, "and" },
+    { 1, 0x5F, "or" },
+    { 1, 0x60, "T to the left" },
+    { 1, 0x61, "T to the right" },
+
+    { 1, 0x5A, "\\int" },    // Integral symbol
+    { 1, 0x49, "\\iint" },   // Double integral symbol
+    { 1, 0x5C, "\\iiint" },  // Triple integral symbol
 
     { 1, 0x66, "{" },
     { 1, 0x67, "}" },
@@ -231,35 +233,35 @@ math_symbol_t math_symbols[] = {
     { 1, 0x72, "laplacian" },
 
     { 1, 0xA1, "minus" },
-    { 1, 0xA1, "dot - product" },
-    { 1, 0xA1, "times" },
-    { 1, 0xA1, "star" },
-    { 1, 0xA1, "division" },
-    { 1, 0xA1, "romb" },
-    { 1, 0xA1, "+/-" },
-    { 1, 0xA1, "-/+" },
-    { 1, 0xA1, "+ in circle" },
-    { 1, 0xA1, "- in circle" },
+    { 1, 0xA2, "dot - product" },
+    { 1, 0xA3, "times" },
+    { 1, 0xA4, "star" },
+    { 1, 0xA5, "division" },
+    { 1, 0xA6, "romb" },
+    { 1, 0xA7, "+/-" },
+    { 1, 0xA8, "-/+" },
+    { 1, 0xA9, "+ in circle" },
+    { 1, 0xAA, "- in circle" },
 
     { 1, 0xAE, "/ in circle" },
     { 1, 0xAE, ". in circle" },
     { 1, 0xAE, "empty circle" },
     { 1, 0xB4, "congruence" },
     { 1, 0xB5, "included or equal" },
-    { 1, 0xB5, "includes or equal" },
-    { 1, 0xB5, "less than" },
-    { 1, 0xB5, "greater than" },
-    { 1, 0xB5, "strange less than" },
-    { 1, 0xB5, "strange greater than" },
-    { 1, 0xB5, "aprox" },
-    { 1, 0xB5, "double aprox" },
-    { 1, 0xB5, "includes" },
-    { 1, 0xB5, "included" },
-    { 1, 0xB5, "much lesser" },
-    { 1, 0xB5, "much greater" },
-    { 1, 0xB5, "strange less" },
-    { 1, 0xB5, "strange greater" },
-    { 1, 0xB5, "arrow left" },
+    { 1, 0xB6, "includes or equal" },
+    { 1, 0xB7, "less than" },
+    { 1, 0xB8, "greater than" },
+    { 1, 0xB9, "strange less than" },
+    { 1, 0xBA, "strange greater than" },
+    { 1, 0xBB, "aprox" },
+    { 1, 0xBC, "double aprox" },
+    { 1, 0xBD, "includes" },
+    { 1, 0xBE, "included" },
+    { 1, 0xBF, "much lesser" },
+    { 1, 0xC0, "much greater" },
+    { 1, 0xB1, "strange less" },
+    { 1, 0xB2, "strange greater" },
+    { 1, 0xB3, "arrow left" },
 
 };
 
@@ -584,16 +586,6 @@ void comment_text() {
             blinker_pos = pos + ImVec2(2, 0);
     }
     draw_blinker(blinker_pos, min_space);
-
-    // <>\\_`{}|
-    // <    mit,0x3C
-    // >    mit,0x3E
-    // \    sym,0x6E
-    // {    sym,0x66
-    // }    sym,0x67
-    // _    mon,0xB6
-    // |    mit,0x6A
-    // `    def,0xB5
 }
 
 int main(int argc, char const *argv[]) {
@@ -658,7 +650,7 @@ int main(int argc, char const *argv[]) {
         for (auto c : str2) {
             uint8_t code = c;
             // DBG("code: 0x%x sym: [%c]", code, c);
-            // if (!c)
+            if (!c)
                 break;
             auto sym = symbol_t{ .code = code, .font_lvl = FONT_LVL_SUB0, .font_sub = FONT_MATH_EX };
             symbol_draw(ImVec2(100 + off, 100), sym);
