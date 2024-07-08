@@ -52,3 +52,8 @@ clean:
 	rm -f ${OBJS}
 	rm -f ${DEPS}
 	rm -f ${NAME}
+
+push:
+	-git add *
+	git commit -m "wip"
+	git push
