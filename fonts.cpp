@@ -63,6 +63,13 @@ static float font_sub_mul[] = { 1., 1., 1., 1., 1., 1., 2.5 };
 static std::vector<std::vector<ImFont*>> fonts(
         (int)FONT_LVL_CNT, std::vector<ImFont*>(ARR_SZ(font_paths)));
 
+static bool draw_bb_chars = false;
+
+bool symbol_toggle_bb(bool val) {
+    auto ret = draw_bb_chars;
+    draw_bb_chars = val;
+    return ret;
+}
 
 symbol_sz_t symbol_get_sz(const symbol_t& s) {
     auto font = fonts[s.font_lvl][s.font_sub];
@@ -107,15 +114,15 @@ void symbol_draw(ImVec2 pos, const symbol_t& s) {
     ImGui::PushFont(font);
     
     font->RenderChar(draw_list, font->FontSize, pos, 0xff'eeeeee, s.code);
-    // if (KEY_TOGGLE(ImGuiKey_R)) {
-    //     // DBG("bl.x %f, bl.y %f tr.x %f, tr.y %f", bl.x, bl.y, tr.x, tr.y);
-    //     draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), 0xff'00ffff, 1);
-    //     draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), 0xff'00ffff, 1);
-    //     draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), 0xff'00ffff, 1);
-    //     draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), 0xff'00ffff, 1);
-    //     // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.asc), ImVec2(tr.x, bl.y + ssz.asc), 0xff'ff0000, 1);
-    //     // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.desc), ImVec2(tr.x, bl.y + ssz.desc), 0xff'00ff00, 1);
-    // }
+    if (draw_bb_chars) {
+        // DBG("bl.x %f, bl.y %f tr.x %f, tr.y %f", bl.x, bl.y, tr.x, tr.y);
+        draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), 0xff'00ffff, 1);
+        draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), 0xff'00ffff, 1);
+        draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), 0xff'00ffff, 1);
+        draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), 0xff'00ffff, 1);
+        // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.asc), ImVec2(tr.x, bl.y + ssz.asc), 0xff'ff0000, 1);
+        // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.desc), ImVec2(tr.x, bl.y + ssz.desc), 0xff'00ff00, 1);
+    }
     ImGui::PopFont();
 }
 

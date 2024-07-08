@@ -57,5 +57,6 @@ int fonts_init();
 symbol_sz_t symbol_get_sz(const symbol_t& s);
 ImFont *symbol_get_font(const symbol_t& s);
 void symbol_draw(ImVec2 pos, const symbol_t& s);
+bool symbol_toggle_bb(bool val);
 
 #endif

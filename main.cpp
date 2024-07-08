@@ -6,6 +6,8 @@
 
 #include "fonts.h"
 #include "comments.h"
+#include "formulas.h"
+#include "defines.h"
 
 /* TODO:
     -> Comment text
@@ -235,6 +237,8 @@ int main(int argc, char const *argv[]) {
     ASSERT_FN(fonts_init());
     ASSERT_FN(comments_init());
 
+    auto integ = mathe_integral(nullptr, nullptr, nullptr);    
+
     while (!glfwWindowShouldClose(imgui_window)) {
         glfwPollEvents();
         if (glfwGetKey(imgui_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -257,32 +261,7 @@ int main(int argc, char const *argv[]) {
 
         ASSERT_FN(comment_text());
 
-        // ok pharanteses: () \xB5\xB6 [] \xB7\xB8 {} \xBD\xBE
-        // \x58 - sum
-        // \x59 - prod
-        // \x5B - mass union
-        // \x5C - mass intersect
-        // \x5A - integral
-        // \x49 - circle integral
-        // all from FONT_MATH_EX
-        // all of them need to be centered to be used
-        const char str2[] =
-                "\xC3\xB5\xB3\xA1\xA2\xB4\xB6\x21"
-                "\x22\xB7\x68\xA3\xA4\x69\xB8\x23"
-                "\x28\xBD\x6E\xA9\xAA\x6F\xBE\x29"
-                "\x58\x59\x5B\x5C\x5A\x49";
-
-        float off = 0;
-        // const char str2[] = "\xAE\xAF\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7\xB8\xB9\xBA\xBB\xBC\xBD\xBE\xBF";
-        for (auto c : str2) {
-            uint8_t code = c;
-            // DBG("code: 0x%x sym: [%c]", code, c);
-            if (!c)
-                break;
-            auto sym = symbol_t{ .code = code, .font_lvl = FONT_LVL_SUB0, .font_sub = FONT_MATH_EX };
-            symbol_draw(ImVec2(100 + off, 100), sym);
-            off += symbol_get_sz(sym).adv;
-        }
+        mathe_draw(ImVec2(100, 100), integ);
 
         bool true_val = true;
         ImGui::ShowMetricsWindow(&true_val);
