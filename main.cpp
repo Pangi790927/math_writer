@@ -8,6 +8,7 @@
 #include "comments.h"
 #include "formulas.h"
 #include "defines.h"
+#include "time_utils.h"
 
 /* TODO:
     -> Comment text
@@ -56,140 +57,11 @@
 //     char str[64];
 // };
 
-// math_symbol_t math_symbols[] = {
-//     { 0, 0xAE, "\\alpha" },
-//     { 0, 0xAF, "\\beta" },
-//     { 0, 0xB0, "\\gamma" },
-//     { 0, 0xB1, "\\delta" },
-//     { 0, 0xB2, "\\epsilon" },
-//     { 0, 0xB3, "\\zeta" },
-//     { 0, 0xB4, "\\eta" },
-//     { 0, 0xB5, "\\theta" },
-//     { 0, 0xB6, "\\iota" },
-//     { 0, 0xB7, "\\kappa" },
-//     { 0, 0xB8, "\\lambda" },
-//     { 0, 0xB9, "\\mu" },
-//     { 0, 0xBA, "\\nu" },
-//     { 0, 0xBB, "\\xi" },
-//     { 0, 0xBC, "\\pi" },
-//     { 0, 0xBD, "\\rho" },
-//     { 0, 0xBE, "\\sigma" },
-//     { 0, 0xBF, "\\tau" },
-//     { 0, 0xC0, "\\upsilon" },
-//     { 0, 0xC1, "\\phi" },
-//     { 0, 0xC2, "\\chi" },
-//     { 0, 0xC3, "\\psi" },
-//     { 0, 0x21, "\\omega" },
 
-//     { 0, 0xA1, "\\Gamma" },
-//     { 0, 0xA2, "\\Delta" },
-//     { 0, 0xA3, "\\Theta" },
-//     { 0, 0xA4, "\\Lambda" },
-//     { 0, 0xA5, "\\Xi" },
-//     { 0, 0xA6, "\\Pi" },
-//     { 0, 0xA7, "\\Sigma" },
-//     { 0, 0xA8, "\\Upsilon" },
-//     { 0, 0xA9, "\\Phi" },
-//     { 0, 0xAA, "\\Psi" },
-//     { 0, 0xAB, "\\Omega" },
 
-//     { 0, 0x40, "\\partial"}, /* derivative */
 
-//     /* Arrow parts */
-//     { 0, 0x28, "_arrow_left_part_up"},
-//     { 0, 0x29, "_arrow_left_part_down"},
-//     { 0, 0x2A, "_arrow_right_part_up"},
-//     { 0, 0x2B, "_arrow_right_part_down"},
 
-//     { 0, 0x3F, "_star_sym"},
-//     { 0, 0x7E, "_vector_hat"},
-
-//     /* TODO: font0: {0..9} {a..z} {A..Z} {.} {,} {<} {>} */
-//     /* TODO: font0: figure out what is with the '/' sign there */
-
-//     /* TODO: font1: {A..Z} */
-
-//     { 1, 0x21, "_arrow_right" },
-//     { 1, 0x22, "_arrow_up" },
-//     { 1, 0x23, "_arrow_down" },
-//     { 1, 0x24, "_arrow_left_right" },
-//     { 1, 0x25, "_arrow_right_corner_up" },
-//     { 1, 0x26, "_arrow_right_corner_down" },
-//     { 1, 0x27, "_aprox_eq" },
-//     { 1, 0x28, "_double_arrow_left" },
-//     { 1, 0x29, "_double_arrow_right" },
-//     { 1, 0x2A, "_double_arrow_up" },
-//     { 1, 0x2B, "_double_arrow_down" },
-//     { 1, 0x2C, "_double_arrow_left_right" },
-//     { 1, 0x2D, "_arrow_left_corner_up" },
-//     { 1, 0x2E, "_arrow_left_corner_down" },
-//     { 1, 0x2F, "\\propto" },
-//     { 1, 0x30, "this: ' " },
-//     { 1, 0x31, "infinity" },
-//     { 1, 0x32, "part of set" },
-//     { 1, 0x33, "part of set rev" },
-//     { 1, 0x34, "delta as operator" },
-//     { 1, 0x35, "reverse delta" },
-//     { 1, 0x36, "this: / " },
-//     { 1, 0x37, "????" },
-//     { 1, 0x38, "\\forall" },
-//     { 1, 0x39, "\\exists" },
-//     { 1, 0x3A, "negate" },
-//     { 1, 0x3B, "empty set" },
-//     { 1, 0x3C, "strange R" },
-//     { 1, 0x3D, "strange something" },
-//     { 1, 0x3E, "T" },
-//     { 1, 0x3F, "T reversed" },
-//     { 1, 0x40, "\\aleph" },
-//     { 1, 0x5B, "union" },
-//     { 1, 0x5C, "intersect" },
-//     { 1, 0x5D, "union +" },
-//     { 1, 0x5E, "and" },
-//     { 1, 0x5F, "or" },
-//     { 1, 0x60, "T to the left" },
-//     { 1, 0x61, "T to the right" },
-
-//     { 1, 0x5A, "\\int" },    // Integral symbol
-//     { 1, 0x49, "\\iint" },   // Double integral symbol
-//     { 1, 0x5C, "\\iiint" },  // Triple integral symbol
-
-//     { 1, 0x66, "{" },
-//     { 1, 0x67, "}" },
-//     { 1, 0x71, "pi reversed" },
-//     { 1, 0x72, "laplacian" },
-
-//     { 1, 0xA1, "minus" },
-//     { 1, 0xA2, "dot - product" },
-//     { 1, 0xA3, "times" },
-//     { 1, 0xA4, "star" },
-//     { 1, 0xA5, "division" },
-//     { 1, 0xA6, "romb" },
-//     { 1, 0xA7, "+/-" },
-//     { 1, 0xA8, "-/+" },
-//     { 1, 0xA9, "+ in circle" },
-//     { 1, 0xAA, "- in circle" },
-
-//     { 1, 0xAE, "/ in circle" },
-//     { 1, 0xAE, ". in circle" },
-//     { 1, 0xAE, "empty circle" },
-//     { 1, 0xB4, "congruence" },
-//     { 1, 0xB5, "included or equal" },
-//     { 1, 0xB6, "includes or equal" },
-//     { 1, 0xB7, "less than" },
-//     { 1, 0xB8, "greater than" },
-//     { 1, 0xB9, "strange less than" },
-//     { 1, 0xBA, "strange greater than" },
-//     { 1, 0xBB, "aprox" },
-//     { 1, 0xBC, "double aprox" },
-//     { 1, 0xBD, "includes" },
-//     { 1, 0xBE, "included" },
-//     { 1, 0xBF, "much lesser" },
-//     { 1, 0xC0, "much greater" },
-//     { 1, 0xB1, "strange less" },
-//     { 1, 0xB2, "strange greater" },
-//     { 1, 0xB3, "arrow left" },
-
-// };
+// maybe for matrices maybe? or upper, lower bound?: "\xB9\xBA\xBB\xBC"? from math_ex
 
 // const char *math_elements[] = {
 //     "variable",         /* optional subscripts */
@@ -216,11 +88,12 @@
 //     "modul",
 //     "diffpow",          /* diferential superscript: ', '', ''', (n) */
 //     "transpose",
-//     "matrix",
-//     "matrix_det",
 //     "log",
 //     "lg",
 //     "ln",
+
+//     "matrix",
+//     "matrix_det",
 // };
 
 int main(int argc, char const *argv[]) {
@@ -234,10 +107,21 @@ int main(int argc, char const *argv[]) {
     ImFontConfig config;
     config.MergeMode = true;
 
+
     ASSERT_FN(fonts_init());
     ASSERT_FN(comments_init());
 
-    auto integ = mathe_integral(nullptr, nullptr, nullptr);    
+    imgui_prepare_render();
+    auto empty = mathe_empty();
+    auto eset = mathe_symbol(mathe_convert(MATHE_sum, FONT_LVL_SUB2));
+    auto integ = mathe_bigop(eset, eset, eset, mathe_convert(MATHE_integral, FONT_LVL_SUB0));
+    auto sum = mathe_bigop(integ, eset, eset, mathe_convert(MATHE_sum, FONT_LVL_SUB0));
+    auto frac = mathe_frac(eset, eset, mathe_convert(MATHE_hline_basic, FONT_LVL_SUB0));
+    imgui_render(clear_color);
+
+    auto timer_start = get_time_ms();
+    int symbol_index = 190;
+    auto curr_sym = math_symbols[symbol_index];
 
     while (!glfwWindowShouldClose(imgui_window)) {
         glfwPollEvents();
@@ -261,7 +145,24 @@ int main(int argc, char const *argv[]) {
 
         ASSERT_FN(comment_text());
 
-        mathe_draw(ImVec2(100, 100), integ);
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        draw_list->AddLine(ImVec2(0,0), ImVec2(400, 600), 0xff'00ffff, 1);
+
+        ASSERT_FN(mathe_draw(ImVec2(400, 600), frac));
+
+        draw_list->AddLine(ImVec2(0,0), ImVec2(100, 100), 0xff'00ffff, 1);
+        
+        // bool oldtoggle = symbol_toggle_bb(true);
+        symbol_draw(ImVec2(100, 100), mathe_convert(curr_sym, FONT_LVL_SUB1));
+        // symbol_toggle_bb(oldtoggle);
+
+        if (get_time_ms() - timer_start > 3'000) {
+            curr_sym = math_symbols[symbol_index];
+            symbol_index = (symbol_index + 1) % ARR_SZ(math_symbols);
+            timer_start = get_time_ms();
+            DBG("symbol_index: %d, code: 0x%x, font: %d desc: %s",
+                    symbol_index, curr_sym.code, curr_sym.font, curr_sym.latex_name);
+        }
 
         bool true_val = true;
         ImGui::ShowMetricsWindow(&true_val);
