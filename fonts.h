@@ -6,7 +6,7 @@
 
 #include "imgui.h"
 
-enum : int {
+enum font_sub_e : int {
     FONT_NORMAL,
     FONT_BOLD,
     FONT_ITALIC,
@@ -17,10 +17,12 @@ enum : int {
     FONT_MATH_EX,
 };
 
-enum : int {
+enum font_lvl_e : int {
     FONT_LVL_SUB0,
     FONT_LVL_SUB1,
     FONT_LVL_SUB2,
+    FONT_LVL_SUB3,
+    FONT_LVL_SUB4,
 
     FONT_LVL_CNT,
 
@@ -40,9 +42,9 @@ The ratios will be 1, 0.5, 0.25 */
 /* Those symbols are the building blocks for all mathematics symbols, the difference is that those
 are allowed to intersect eachother and don't represent anything */
 struct symbol_t {
-    uint32_t code;      /* code of the symbol */
-    uint32_t font_lvl;  /* selects the size of the font */
-    uint32_t font_sub;  /* selects the respective font from font_paths */
+    uint32_t code;         /* code of the symbol */
+    font_lvl_e font_lvl;   /* selects the size of the font */
+    font_sub_e font_sub;  /* selects the respective font from font_paths */
 };
 
 struct symbol_sz_t {
@@ -58,5 +60,6 @@ symbol_sz_t symbol_get_sz(const symbol_t& s);
 ImFont *symbol_get_font(const symbol_t& s);
 void symbol_draw(ImVec2 pos, const symbol_t& s);
 bool symbol_toggle_bb(bool val);
+float symbol_get_lvl_mul(font_lvl_e lvl);
 
 #endif

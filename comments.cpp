@@ -15,8 +15,8 @@ symbol_t comment_special[128] = {};
 
 int comments_init() {
     for (uint8_t code = 0x20; code < 0x7F; code++) {
-        uint32_t font_sub = FONT_NORMAL;
-        uint32_t font_lvl = FONT_LVL_SUB2;
+        font_sub_e font_sub = FONT_NORMAL;
+        font_lvl_e font_lvl = FONT_LVL_SUB2;
 
         uint8_t _code = code;
         if (code == '<' ) { _code = 0x3C; font_sub = FONT_MATH; }

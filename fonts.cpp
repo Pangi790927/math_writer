@@ -57,7 +57,7 @@ static const char *font_paths[] = {
 };
 
 
-static float font_lvl_mul[] = { 1., 3./4., 9./16. };
+static float font_lvl_mul[] = { 1., 0.75, 0.6, 0.5, 0.4, 0.3 };
 static float font_sub_mul[] = { 1., 1., 1., 1., 1., 1., 2.5 };
 
 static std::vector<std::vector<ImFont*>> fonts(
@@ -137,4 +137,8 @@ int fonts_init() {
          }
     }
     return 0;
+}
+
+float symbol_get_lvl_mul(font_lvl_e lvl) {
+    return font_lvl_mul[lvl];
 }
