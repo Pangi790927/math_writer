@@ -108,8 +108,8 @@ mathe_bracket_t mathe_convert(mathe_bracket_sym_t msym, font_lvl_e font_lvl);
 
 /* TODO: matrix stuff */
 
-// inline bool mathe_draw_boxes = true;
-inline bool mathe_draw_boxes = false;
+inline bool mathe_draw_boxes = true;
+// inline bool mathe_draw_boxes = false;
 
 /* IMPLEMENTATION
 ================================================================================================= */
@@ -386,23 +386,26 @@ inline mathe_sym_t math_symbols[] = {
     { 246, 0x3E, FONT_MATH   , ">" },
 };
 
-#define MATHE_hash          (math_symbols[  2])
-#define MATHE_plus          (math_symbols[ 10])
-#define MATHE_comma         (math_symbols[ 11])
+#define MATHE_DISTANCER         4
+#define MATHE_DISTANCER_BIGO    2
 
-#define MATHE_equal         (math_symbols[ 27])
+#define MATHE_hash              (math_symbols[  2])
+#define MATHE_plus              (math_symbols[ 10])
+#define MATHE_comma             (math_symbols[ 11])
 
-#define MATHE_e             (math_symbols[ 65])
-#define MATHE_a             (math_symbols[ 61])
-#define MATHE_n             (math_symbols[ 74])
+#define MATHE_equal             (math_symbols[ 27])
 
-#define MATHE_minus         (math_symbols[181])
-#define MATHE_integral      (math_symbols[191])
-#define MATHE_sum           (math_symbols[192])
+#define MATHE_e                 (math_symbols[ 65])
+#define MATHE_a                 (math_symbols[ 61])
+#define MATHE_n                 (math_symbols[ 74])
 
-#define MATHE_hline_basic   (math_symbols[221])
-#define MATHE_hline_long    (math_symbols[222])
-#define MATHE_hline_above   (math_symbols[223])
+#define MATHE_minus             (math_symbols[181])
+#define MATHE_integral          (math_symbols[191])
+#define MATHE_sum               (math_symbols[192])
+
+#define MATHE_hline_basic       (math_symbols[221])
+#define MATHE_hline_long        (math_symbols[222])
+#define MATHE_hline_above       (math_symbols[223])
 
 
 inline mathe_bracket_sym_t mathe_brack_round = {
@@ -487,12 +490,14 @@ struct mathe_cmd_t {
 
 struct mathe_t {
     mathe_e type;
+    int anchor_id = -1;
     std::vector<mathe_cmd_t> cmds;
 
 /* TODO: maybe protect those? */
     std::vector<mathe_obj_t> objs;
     std::map<int, int> id_mapping;
     bool was_init = false;
+    float acnhor_y = 0;
     float max_x = 0, max_y = 0, min_x = 0, min_y = 0;
 };
 
@@ -552,6 +557,10 @@ inline int mathe_init(mathe_p m, std::vector<mathe_p> params) {
     }
     if (m->was_init) {
         DBG("Can't initialize the object twice");
+        return -1;
+    }
+    if (m->anchor_id < 0) {
+        DBG("Invalid anchor id: %d", m->anchor_id);
         return -1;
     }
     for (auto &cmd : m->cmds) {
@@ -683,6 +692,12 @@ inline int mathe_init(mathe_p m, std::vector<mathe_p> params) {
         }
     }
     mathe_recalc_minmax(m);
+    if (m->anchor_id >= m->objs.size()) {
+        DBG("Invalid anchor id: %d", m->anchor_id);
+        return -1;
+    }
+    m->acnhor_y = m->objs[m->anchor_id].off.y;
+    DBG("Anchor[%d]: %f", m->anchor_id, m->acnhor_y);
     m->was_init = true;
     return 0;
 }
@@ -697,7 +712,7 @@ inline int mathe_draw(ImVec2 pos, mathe_p m) {
     auto expr_tl = pos + ImVec2(0, -bb.h);
     auto expr_origin = expr_tl + ImVec2(-m->min_x, -m->min_y);
     for (auto &obj : m->objs) {
-        auto obj_center = expr_origin + obj.off;
+        auto obj_center = expr_origin + obj.off + ImVec2(0, m->acnhor_y);
         switch (obj.type) {
             case MATHE_OBJ_SUBEXPR: {
                 auto subexpr_bb = mathe_get_bb(obj.expr);
@@ -736,6 +751,7 @@ inline int mathe_draw(ImVec2 pos, mathe_p m) {
 inline mathe_p mathe_empty() {
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_EMPTY_BOX,
+        .anchor_id = 0,
         .cmds = {
             { .type = MATHE_EMPTY, .spawn_id = 0, .bb = {0, 0} },
         },
@@ -750,6 +766,7 @@ inline mathe_p mathe_empty() {
 inline mathe_p mathe_symbol(symbol_t sym) {
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_SYMBOL,
+        .anchor_id = 0,
         .cmds = {
             { .type = MATHE_SYM, .spawn_id = 0, .sym = sym },
         },
@@ -762,14 +779,20 @@ inline mathe_p mathe_symbol(symbol_t sym) {
 }
 
 inline mathe_p mathe_bigop(mathe_p right, mathe_p above, mathe_p bellow, symbol_t bigop) {
+    float distancer = MATHE_DISTANCER_BIGO * symbol_get_lvl_mul(bigop.font_lvl);
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_BIGOP,
+        .anchor_id = 0,
         .cmds = {
             { .type = MATHE_SYM, .spawn_id = 0, .sym = bigop },
+            { .type = MATHE_EMPTY, .spawn_id = 5, .bb = {distancer, 0}},
+            { .type = MATHE_EMPTY, .spawn_id = 6, .bb = {distancer, 0}},
             { .type = MATHE_EXPR, .param = 1, .spawn_id = 2 },
             { .type = MATHE_EXPR, .param = 2, .spawn_id = 3 },
-            { .type = MATHE_ABOVE, .src_id = 0, .dst_id = 2 },
-            { .type = MATHE_BELLOW, .src_id = 0, .dst_id = 3 },
+            { .type = MATHE_ABOVE, .src_id = 0, .dst_id = 5 },
+            { .type = MATHE_ABOVE, .src_id = 5, .dst_id = 2 },
+            { .type = MATHE_BELLOW, .src_id = 0, .dst_id = 6 },
+            { .type = MATHE_BELLOW, .src_id = 6, .dst_id = 3 },
             { .type = MATHE_MERGE, .spawn_id = 4 },
             { .type = MATHE_EXPR, .param = 0, .spawn_id = 1 },
             { .type = MATHE_RIGHT, .src_id = 4, .dst_id = 1 },
@@ -784,6 +807,8 @@ inline mathe_p mathe_bigop(mathe_p right, mathe_p above, mathe_p bellow, symbol_
 
 inline mathe_p mathe_frac(mathe_p above, mathe_p bellow, symbol_t divline) {
     /* get the bounding boxes of the elements */
+    float distancer = MATHE_DISTANCER * symbol_get_lvl_mul(divline.font_lvl);
+
     auto bb_above = mathe_get_bb(above);
     auto bb_below = mathe_get_bb(bellow);
     auto bb_sym = mathe_symbol_bb(divline);
@@ -809,26 +834,31 @@ inline mathe_p mathe_frac(mathe_p above, mathe_p bellow, symbol_t divline) {
         m->cmds.push_back({.type = MATHE_RIGHT, .src_id = i-1, .dst_id = i});
     }
     int center = cnt / 2;
+    m->anchor_id = center,
 
     /* add the two elements  */
     m->cmds.push_back({.type = MATHE_EXPR, .param = 0, .spawn_id = cnt  });
     m->cmds.push_back({.type = MATHE_EXPR, .param = 1, .spawn_id = cnt+1});
 
     /* put the two elements above and bellow the center line */
-    m->cmds.push_back({.type = MATHE_ABOVE, .src_id = center, .dst_id = cnt});
-    m->cmds.push_back({.type = MATHE_BELLOW, .src_id = center, .dst_id = cnt+1});
+    m->cmds.push_back({.type = MATHE_EMPTY, .spawn_id = cnt+2, .bb = {distancer, 0}});
+    m->cmds.push_back({.type = MATHE_EMPTY, .spawn_id = cnt+3, .bb = {distancer, 0}});
+    m->cmds.push_back({.type = MATHE_ABOVE, .src_id = center, .dst_id = cnt+2});
+    m->cmds.push_back({.type = MATHE_ABOVE, .src_id = cnt+2, .dst_id = cnt});
+    m->cmds.push_back({.type = MATHE_BELLOW, .src_id = center, .dst_id = cnt+3});
+    m->cmds.push_back({.type = MATHE_BELLOW, .src_id = cnt+3, .dst_id = cnt+1});
 
     /* place a filler for the element that is smaller, such that the center line will remain in the
     center */
-    mathe_cmd_e fill_type = MATHE_BELLOW;
-    int fill_id = cnt+1;
-    if (bb_above.h < bb_below.h) {
-        fill_id = cnt;
-        fill_type = MATHE_ABOVE;
-    }
-    float fill_sz = (std::max(bb_above.h, bb_below.h) - std::min(bb_above.h, bb_below.h));
-    m->cmds.push_back({.type = MATHE_EMPTY, .spawn_id = cnt+2, .bb = {fill_sz, 0}});
-    m->cmds.push_back({.type = fill_type, .src_id = fill_id, .dst_id = cnt+2});
+    // mathe_cmd_e fill_type = MATHE_BELLOW;
+    // int fill_id = cnt+1;
+    // if (bb_above.h < bb_below.h) {
+    //     fill_id = cnt;
+    //     fill_type = MATHE_ABOVE;
+    // }
+    // float fill_sz = (std::max(bb_above.h, bb_below.h) - std::min(bb_above.h, bb_below.h));
+    // m->cmds.push_back({.type = MATHE_EMPTY, .spawn_id = cnt+4, .bb = {fill_sz, 0}});
+    // m->cmds.push_back({.type = fill_type, .src_id = fill_id, .dst_id = cnt+4});
 
     if (mathe_init(m, {above, bellow}) < 0) {
         DBG("Failed to init object");
@@ -838,22 +868,15 @@ inline mathe_p mathe_frac(mathe_p above, mathe_p bellow, symbol_t divline) {
 }
 
 inline mathe_p mathe_supsub(mathe_p base, mathe_p sup, mathe_p sub) {
-    auto bb_sup = mathe_get_bb(sup);
-    auto bb_sub = mathe_get_bb(sub);
-    mathe_cmd_e fill_type = MATHE_BELLOW;
-    if (bb_sup.h < bb_sub.h)
-        fill_type = MATHE_ABOVE;
-    float fill_sz = (std::max(bb_sup.h, bb_sub.h) - std::min(bb_sub.h, bb_sup.h)) / 2;
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_SUPSUB,
+        .anchor_id = 0,
         .cmds = {
             { .type = MATHE_EXPR, .param = 0, .spawn_id = 0 },
             { .type = MATHE_EXPR, .param = 1, .spawn_id = 1 },
             { .type = MATHE_EXPR, .param = 2, .spawn_id = 2 },
-            { .type = MATHE_EMPTY, .spawn_id = 3, .bb = {fill_sz, 0} },
             { .type = MATHE_SUP, .src_id = 0, .dst_id = 1},
             { .type = MATHE_SUB, .src_id = 0, .dst_id = 2},
-            { .type = fill_type, .src_id = 0, .dst_id = 3},
         },
     });
     if (mathe_init(m, {base, sup, sub}) < 0) {
@@ -865,19 +888,15 @@ inline mathe_p mathe_supsub(mathe_p base, mathe_p sup, mathe_p sub) {
 
 inline mathe_p mathe_bracket(mathe_p expr, mathe_bracket_t bsym) {
     /* TODO: fix brackets to auto-resize */
-    const float distancer = 0;
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_BRACKET,
+        .anchor_id = 0,
         .cmds = {
             { .type = MATHE_EXPR, .param = 0, .spawn_id = 0 },
             { .type = MATHE_SYM, .spawn_id = 1, .sym = bsym.left[0] },
             { .type = MATHE_SYM, .spawn_id = 2, .sym = bsym.right[0] },
-            { .type = MATHE_EMPTY, .spawn_id = 3, .bb = {0, distancer} },
-            { .type = MATHE_EMPTY, .spawn_id = 4, .bb = {0, distancer} },
-            { .type = MATHE_LEFT, .src_id = 0, .dst_id = 3 },
-            { .type = MATHE_LEFT, .src_id = 3, .dst_id = 1 },
-            { .type = MATHE_RIGHT, .src_id = 0, .dst_id = 4 },
-            { .type = MATHE_RIGHT, .src_id = 4, .dst_id = 2 },
+            { .type = MATHE_LEFT, .src_id = 0, .dst_id = 1 },
+            { .type = MATHE_RIGHT, .src_id = 0, .dst_id = 2 },
         },
     });
     if (mathe_init(m, {expr}) < 0) {
@@ -888,9 +907,10 @@ inline mathe_p mathe_bracket(mathe_p expr, mathe_bracket_t bsym) {
 }
 
 inline mathe_p mathe_unarexpr(symbol_t op, mathe_p b) {
-    const float distancer = 3 * symbol_get_lvl_mul(op.font_lvl);
+    const float distancer = MATHE_DISTANCER * symbol_get_lvl_mul(op.font_lvl);
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_BRACKET,
+        .anchor_id = 0,
         .cmds = {
             { .type = MATHE_EXPR, .param = 0, .spawn_id = 0 },
             { .type = MATHE_SYM, .spawn_id = 1, .sym = op },
@@ -907,9 +927,10 @@ inline mathe_p mathe_unarexpr(symbol_t op, mathe_p b) {
 }
 
 inline mathe_p mathe_binexpr(mathe_p a, symbol_t op, mathe_p b) {
-    float distancer = 4 * symbol_get_lvl_mul(op.font_lvl);
+    float distancer = MATHE_DISTANCER * symbol_get_lvl_mul(op.font_lvl);
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_BRACKET,
+        .anchor_id = 2,
         .cmds = {
             { .type = MATHE_EXPR, .param = 0, .spawn_id = 0 },
             { .type = MATHE_EXPR, .param = 1, .spawn_id = 1 },
@@ -932,10 +953,13 @@ inline mathe_p mathe_binexpr(mathe_p a, symbol_t op, mathe_p b) {
 inline mathe_p mathe_merge_h(mathe_p l, mathe_p r) {
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_BRACKET,
+        .anchor_id = 2,
         .cmds = {
             { .type = MATHE_EXPR, .param = 0, .spawn_id = 0 },
             { .type = MATHE_EXPR, .param = 1, .spawn_id = 1 },
-            { .type = MATHE_RIGHT, .src_id = 0, .dst_id = 1 },
+            { .type = MATHE_EMPTY, .spawn_id = 2, .bb = {}},
+            { .type = MATHE_RIGHT, .src_id = 0, .dst_id = 2 },
+            { .type = MATHE_RIGHT, .src_id = 2, .dst_id = 1 },
         },
     });
     if (mathe_init(m, {l, r}) < 0) {
@@ -948,10 +972,13 @@ inline mathe_p mathe_merge_h(mathe_p l, mathe_p r) {
 inline mathe_p mathe_merge_v(mathe_p u, mathe_p d) {
     auto m = mathe_make(mathe_t {
         .type = MATHE_TYPE_BRACKET,
+        .anchor_id = 2,
         .cmds = {
             { .type = MATHE_EXPR, .param = 0, .spawn_id = 0 },
             { .type = MATHE_EXPR, .param = 1, .spawn_id = 1 },
-            { .type = MATHE_BELLOW, .src_id = 0, .dst_id = 1 },
+            { .type = MATHE_EMPTY, .spawn_id = 2, .bb = {}},
+            { .type = MATHE_BELLOW, .src_id = 0, .dst_id = 2 },
+            { .type = MATHE_BELLOW, .src_id = 2, .dst_id = 1 },
         },
     });
     if (mathe_init(m, {u, d}) < 0) {
