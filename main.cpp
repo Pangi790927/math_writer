@@ -17,6 +17,7 @@
     -> Add basic transformation as configurable maybe? (example: (a + b)^2 -> a^2 + 2ab + b^2)
  */
 
+
 #define KEY_TOGGLE(key)                                                                             \
 []{                                                                                                 \
     static bool key_state = false;                                                                  \

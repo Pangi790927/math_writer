@@ -5,7 +5,7 @@
 #include "debug.h"
 
 struct comment_text_t {
-    std::vector<symbol_t *> chars;    
+    std::vector<symbol_t *> chars;
 };
 
 symbol_t comment_normal[128] = {};
