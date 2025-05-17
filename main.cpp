@@ -73,6 +73,7 @@ int main(int argc, char const *argv[]) {
      */
 
     // auto curr_obj = frac2;
+    imgui_prepare_render();
     imgui_render(clear_color);
 
     auto timer_start = get_time_ms();
