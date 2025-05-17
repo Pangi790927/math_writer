@@ -1,13 +1,13 @@
-NAME      := a.out
-
 ifeq ($(OS),Windows_NT)
-	INCL_SYM  := -I
-	CXX 	  := g++-11
-	CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
+	ISYM      := /I
+	CXX       := cl
+	CXX_FLAGS := /EHsc /await:strict /std:c++20 /Zi /MD
+	LIBS	  := /link gdi32.lib glfw3.lib
 else
-	INCL_SYM  := -I
-	CXX 	  := g++-13
+	ISYM      := -I
+	CXX       := g++-13
 	CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
+	LIBS      := -lpthread -ldl -lglfw -lcurl -lglfw -lGL
 endif
 
 IMGUI     := ../imgui/
@@ -29,35 +29,19 @@ BACKEND_SRC += ${IMGUI}/backends/imgui_impl_opengl3.cpp
 
 INCLCUDES := ${ISYM}${UTILS} ${ISYM}${UTILS}/ap ${ISYM}${UTILS}/co ${ISYM}${UTILS}/generic ${ISYM}.
 INCLCUDES += ${ISYM}${IMGUI} ${ISYM}${IMGUI}/backends/ ${ISYM}${IMPLOT}
-LIBS      := -lpthread -ldl -lglfw -lcurl
-LIBS      += -lglfw -lGL
 
-SRCS      := $(wildcard ./*.cpp)
-SRCS      += $(wildcard ${UTILS}/*.cpp)
-SRCS      += ${IMGUI_SRC} ${BACKEND_SRC} ${IMPLOT_SRC}
-OBJS      := $(SRCS:.cpp=.o)
-DEPS      := $(SRCS:.cpp=.d)
+DEPS      := $(wildcard ./*.h)
+SRCS      += main.cpp ${IMGUI_SRC} ${BACKEND_SRC} ${IMPLOT_SRC}
 
-all: ${NAME}
-
-${NAME}: ${DEPS} ${OBJS}
-	${CXX} ${CXX_FLAGS} ${INCLCUDES} ${OBJS} ${LIBS} -o $@
-
-${DEPS}: makefile
-${OBJS}: makefile
-
-${DEPS}:%.d:%.cpp
-	${CXX} -c ${CXX_FLAGS} ${INCLCUDES} -MM $< -MF $@
-
-include ${DEPS}
-
-${OBJS}:%.o:%.cpp
-	${CXX} -c ${CXX_FLAGS} ${INCLCUDES} $< -o $@
+all:
+	${CXX} ${CXX_FLAGS} ${INCLCUDES} ${SRCS} ${LIBS}
 
 clean:
-	rm -f ${OBJS}
-	rm -f ${DEPS}
-	rm -f ${NAME}
+	rm -f *.o
+	rm -f *.obj
+	rm -f *.exe
+	rm -f *.ilk
+	rm -f *.pdb
 
 push:
 	-git add *

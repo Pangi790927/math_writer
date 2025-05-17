@@ -1,14 +1,22 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
+#define COLIB_OS_WINDOWS true
+#define COLIB_OS_LINUX false
 
-#include "imgui_helpers.h"
-#include "imgui_internal.h"
-#include "misc_utils.h"
+#include "colib.h"
 
-#include "fonts.h"
-#include "comments.h"
-#include "formulas.h"
-#include "defines.h"
-#include "time_utils.h"
+int main(int argc, char const *argv[]) {
+    return 0;
+}
+
+// #include "imgui_helpers.h"
+// #include "imgui_internal.h"
+// #include "misc_utils.h"
+
+// #include "fonts.h"
+// #include "comments.h"
+// #include "formulas.h"
+// #include "defines.h"
+// #include "time_utils.h"
 
 /* TODO:
     -> Comment text
@@ -17,7 +25,7 @@
     -> Add basic transformation as configurable maybe? (example: (a + b)^2 -> a^2 + 2ab + b^2)
  */
 
-
+/*
 #define KEY_TOGGLE(key)                                                                             \
 []{                                                                                                 \
     static bool key_state = false;                                                                  \
@@ -31,7 +39,7 @@
     }                                                                                               \
     return toggle_state;                                                                            \
 }()
-
+*/
 // static const char *codes[] = {
 //     "\x00","\x01","\x02","\x03","\x04","\x05","\x06","\x07","\x08","\x09","\x0A","\x0B","\x0C","\x0D","\x0E","\x0F",
 //     "\x10","\x11","\x12","\x13","\x14","\x15","\x16","\x17","\x18","\x19","\x1A","\x1B","\x1C","\x1D","\x1E","\x1F",
@@ -97,131 +105,131 @@
 //     "matrix_det",
 // };
 
-int main(int argc, char const *argv[]) {
+// int main(int argc, char const *argv[]) {
 
-    imgui_init();
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+//     imgui_init();
+//     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
-    ImGuiIO& io = ImGui::GetIO();
-    ImFont* font_default = io.Fonts->AddFontDefault();
+//     ImGuiIO& io = ImGui::GetIO();
+//     ImFont* font_default = io.Fonts->AddFontDefault();
     
-    ImFontConfig config;
-    config.MergeMode = true;
+//     ImFontConfig config;
+//     config.MergeMode = true;
 
 
-    ASSERT_FN(fonts_init());
-    ASSERT_FN(comments_init());
+//     ASSERT_FN(fonts_init());
+//     ASSERT_FN(comments_init());
 
-    font_lvl_e font0 = FONT_LVL_SUB0;
-    font_lvl_e font1 = FONT_LVL_SUB2;
-    font_lvl_e font2 = FONT_LVL_SUB4;
+//     font_lvl_e font0 = FONT_LVL_SUB0;
+//     font_lvl_e font1 = FONT_LVL_SUB2;
+//     font_lvl_e font2 = FONT_LVL_SUB4;
 
-    imgui_prepare_render();
-    auto empty = mathe_empty();
-    auto eset = mathe_symbol(mathe_convert(MATHE_hash, font2));
-    auto sym_e = mathe_symbol(mathe_convert(MATHE_e, font0));
-    auto sym_e1 = mathe_symbol(mathe_convert(MATHE_e, font1));
-    auto sym_a0 = mathe_symbol(mathe_convert(MATHE_a, font0));
-    auto sym_a1 = mathe_symbol(mathe_convert(MATHE_a, font1));
-    auto sym_a2 = mathe_symbol(mathe_convert(MATHE_a, font2));
-    auto sym_n1 = mathe_symbol(mathe_convert(MATHE_n, font2));
-    auto binar = mathe_binexpr(sym_e, mathe_convert(MATHE_plus, font0), sym_a0);
-    auto binar_1 = mathe_binexpr(sym_e1, mathe_convert(MATHE_plus, font1), sym_a1);
-    auto integ = mathe_bigop(sym_a0, sym_e1, binar_1, mathe_convert(MATHE_integral, font0));
-    auto unar = mathe_unarexpr(mathe_convert(MATHE_minus, font0), sym_e);
-    auto unar_1 = mathe_unarexpr(mathe_convert(MATHE_minus, font1), sym_e1);
-    auto n_eq_1 = mathe_binexpr(sym_n1, mathe_convert(MATHE_equal, font1), sym_e1);
-    auto sum = mathe_bigop(integ, unar_1, n_eq_1, mathe_convert(MATHE_sum, font0));
-    auto sym_exp = mathe_supsub(sym_e, sym_a1, empty);
-    auto binar2 = mathe_binexpr(binar, mathe_convert(MATHE_plus, font0), sum);
-    auto frac = mathe_frac(sym_exp, binar2, mathe_convert(MATHE_hline_basic, font0));
-    auto binar3 = mathe_binexpr(frac, mathe_convert(MATHE_minus, font0), sym_exp);
-    auto binar4 = mathe_binexpr(binar3, mathe_convert(MATHE_minus, font0), sym_e);
-    auto brack = mathe_bracket(binar3, mathe_convert(mathe_brack_square, font0));
-    auto frac2 = mathe_frac(sym_exp, binar4, mathe_convert(MATHE_hline_basic, font0));
+//     imgui_prepare_render();
+//     auto empty = mathe_empty();
+//     auto eset = mathe_symbol(mathe_convert(MATHE_hash, font2));
+//     auto sym_e = mathe_symbol(mathe_convert(MATHE_e, font0));
+//     auto sym_e1 = mathe_symbol(mathe_convert(MATHE_e, font1));
+//     auto sym_a0 = mathe_symbol(mathe_convert(MATHE_a, font0));
+//     auto sym_a1 = mathe_symbol(mathe_convert(MATHE_a, font1));
+//     auto sym_a2 = mathe_symbol(mathe_convert(MATHE_a, font2));
+//     auto sym_n1 = mathe_symbol(mathe_convert(MATHE_n, font2));
+//     auto binar = mathe_binexpr(sym_e, mathe_convert(MATHE_plus, font0), sym_a0);
+//     auto binar_1 = mathe_binexpr(sym_e1, mathe_convert(MATHE_plus, font1), sym_a1);
+//     auto integ = mathe_bigop(sym_a0, sym_e1, binar_1, mathe_convert(MATHE_integral, font0));
+//     auto unar = mathe_unarexpr(mathe_convert(MATHE_minus, font0), sym_e);
+//     auto unar_1 = mathe_unarexpr(mathe_convert(MATHE_minus, font1), sym_e1);
+//     auto n_eq_1 = mathe_binexpr(sym_n1, mathe_convert(MATHE_equal, font1), sym_e1);
+//     auto sum = mathe_bigop(integ, unar_1, n_eq_1, mathe_convert(MATHE_sum, font0));
+//     auto sym_exp = mathe_supsub(sym_e, sym_a1, empty);
+//     auto binar2 = mathe_binexpr(binar, mathe_convert(MATHE_plus, font0), sum);
+//     auto frac = mathe_frac(sym_exp, binar2, mathe_convert(MATHE_hline_basic, font0));
+//     auto binar3 = mathe_binexpr(frac, mathe_convert(MATHE_minus, font0), sym_exp);
+//     auto binar4 = mathe_binexpr(binar3, mathe_convert(MATHE_minus, font0), sym_e);
+//     auto brack = mathe_bracket(binar3, mathe_convert(mathe_brack_square, font0));
+//     auto frac2 = mathe_frac(sym_exp, binar4, mathe_convert(MATHE_hline_basic, font0));
 
-    /*      TODO: fix elements: */
-    /* DONE: add empty box above or bellow to make fraction centered at line center */
-    /* DONE: add empty box above or bellow to make supsub aligned with the base  */
-    /* TODO: fix the fact that the additional space is taken into account for next elements
-    (example fractions in fractions) */
+//     /*      TODO: fix elements: */
+//     /* DONE: add empty box above or bellow to make fraction centered at line center */
+//     /* DONE: add empty box above or bellow to make supsub aligned with the base  */
+//     /* TODO: fix the fact that the additional space is taken into account for next elements
+//     (example fractions in fractions) */
 
-    /* TODO: make brackets size adjustable, based on the element */
+//     /* TODO: make brackets size adjustable, based on the element */
 
-    /*      TODO: more elements: */
-    /* TODO: add abs and norm */
-    /* TODO: add matrix/matrix det */
-    /* TODO: add system of eq/ineq */
-    /* TODO: add square root (with bonus power) */
+//     /*      TODO: more elements: */
+//     /* TODO: add abs and norm */
+//     /* TODO: add matrix/matrix det */
+//     /* TODO: add system of eq/ineq */
+//     /* TODO: add square root (with bonus power) */
 
-    /*  TODO: continue the formula adder path:
-        - has to have a tree of elements that use those things to draw elements
-        - has to have a cursor (figure out how to navigate it)
-        - has to have a way to change stuff (move terms, etc.)
-        - has to have a way to configure what changes can be made (later)
-        - has to have a way to input new operands
-        - has to have a way to change between editing modes
-     */
+//     /*  TODO: continue the formula adder path:
+//         - has to have a tree of elements that use those things to draw elements
+//         - has to have a cursor (figure out how to navigate it)
+//         - has to have a way to change stuff (move terms, etc.)
+//         - has to have a way to configure what changes can be made (later)
+//         - has to have a way to input new operands
+//         - has to have a way to change between editing modes
+//      */
 
-    auto curr_obj = frac2;
-    imgui_render(clear_color);
+//     auto curr_obj = frac2;
+//     imgui_render(clear_color);
 
-    auto timer_start = get_time_ms();
-    int symbol_index = 190;
-    auto curr_sym = math_symbols[symbol_index];
+//     auto timer_start = get_time_ms();
+//     int symbol_index = 190;
+//     auto curr_sym = math_symbols[symbol_index];
 
-    while (!glfwWindowShouldClose(imgui_window)) {
-        glfwPollEvents();
-        if (glfwGetKey(imgui_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(imgui_window, GL_TRUE);
-            continue ;
-        }
+//     while (!glfwWindowShouldClose(imgui_window)) {
+//         glfwPollEvents();
+//         if (glfwGetKey(imgui_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+//             glfwSetWindowShouldClose(imgui_window, GL_TRUE);
+//             continue ;
+//         }
 
-        imgui_prepare_render();
+//         imgui_prepare_render();
 
-        auto main_flags = 
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
-        auto *io = &ImGui::GetIO();
-        ImGui::SetNextWindowSize(ImVec2(io->DisplaySize.x, io->DisplaySize.y));
-        ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::GetStyle().WindowRounding = 0.0f;
+//         auto main_flags = 
+//                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+//         auto *io = &ImGui::GetIO();
+//         ImGui::SetNextWindowSize(ImVec2(io->DisplaySize.x, io->DisplaySize.y));
+//         ImGui::SetNextWindowPos(ImVec2(0, 0));
+//         ImGui::GetStyle().WindowRounding = 0.0f;
 
-        ImGui::Begin("Data aquisition", NULL, main_flags);
+//         ImGui::Begin("Data aquisition", NULL, main_flags);
 
-        // ImGui::Text("Press R to hide/unhide the boxes");
+//         // ImGui::Text("Press R to hide/unhide the boxes");
 
-        ASSERT_FN(comment_text());
+//         ASSERT_FN(comment_text());
 
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddLine(ImVec2(0,0), ImVec2(400, 600), 0xff'00ffff, 1);
+//         ImDrawList* draw_list = ImGui::GetWindowDrawList();
+//         draw_list->AddLine(ImVec2(0,0), ImVec2(400, 600), 0xff'00ffff, 1);
 
-        ASSERT_FN(mathe_draw(ImVec2(400, 600), curr_obj));
+//         ASSERT_FN(mathe_draw(ImVec2(400, 600), curr_obj));
 
-        draw_list->AddLine(ImVec2(0,0), ImVec2(100, 100), 0xff'00ffff, 1);
+//         draw_list->AddLine(ImVec2(0,0), ImVec2(100, 100), 0xff'00ffff, 1);
         
-        // bool oldtoggle = symbol_toggle_bb(true);
-        symbol_draw(ImVec2(100, 100), mathe_convert(curr_sym, FONT_LVL_SUB1));
-        // symbol_toggle_bb(oldtoggle);
+//         // bool oldtoggle = symbol_toggle_bb(true);
+//         symbol_draw(ImVec2(100, 100), mathe_convert(curr_sym, FONT_LVL_SUB1));
+//         // symbol_toggle_bb(oldtoggle);
 
-        if (get_time_ms() - timer_start > 3'000) {
-            curr_sym = math_symbols[symbol_index];
-            symbol_index = (symbol_index + 1) % ARR_SZ(math_symbols);
-            timer_start = get_time_ms();
-            DBG("symbol_index: %d, code: 0x%x, font: %d desc: %s",
-                    symbol_index, curr_sym.code, curr_sym.font, curr_sym.latex_name);
-        }
+//         if (get_time_ms() - timer_start > 3'000) {
+//             curr_sym = math_symbols[symbol_index];
+//             symbol_index = (symbol_index + 1) % ARR_SZ(math_symbols);
+//             timer_start = get_time_ms();
+//             DBG("symbol_index: %d, code: 0x%x, font: %d desc: %s",
+//                     symbol_index, curr_sym.code, curr_sym.font, curr_sym.latex_name);
+//         }
 
-        bool true_val = true;
-        ImGui::ShowMetricsWindow(&true_val);
+//         bool true_val = true;
+//         ImGui::ShowMetricsWindow(&true_val);
 
-        ImGui::End();
+//         ImGui::End();
 
-        /* Add imgui stuff here */
-        imgui_render(clear_color);
-    }
-    imgui_uninit();
-    return 0;
-}
+//         /* Add imgui stuff here */
+//         imgui_render(clear_color);
+//     }
+//     imgui_uninit();
+//     return 0;
+// }
 
 
 // This is fine as a text writer, cand  do:.
