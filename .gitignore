@@ -1,4 +1,8 @@
-a.out
+*.out
 *.o
 *.d
 *.log
+*.o
+*.ilk
+*.i
+*.pdb

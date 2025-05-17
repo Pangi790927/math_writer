@@ -1,7 +1,18 @@
 NAME      := a.out
 
-IMGUI     := ./imgui/
-IMPLOT    := ./implot/
+ifeq ($(OS),Windows_NT)
+	INCL_SYM  := -I
+	CXX 	  := g++-11
+	CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
+else
+	INCL_SYM  := -I
+	CXX 	  := g++-13
+	CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
+endif
+
+IMGUI     := ../imgui/
+IMPLOT    := ../implot/
+UTILS     := ../utils/
 
 IMGUI_SRC := ${IMGUI}/imgui.cpp
 IMGUI_SRC += ${IMGUI}/imgui_draw.cpp
@@ -16,10 +27,8 @@ IMPLOT_SRC += ${IMPLOT}/implot_items.cpp
 BACKEND_SRC := ${IMGUI}/backends/imgui_impl_glfw.cpp
 BACKEND_SRC += ${IMGUI}/backends/imgui_impl_opengl3.cpp
 
-
-UTILS     := ./utils/
-INCLCUDES := -I${UTILS} -I${UTILS}/ap -I${UTILS}/co -I${UTILS}/generic -I.
-INCLCUDES += -I${IMGUI} -I${IMGUI}/backends/ -I${IMPLOT}
+INCLCUDES := ${ISYM}${UTILS} ${ISYM}${UTILS}/ap ${ISYM}${UTILS}/co ${ISYM}${UTILS}/generic ${ISYM}.
+INCLCUDES += ${ISYM}${IMGUI} ${ISYM}${IMGUI}/backends/ ${ISYM}${IMPLOT}
 LIBS      := -lpthread -ldl -lglfw -lcurl
 LIBS      += -lglfw -lGL
 
@@ -28,9 +37,6 @@ SRCS      += $(wildcard ${UTILS}/*.cpp)
 SRCS      += ${IMGUI_SRC} ${BACKEND_SRC} ${IMPLOT_SRC}
 OBJS      := $(SRCS:.cpp=.o)
 DEPS      := $(SRCS:.cpp=.d)
-CXX 	  := g++-11
-CXX_FLAGS := -std=c++2a -g -export-dynamic
-CXX_FLAGS += -Wno-format-security
 
 all: ${NAME}
 
