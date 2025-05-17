@@ -2,7 +2,7 @@ ifeq ($(OS),Windows_NT)
 	ISYM      := /I
 	CXX       := cl
 	CXX_FLAGS := /EHsc /await:strict /std:c++20 /Zi /MD
-	LIBS	  := /link gdi32.lib glfw3.lib
+	LIBS	  := /link gdi32.lib glfw3.lib opengl32.lib
 else
 	ISYM      := -I
 	CXX       := g++-13

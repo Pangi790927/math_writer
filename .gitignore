@@ -6,3 +6,5 @@
 *.ilk
 *.i
 *.pdb
+*.obj
+*.exe
