@@ -5,6 +5,7 @@
 #include <map>
 #include <vector>
 #include <math.h>
+#include <algorithm>
 
 #include "fonts.h"
 #include "misc_utils.h"
@@ -112,7 +113,8 @@ inline bool mathe_draw_boxes = true;
 // inline bool mathe_draw_boxes = false;
 
 /* IMPLEMENTATION
-================================================================================================= */
+ * =================================================================================================
+ */
 
 inline mathe_sym_t math_symbols[] = {
     {   0, 0x21, FONT_NORMAL , "!" }, /* exclamation mark */
@@ -628,6 +630,12 @@ inline int mathe_init(mathe_p m, std::vector<mathe_p> params) {
                 m->id_mapping[id] = m->objs.size() - 1;
             } break;
             case MATHE_ABOVE: {
+                // if (intptr_t(mathe_check_movcmd(m, cmd)) < 0) {
+                //     DBG("[SYS] " "FAILED: " "mathe_check_movcmd(m, cmd)" "[err: %s [%s], code: %d]",, strerror(errno), errnoname(errno), errno)
+
+                //     return -1;
+                // }
+
                 ASSERT_FN(mathe_check_movcmd(m, cmd));
 
                 auto &src = m->objs[m->id_mapping[cmd.src_id]];
