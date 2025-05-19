@@ -103,8 +103,8 @@ int main(int argc, char const *argv[]) {
 
         ImGui::Text("Press R to hide/unhide the boxes");
 
-        ASSERT_FN(comment_text());
         ASSERT_FN(content_draw());
+        ASSERT_FN(comment_text());
 
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         draw_list->AddLine(ImVec2(0,0), ImVec2(400, 600), 0xff'00ffff, 1);

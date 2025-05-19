@@ -2,6 +2,7 @@
 #define COMMENTS_H
 
 #include "fonts.h"
+#include "chars.h"
 #include "debug.h"
 
 inline int comments_init();
