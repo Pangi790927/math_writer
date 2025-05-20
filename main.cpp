@@ -11,6 +11,23 @@
 #include "comments.h"
 #include "content.h"
 
+/* TODO:
+ * =================================================================================================
+    - !!! think if this thing can be reordered to use coroutines or the c++ coroutine stuff
+    - Content menu, meaning, the main way we split information:
+        - Click to select the box (when you click outside the box you select another box)
+        - Have them boxes connect on the left
+        - Have the input redirected from content inwards
+    - Comments (make them better):
+        - selectable text
+        - copy/paste
+    - Saves
+    - Boxes with callbacks in mathe and to redefine mathe (mathe, mathf, mathv - expression, formula/fucntion, var?)
+    - Check out all the comments bellow
+    - Figure out a fast select menu (some sort of circular menu?)
+    - Keybinds
+ */
+
 int main(int argc, char const *argv[]) {
     imgui_init();
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
