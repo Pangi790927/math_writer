@@ -1,7 +1,6 @@
 #ifndef COMMENTS_H
 #define COMMENTS_H
 
-#include "fonts.h"
 #include "chars.h"
 #include "debug.h"
 
@@ -13,44 +12,44 @@ inline int comment_text();
  */
 
 struct comment_text_t {
-    std::vector<symbol_t *> chars;
+    std::vector<char_t *> chars;
 };
 
-inline symbol_t comment_normal[128] = {};
-inline symbol_t comment_italic[128] = {};
-inline symbol_t comment_bold[128] = {};
-inline symbol_t comment_special[128] = {};
+inline char_t comment_normal[128] = {};
+inline char_t comment_italic[128] = {};
+inline char_t comment_bold[128] = {};
+inline char_t comment_special[128] = {};
 
 inline int comments_init() {
     for (uint8_t code = 0x20; code < 0x7F; code++) {
-        font_sub_e font_sub = FONT_NORMAL;
-        font_lvl_e font_lvl = FONT_LVL_SUB2;
+        char_font_num_e fnum = FONT_NORMAL;
+        char_font_lvl_e flvl = FONT_LVL_SUB2;
 
-        uint8_t _code = code;
-        if (code == '<' ) { _code = 0x3C; font_sub = FONT_MATH; }
-        if (code == '>' ) { _code = 0x3E; font_sub = FONT_MATH; }
-        if (code == '\\') { _code = 0x6E; font_sub = FONT_SYMBOLS; }
-        if (code == '{' ) { _code = 0x66; font_sub = FONT_SYMBOLS; }
-        if (code == '}' ) { _code = 0x67; font_sub = FONT_SYMBOLS; }
-        if (code == '_' ) { _code = 0x5F; font_sub = FONT_MONO; }
-        if (code == '|' ) { _code = 0x6A; font_sub = FONT_SYMBOLS; }
-        if (code == '`' ) { _code = 0xB5; font_sub = FONT_NORMAL; }
+        uint8_t _fcod = code;
+        if (code == '<' ) { _fcod = 0x3C; fnum = FONT_MATH; }
+        if (code == '>' ) { _fcod = 0x3E; fnum = FONT_MATH; }
+        if (code == '\\') { _fcod = 0x6E; fnum = FONT_SYMBOLS; }
+        if (code == '{' ) { _fcod = 0x66; fnum = FONT_SYMBOLS; }
+        if (code == '}' ) { _fcod = 0x67; fnum = FONT_SYMBOLS; }
+        if (code == '_' ) { _fcod = 0x5F; fnum = FONT_MONO; }
+        if (code == '|' ) { _fcod = 0x6A; fnum = FONT_SYMBOLS; }
+        if (code == '`' ) { _fcod = 0xB5; fnum = FONT_NORMAL; }
 
-        comment_normal[code] = symbol_t{ .code = _code, .font_lvl = font_lvl, .font_sub = font_sub };
+        comment_normal[code] = char_t{ .fcod = _fcod, .fnum = fnum, .flvl = flvl };
         comment_bold[code] = comment_normal[code];
-        if (comment_bold[code].font_sub == FONT_NORMAL)
-            comment_bold[code].font_sub = FONT_BOLD;
+        if (comment_bold[code].fnum == FONT_NORMAL)
+            comment_bold[code].fnum = FONT_BOLD;
         comment_italic[code] = comment_normal[code];
-        if (comment_italic[code].font_sub == FONT_NORMAL)
-            comment_italic[code].font_sub = FONT_ITALIC;
+        if (comment_italic[code].fnum == FONT_NORMAL)
+            comment_italic[code].fnum = FONT_ITALIC;
     }
-    comment_special['\n'] = symbol_t{ .code = '\n', .font_lvl = FONT_LVL_SPECIAL };
+    comment_special['\n'] = char_t{ .fcod = '\n', .flvl = FONT_LVL_SPECIAL };
     return 0;
 }
 
 inline void draw_blinker(ImVec2 pos, float sz) {
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    draw_list->AddLine(ImVec2(pos), pos + ImVec2(0, -sz), 0xff'00ffff, 1);
+    draw_list->AddLine(pos, pos + ImVec2(0, -sz), 0xff'00ffff, 2);
 }
 
 inline int comment_text() {
@@ -198,31 +197,33 @@ inline int comment_text() {
         }
     }
     
-    ImVec2 _pos = ImVec2(0, 30);
+    ImVec2 _pos = ImVec2(10, 30);
     ImVec2 pos = _pos;
     ImVec2 win_end = ImGui::GetContentRegionMax();
-    float min_space = symbol_get_font(comment_bold['a'])->FontSize;
-    for (auto psym : text.chars) {
-        if (psym->font_lvl == FONT_LVL_SPECIAL)
-            continue;
-        min_space = std::max(min_space, symbol_get_font(*psym)->FontSize);
-    }
-    pos.y += min_space;
+
+
+    auto g = gchar('g');
+    auto G = gchar('G');
+    g.flvl = FONT_LVL_SUB2;
+    G.flvl = FONT_LVL_SUB2;
+    auto [a1, b1] = char_get_draw_box(ImVec2(0, 0), G);
+    auto [a2, b2] = char_get_draw_box(ImVec2(0, 0), g);
+    float min_space = b2.y - a1.y;
 
     ImVec2 blinker_pos = pos + ImVec2(2, 0);
     for (int i = 0; i < text.chars.size(); i++) {
         auto psym = text.chars[i];
-        if (psym->font_lvl == FONT_LVL_SPECIAL) {
+        if (psym->flvl == FONT_LVL_SPECIAL) {
             pos.x = _pos.x;
             pos.y += min_space;
         }
-        else if (pos.x + symbol_get_sz(*psym).adv > win_end.x) {
+        else if (pos.x + char_get_sz(*psym).adv > win_end.x) {
             pos.x = _pos.x;
             pos.y += min_space;
         }
         else {
-            symbol_draw(ImVec2(pos.x, pos.y), *psym);
-            pos.x += symbol_get_sz(*psym).adv;
+            char_draw(pos - ImVec2(0, b1.y), *psym);
+            pos.x += char_get_sz(*psym).adv;
         }
         if (i+1 == cursor_pos)
             blinker_pos = pos + ImVec2(2, 0);
