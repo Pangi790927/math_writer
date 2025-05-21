@@ -146,8 +146,12 @@ inline bool char_toggle_bb(bool val) {
 inline char_sz_t char_get_sz(const char_t& c) {
     auto font = fonts[c.flvl][c.fnum];
     auto glyph = font->FindGlyphNoFallback(c.fcod);
-    if (!glyph)
+    if (!glyph) {
+        DBG("oops: flvl: %d fnum: %d fcod: %d [%c]",
+                (int)c.flvl, (int)c.fnum, (int)c.fcod, (char)c.fcod);
         return {};
+        // throw "oops";
+    }
 
     return char_sz_t{
         .adv = glyph->AdvanceX,
@@ -223,7 +227,7 @@ inline char_desc_t _internal_chars[] = {
     {.ch = {.acod='$', .fcod=0x24, .fnum=FONT_NORMAL , .ncod=  3}, .desc="$" },               /* dollar sign */
     {.ch = {.acod='%', .fcod=0x25, .fnum=FONT_NORMAL , .ncod=  4}, .desc="%" },               /* percent sign */
     {.ch = {.acod='&', .fcod=0x26, .fnum=FONT_NORMAL , .ncod=  5}, .desc="&" },               /* ampersand */
-    {.ch = {.acod='\\',.fcod=0x27, .fnum=FONT_NORMAL , .ncod=  6}, .desc="'" },               /* single quote */
+    {.ch = {.acod='\'',.fcod=0x27, .fnum=FONT_NORMAL , .ncod=  6}, .desc="'" },               /* single quote */
     {.ch = {.acod='(', .fcod=0x28, .fnum=FONT_NORMAL , .ncod=  7}, .desc="(" },               /* left parenthesis */
     {.ch = {.acod=')', .fcod=0x29, .fnum=FONT_NORMAL , .ncod=  8}, .desc=")" },               /* right parenthesis */
     {.ch = {.acod='*', .fcod=0x2A, .fnum=FONT_NORMAL , .ncod=  9}, .desc="*" },               /* asterisk */
@@ -464,6 +468,7 @@ inline char_desc_t _internal_chars[] = {
     {.ch = {.acod='\0',.fcod=0x3D, .fnum=FONT_MATH_EX, .ncod=244}, .desc="\\_brack_rc_curly" },
     {.ch = {.acod='<', .fcod=0x3C, .fnum=FONT_MATH   , .ncod=245}, .desc="<" },
     {.ch = {.acod='>', .fcod=0x3E, .fnum=FONT_MATH   , .ncod=246}, .desc=">" },
+    {.ch = {.acod=' ', .fcod=0x20, .fnum=FONT_NORMAL , .ncod=247}, .desc=" " },
 };
 
 inline char_desc_t *get_char_desc(int num) {
@@ -488,6 +493,7 @@ inline char_t gascii(unsigned char c) {
         for (int i = 0; i < chars_cnt(); i++) {
             ascii2char[_internal_chars[i].ch.acod] = i;
         }
+        ascii2char[(unsigned char)'?'] = 28;
     }
     if (!HAS(ascii2char, c)) {
         return char_t{.acod=c, .fcod=c, .fnum=FONT_NORMAL, .flvl=FONT_LVL_SPECIAL, .ncod=255};

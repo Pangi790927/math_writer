@@ -88,7 +88,7 @@ inline void content_update() {
         if (cb.is_active && cb.obj)
             cb.obj->update();
 
-        float win_max_w = win_end.x - WIN_LEFT_OFFSET;
+        float win_max_w = win_end.x - WIN_LEFT_OFFSET - CBOX_INCR;
         if (cb.obj) {
             auto [w, h] = cb.obj->draw_area(win_max_w, CBOX_INF);
             cb.width = w;

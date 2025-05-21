@@ -201,7 +201,7 @@ int main(int argc, char const *argv[]) {
             auto char_sz = char_get_sz(curr_sym);
             DBG("idx: %d, fcod: 0x%x, fnum: %d "
                 "sz:[adv: %f, asc: %f, desc: %f, bl:(%f, %f), tr:(%f, %f)] description: %s",
-                    symbol_index, curr_sym.fcod, curr_sym.fnum,
+                    symbol_index, (int)curr_sym.fcod, (int)curr_sym.fnum,
                     char_sz.adv, char_sz.asc, char_sz.desc,
                     char_sz.bl.x, char_sz.bl.y, char_sz.tr.x, char_sz.tr.y,
                     get_char_desc(curr_sym.ncod)->desc);

@@ -16,32 +16,26 @@ inline comment_box_p comments_create();
  * =================================================================================================
  */
 
-inline float comments_line_height = 0;
-inline float comments_pos_increment = 0;
-
 inline char_t comment_normal[128] = {};
 inline char_t comment_italic[128] = {};
 inline char_t comment_bold[128] = {};
 inline char_t comment_special[128] = {};
 
 inline int comments_init() {
-    auto G = gascii('G');
-    auto g = gascii('g');
-    g.flvl = FONT_LVL_SUB2;
-    G.flvl = FONT_LVL_SUB2;
-    auto [G1, G2] = char_get_draw_box(ImVec2(0, 0), G);
-    auto [g1, g2] = char_get_draw_box(ImVec2(0, 0), g);
-    comments_line_height = g2.y - G1.y;
-    comments_pos_increment = G1.y;
-
     for (uint8_t code = 0x20; code < 0x7F; code++) {
         char_font_num_e fnum = FONT_NORMAL;
         char_font_lvl_e flvl = FONT_LVL_SUB2;
 
         uint8_t _fcod = code;
         comment_normal[code] = gascii(code);
+        if (comment_normal[code].fnum == FONT_MATH)
+            comment_normal[code].fnum = FONT_NORMAL;
         if (comment_normal[code].flvl != FONT_LVL_SPECIAL)
             comment_normal[code].flvl = flvl;
+        else {
+            DBG("Failed to get code: %d [%c]", code, code);
+            return -1;
+        }
 
         comment_bold[code] = comment_normal[code];
         if (comment_bold[code].fnum == FONT_NORMAL)
@@ -51,6 +45,7 @@ inline int comments_init() {
         if (comment_italic[code].fnum == FONT_NORMAL)
             comment_italic[code].fnum = FONT_ITALIC;
     }
+    comment_special['\n'] = char_t{.acod='\n', .flvl=FONT_LVL_SPECIAL};
     return 0;
 }
 
@@ -65,6 +60,9 @@ struct comment_box_t : public cbox_i {
     int cursor_pos = 0;
     bool is_italic = false;
     bool is_bold = false;
+    char_font_lvl_e flvl = FONT_LVL_SUB2;
+    float comments_line_height[FONT_LVL_CNT] = {0.0f};
+    float comments_pos_increment[FONT_LVL_CNT] = {0.0f};
 
     void update() override {
         auto get_charset = [this]() -> char_t *{
@@ -76,6 +74,8 @@ struct comment_box_t : public cbox_i {
         };
         /* TODO: add some indicators for italic, bold, etc */
         auto insert_char = [this](unsigned int c, char_t *charset) {
+            if (charset[c].flvl != FONT_LVL_SPECIAL)
+                charset[c].flvl = flvl;
             chars.insert(chars.begin() + cursor_pos, charset[c]);
             cursor_pos++;
         };
@@ -192,11 +192,27 @@ struct comment_box_t : public cbox_i {
                 is_italic = true;
             is_bold = false;
         }
+        if (is_ctrl && ImGui::IsKeyPressed(ImGuiKey_Minus)) {
+            switch (flvl) {
+                case FONT_LVL_SUB0: flvl = FONT_LVL_SUB1; break;
+                case FONT_LVL_SUB1: flvl = FONT_LVL_SUB2; break;
+                case FONT_LVL_SUB2: flvl = FONT_LVL_SUB3; break;
+                case FONT_LVL_SUB3: flvl = FONT_LVL_SUB4; break;
+            }
+        }
+        if (is_ctrl && ImGui::IsKeyPressed(ImGuiKey_Equal)) {
+            switch (flvl) {
+                case FONT_LVL_SUB1: flvl = FONT_LVL_SUB0; break;
+                case FONT_LVL_SUB2: flvl = FONT_LVL_SUB1; break;
+                case FONT_LVL_SUB3: flvl = FONT_LVL_SUB2; break;
+                case FONT_LVL_SUB4: flvl = FONT_LVL_SUB3; break;
+            }
+        }
         if (is_ctrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
             DBG("ascii_text: %s", ascii().c_str());
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
-            insert_char('\n', comment_normal);
+            insert_char('\n', comment_special);
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
             for (int i = 0; i < 4; i++) {
@@ -206,18 +222,19 @@ struct comment_box_t : public cbox_i {
     }
 
     std::pair<float, float> draw_area(float width_limit, float height_limit) override {
+        init_line_vars();
         ImVec2 off = ImVec2(0, 0);
         this->line_count = 0;
         this->max_width = 0;
         for (int i = 0; i < chars.size(); i++) {
             if (chars[i].flvl == FONT_LVL_SPECIAL) {
                 off.x = 0;
-                off.y += comments_line_height;
+                off.y += comments_line_height[flvl];
                 this->line_count++;
             }
             else if (off.x + char_get_sz(chars[i]).adv > width_limit) {
                 off.x = 0;
-                off.y += comments_line_height;
+                off.y += comments_line_height[flvl];
                 this->line_count++;
             }
             else {
@@ -226,29 +243,30 @@ struct comment_box_t : public cbox_i {
             }
         }
 
-        return {this->line_count * comments_line_height, this->max_width};
+        return {this->max_width, off.y + comments_line_height[flvl]};
     }
 
     void draw(ImVec2 pos, float width_limit, float height_limit) override {
         ImVec2 off = ImVec2(0, 0);
-        ImVec2 blinker_pos = pos + off + ImVec2(2, 0);
+        ImVec2 blinker_pos = pos + off + ImVec2(2, comments_line_height[flvl]);
         for (int i = 0; i < chars.size(); i++) {
             if (chars[i].flvl == FONT_LVL_SPECIAL) {
                 off.x = 0;
-                off.y += comments_line_height;
+                off.y += comments_line_height[flvl];
             }
             else if (off.x + char_get_sz(chars[i]).adv > width_limit) {
                 off.x = 0;
-                off.y += comments_line_height;
+                off.y += comments_line_height[flvl];
             }
             else {
-                char_draw(pos - ImVec2(0, comments_pos_increment), chars[i]);
+                chars[i].flvl = flvl;
+                char_draw(pos + off - ImVec2(0, comments_pos_increment[flvl]), chars[i]);
                 off.x += char_get_sz(chars[i]).adv;
             }
             if (i+1 == cursor_pos)
-                blinker_pos = pos + ImVec2(2, 0);
+                blinker_pos = pos + off + ImVec2(2, comments_line_height[flvl]);
         }
-        draw_blinker(blinker_pos, comments_pos_increment);
+        draw_blinker(blinker_pos, comments_line_height[flvl]);
     }
 
     inline void draw_blinker(ImVec2 pos, float sz) {
@@ -262,6 +280,20 @@ struct comment_box_t : public cbox_i {
         for (int i = 0; i < chars.size(); i++)
             str[i] = chars[i].acod ? chars[i].acod : '?';
         return str;
+    }
+
+private:
+    inline void init_line_vars() {
+        for (int i = 0; i < FONT_LVL_CNT; i++) {
+            auto G = gascii('G');
+            auto g = gascii('g');
+            G.flvl = i;
+            g.flvl = i;
+            auto [G1, G2] = char_get_draw_box(ImVec2(0, 0), G);
+            auto [g1, g2] = char_get_draw_box(ImVec2(0, 0), g);
+            comments_line_height[i] = g2.y - G1.y;
+            comments_pos_increment[i] = G1.y;
+        }
     }
 };
 
