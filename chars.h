@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <unordered_map>
+
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -63,7 +65,10 @@ struct char_sz_t {
     ImVec2 bl, tr;      /* bottom left and top right bounding box of the symbol */
 };
 
+inline int chars_init();
 inline char_t gchar(int num);
+inline char_t gascii(unsigned char c);
+inline int chars_cnt();
 inline char_desc_t *get_char_desc(int num);
 
 inline char_sz_t char_get_sz(const char_t& c);
@@ -185,13 +190,10 @@ inline void char_draw(ImVec2 pos, const char_t& c) {
     
     font->RenderChar(draw_list, font->FontSize, pos, 0xff'eeeeee, c.fcod);
     if (draw_bb_chars) {
-        // DBG("bl.x %f, bl.y %f tr.x %f, tr.y %f", bl.x, bl.y, tr.x, tr.y);
         draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), 0xff'00ffff, 1);
         draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), 0xff'00ffff, 1);
         draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), 0xff'00ffff, 1);
         draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), 0xff'00ffff, 1);
-        // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.asc), ImVec2(tr.x, bl.y + ssz.asc), 0xff'ff0000, 1);
-        // draw_list->AddLine(ImVec2(bl.x, bl.y + ssz.desc), ImVec2(tr.x, bl.y + ssz.desc), 0xff'00ff00, 1);
     }
     ImGui::PopFont();
 }
@@ -214,7 +216,7 @@ inline float char_get_lvl_mul(char_font_lvl_e lvl) {
     return font_lvl_mul[lvl];
 }
 
-inline char_desc_t chars[] = {
+inline char_desc_t _internal_chars[] = {
     {.ch = {.acod='!', .fcod=0x21, .fnum=FONT_NORMAL , .ncod=  0}, .desc="!" },               /* exclamation mark */
     {.ch = {.acod='"', .fcod=0x22, .fnum=FONT_NORMAL , .ncod=  1}, .desc="\""},               /* double quote */
     {.ch = {.acod='#', .fcod=0x23, .fnum=FONT_NORMAL , .ncod=  2}, .desc="#" },               /* hash */
@@ -465,15 +467,32 @@ inline char_desc_t chars[] = {
 };
 
 inline char_desc_t *get_char_desc(int num) {
-    if (num < 0 || num > (sizeof(chars) / sizeof(chars[0])))
+    if (num < 0 || num > chars_cnt())
         return nullptr;
-    return &chars[num];
+    return &_internal_chars[num];
 }
 
 inline char_t gchar(int num) {
-    if (num < 0 || num > (sizeof(chars) / sizeof(chars[0])))
-        return chars['?'].ch;
-    return chars[num].ch;
+    if (num < 0 || num > chars_cnt())
+        return _internal_chars['?'].ch;
+    return _internal_chars[num].ch;
+}
+
+inline int chars_cnt() {
+    return sizeof(_internal_chars) / sizeof(_internal_chars[0]);
+}
+
+inline char_t gascii(unsigned char c) {
+    static std::unordered_map<char, int> ascii2char;
+    if (!ascii2char.size()) {
+        for (int i = 0; i < chars_cnt(); i++) {
+            ascii2char[_internal_chars[i].ch.acod] = i;
+        }
+    }
+    if (!HAS(ascii2char, c)) {
+        return char_t{.acod=c, .fcod=c, .fnum=FONT_NORMAL, .flvl=FONT_LVL_SPECIAL, .ncod=255};
+    }
+    return _internal_chars[ascii2char[c]].ch;
 }
 
 

@@ -212,6 +212,8 @@ struct mathd_t {
     bool was_init = false;
     float acnhor_y = 0;
     float max_x = 0, max_y = 0, min_x = 0, min_y = 0;
+    std::function<void(mathd_p, ImVec2)> cbk;
+    std::shared_ptr<void> usr_ptr;
 };
 
 inline mathd_bb_t mathd_get_bb(mathd_p m) {
@@ -430,6 +432,8 @@ inline int mathd_draw(ImVec2 pos, mathd_p m) {
     auto bb = mathd_get_bb(m);
     auto expr_tl = pos + ImVec2(0, -bb.h);
     auto expr_origin = expr_tl + ImVec2(-m->min_x, -m->min_y);
+    if (m->cbk)
+        m->cbk(m, pos);
     for (auto &obj : m->objs) {
         auto obj_center = expr_origin + obj.off + ImVec2(0, m->acnhor_y);
         switch (obj.type) {
