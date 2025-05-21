@@ -184,8 +184,6 @@ int main(int argc, char const *argv[]) {
         content_update();
         content_draw();
 
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddLine(ImVec2(0,0), ImVec2(400, 600), 0xff'00ffff, 1);
         ASSERT_FN(mathd_draw(ImVec2(400, 600), curr_obj));
 
         if (get_time_ms() - timer_start > 1'000) {
