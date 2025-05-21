@@ -188,12 +188,6 @@ int main(int argc, char const *argv[]) {
         draw_list->AddLine(ImVec2(0,0), ImVec2(400, 600), 0xff'00ffff, 1);
         ASSERT_FN(mathd_draw(ImVec2(400, 600), curr_obj));
 
-        draw_list->AddLine(ImVec2(0,0), ImVec2(100, 100), 0xff'00ffff, 1);
-        
-        bool oldtoggle = char_toggle_bb(true);
-        char_draw(ImVec2(100, 100), mathd_convert(curr_sym, FONT_LVL_SUB1));
-        char_toggle_bb(oldtoggle);
-
         if (get_time_ms() - timer_start > 1'000) {
             curr_sym = gchar(symbol_index);
             symbol_index = (symbol_index + 1) % chars_cnt();
