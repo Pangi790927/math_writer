@@ -3,12 +3,14 @@
 
 #include "imgui_helpers.h"
 #include "imgui_internal.h"
+
 #include "debug.h"
 #include "time_utils.h"
 
-#include "mathd.h"
-#include "comments.h"
 #include "content.h"
+#include "comments.h"
+#include "defines.h"
+#include "formulas.h"
 
 /* TODO:
  * =================================================================================================
@@ -123,45 +125,14 @@ int main(int argc, char const *argv[]) {
     config.MergeMode = true;
 
     ASSERT_FN(chars_init());
-    ASSERT_FN(comments_init());
     ASSERT_FN(content_init());
+    ASSERT_FN(comments_init());
+    ASSERT_FN(defines_init());
+    ASSERT_FN(formulas_init());
 
     cboxes[0].obj = comments_create();
-
-    char_font_lvl_e font0 = FONT_LVL_SUB0;
-    char_font_lvl_e font1 = FONT_LVL_SUB2;
-    char_font_lvl_e font2 = FONT_LVL_SUB4;
-
-    imgui_prepare_render();
-    auto empty = mathd_empty();
-    auto eset = mathd_symbol(mathd_convert(MATHD_hash, font2));
-    auto sym_e = mathd_symbol(mathd_convert(MATHD_e, font0));
-    auto sym_e1 = mathd_symbol(mathd_convert(MATHD_e, font1));
-    auto sym_a0 = mathd_symbol(mathd_convert(MATHD_a, font0));
-    auto sym_a1 = mathd_symbol(mathd_convert(MATHD_a, font1));
-    auto sym_a2 = mathd_symbol(mathd_convert(MATHD_a, font2));
-    auto sym_n1 = mathd_symbol(mathd_convert(MATHD_n, font2));
-    auto binar = mathd_binexpr(sym_e, mathd_convert(MATHD_plus, font0), sym_a0);
-    auto binar_1 = mathd_binexpr(sym_e1, mathd_convert(MATHD_plus, font1), sym_a1);
-    auto integ = mathd_bigop(sym_a0, sym_e1, binar_1, mathd_convert(MATHD_integral, font0));
-    auto unar = mathd_unarexpr(mathd_convert(MATHD_minus, font0), sym_e);
-    auto unar_1 = mathd_unarexpr(mathd_convert(MATHD_minus, font1), sym_e1);
-    auto n_eq_1 = mathd_binexpr(sym_n1, mathd_convert(MATHD_equal, font1), sym_e1);
-    auto sum = mathd_bigop(integ, unar_1, n_eq_1, mathd_convert(MATHD_sum, font0));
-    auto sym_exp = mathd_supsub(sym_e, sym_a1, empty);
-    auto binar2 = mathd_binexpr(binar, mathd_convert(MATHD_plus, font0), sum);
-    auto frac = mathd_frac(sym_exp, binar2, mathd_convert(MATHD_hline_basic, font0));
-    auto binar3 = mathd_binexpr(frac, mathd_convert(MATHD_minus, font0), sym_exp);
-    auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
-    auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));
-    auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
-
-    auto curr_obj = frac2;
-    imgui_render(clear_color);
-
-    auto timer_start = get_time_ms();
-    int symbol_index = 0;
-    auto curr_sym = gchar(symbol_index);
+    cboxes[1].obj = defines_create();
+    cboxes[2].obj = formulas_create();
 
     while (!glfwWindowShouldClose(imgui_window)) {
         glfwPollEvents();
@@ -179,25 +150,10 @@ int main(int argc, char const *argv[]) {
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::GetStyle().WindowRounding = 0.0f;
 
-        ImGui::Begin("Data aquisition", NULL, main_flags);
+        ImGui::Begin("Math Editor", NULL, main_flags);
 
         content_update();
         content_draw();
-
-        ASSERT_FN(mathd_draw(ImVec2(400, 600), curr_obj));
-
-        if (get_time_ms() - timer_start > 1'000) {
-            curr_sym = gchar(symbol_index);
-            symbol_index = (symbol_index + 1) % chars_cnt();
-            timer_start = get_time_ms();
-            auto char_sz = char_get_sz(curr_sym);
-            DBG("idx: %d, fcod: 0x%x, fnum: %d "
-                "sz:[adv: %f, asc: %f, desc: %f, bl:(%f, %f), tr:(%f, %f)] description: %s",
-                    symbol_index, (int)curr_sym.fcod, (int)curr_sym.fnum,
-                    char_sz.adv, char_sz.asc, char_sz.desc,
-                    char_sz.bl.x, char_sz.bl.y, char_sz.tr.x, char_sz.tr.y,
-                    get_char_desc(curr_sym.ncod)->desc);
-        }
 
         bool true_val = true;
         ImGui::ShowMetricsWindow(&true_val);

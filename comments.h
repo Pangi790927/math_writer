@@ -3,6 +3,7 @@
 
 #include "debug.h"
 #include "content.h"
+#include "chars.h"
 
 struct comment_box_t;
 using comment_box_p = std::shared_ptr<comment_box_t>;

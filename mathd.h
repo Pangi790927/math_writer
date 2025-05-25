@@ -1,7 +1,7 @@
 #ifndef MATHD_H
 #define MATHD_H
 
-/* Math Symbol and Expression Drawing */
+/* Math Drawing: Symbol and Expression Drawing */
 
 #include <memory>
 #include <map>
@@ -54,6 +54,9 @@ enum mathd_bracket_e : int {
     MATHD_BRACKET_CURLY,
 };
 
+struct mathd_t;
+using mathd_p = std::shared_ptr<mathd_t>;
+
 struct mathd_bracket_t {
     mathd_bracket_e type;
     char_t tl;
@@ -67,32 +70,70 @@ struct mathd_bracket_t {
     char_t right[4];
 };
 
-struct mathd_t;
-using mathd_p = std::shared_ptr<mathd_t>;
+struct mathd_bb_t {
+    float h = 0, w = 0;
+};
+
+struct mathd_obj_t {
+    mathd_obj_e type;
+    int id;
+
+    char_t sym;
+    mathd_p expr;
+    mathd_bb_t bb;
+    ImVec2 off = {0, 0};     /* relative position to the origin of the mathd_t object
+                            (not the same as the center of the object) */
+};
+
+struct mathd_cmd_t {
+    mathd_cmd_e type;
+    int param = -1;         /* The parameter expresion in used in the command */
+    int spawn_id = -1;      /* If not -1, the id of the new block */
+    int src_id = -1;        /* If acting on an element, the id of the reference element */
+    int dst_id = -1;        /* If acting on an element, the id of the modified element */
+    char_t sym;             /* In case this is a symbol element */
+    mathd_bb_t bb;
+};
+
+struct mathd_t {
+    mathd_e type;
+    int anchor_id = -1;
+    std::vector<mathd_cmd_t> cmds;
+
+/* TODO: maybe protect those? */
+    std::vector<mathd_obj_t> objs;
+    std::map<int, int> id_mapping;
+    bool was_init = false;
+    float acnhor_y = 0;
+    float max_x = 0, max_y = 0, min_x = 0, min_y = 0;
+    std::function<void(mathd_p, ImVec2)> cbk;
+    std::shared_ptr<void> usr_ptr;
+};
 
 template <typename ...Args>
-mathd_p mathd_make(Args&&... args);
+inline mathd_p mathd_make(Args&&... args);
 
-int mathd_draw(ImVec2 pos, mathd_p m);
+inline int mathd_draw(ImVec2 pos, mathd_p m);
 
-mathd_p mathd_empty();
-mathd_p mathd_symbol(char_t sym);
-mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t bigop);
-mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline);
-mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub);
-mathd_p mathd_bracket(mathd_p expr, char_t lb, char_t rb);
-mathd_p mathd_unarexpr(char_t op, mathd_p b);
-mathd_p mathd_binexpr(mathd_p a, char_t op, mathd_p b);
-mathd_p mathd_merge_h(mathd_p l, mathd_p r);
-mathd_p mathd_merge_v(mathd_p u, mathd_p d);
+inline mathd_p mathd_empty();
+inline mathd_p mathd_symbol(char_t sym);
+inline mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t bigop);
+inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline);
+inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub);
+inline mathd_p mathd_bracket(mathd_p expr, char_t lb, char_t rb);
+inline mathd_p mathd_unarexpr(char_t op, mathd_p b);
+inline mathd_p mathd_binexpr(mathd_p a, char_t op, mathd_p b);
+inline mathd_p mathd_merge_h(mathd_p l, mathd_p r);
+inline mathd_p mathd_merge_v(mathd_p u, mathd_p d);
+inline mathd_bb_t mathd_get_bb(mathd_p m);
 
-char_t          mathd_convert(char_t msym, char_font_lvl_e font_lvl);
-mathd_bracket_t mathd_convert(mathd_bracket_t msym, char_font_lvl_e font_lvl);
+inline char_t          mathd_convert(char_t msym, char_font_lvl_e font_lvl);
+inline mathd_bracket_t mathd_convert(mathd_bracket_t msym, char_font_lvl_e font_lvl);
 
 /* TODO: matrix stuff */
 
-inline bool mathd_draw_boxes = true;
-// inline bool mathd_draw_boxes = false;
+// inline bool mathd_draw_boxes = true;
+inline bool mathd_draw_boxes = false;
 
 /* IMPLEMENTATION
  * =================================================================================================
@@ -158,62 +199,6 @@ inline mathd_bracket_t mathd_brack_curly = {
     .con = gchar(225),
     .left = { gchar(213), gchar(214), gchar(215), gchar(216) },
     .right = { gchar(217), gchar(218), gchar(219), gchar(220) },
-};
-
-
-/*                  w
-              |<------->|
-     _________|_________|
-    |                   |
-    |                   |
-    |                   |
-    |                   |
-    |                   |
-    |         C         |--
-    |                   | ^
-    |                   | | h
-    |                   | |
-    |                   | V
-    |___________________|--
-*/
-struct mathd_bb_t {
-    float h = 0, w = 0;
-};
-
-struct mathd_obj_t {
-    mathd_obj_e type;
-    int id;
-
-    char_t sym;
-    mathd_p expr;
-    mathd_bb_t bb;
-    ImVec2 off = {0, 0};     /* relative position to the origin of the mathd_t object
-                            (not the same as the center of the object) */
-};
-
-struct mathd_cmd_t {
-    mathd_cmd_e type;
-    int param = -1;         /* The parameter expresion in used in the command */
-    int spawn_id = -1;      /* If not -1, the id of the new block */
-    int src_id = -1;        /* If acting on an element, the id of the reference element */
-    int dst_id = -1;        /* If acting on an element, the id of the modified element */
-    char_t sym;             /* In case this is a symbol element */
-    mathd_bb_t bb;
-};
-
-struct mathd_t {
-    mathd_e type;
-    int anchor_id = -1;
-    std::vector<mathd_cmd_t> cmds;
-
-/* TODO: maybe protect those? */
-    std::vector<mathd_obj_t> objs;
-    std::map<int, int> id_mapping;
-    bool was_init = false;
-    float acnhor_y = 0;
-    float max_x = 0, max_y = 0, min_x = 0, min_y = 0;
-    std::function<void(mathd_p, ImVec2)> cbk;
-    std::shared_ptr<void> usr_ptr;
 };
 
 inline mathd_bb_t mathd_get_bb(mathd_p m) {
@@ -317,7 +302,6 @@ inline int mathd_init(mathd_p m, std::vector<mathd_p> params) {
                     .sym = cmd.sym,
                     .bb = mathd_char_bb(cmd.sym),
                 };
-                DBG("new_obj.bb: [.w = %f .h = %f]", new_obj.bb.w, new_obj.bb.h);
                 m->objs.push_back(new_obj);
                 m->id_mapping[id] = m->objs.size() - 1;
             } break;
@@ -418,7 +402,6 @@ inline int mathd_init(mathd_p m, std::vector<mathd_p> params) {
         return -1;
     }
     m->acnhor_y = m->objs[m->anchor_id].off.y;
-    DBG("Anchor[%d]: %f", m->anchor_id, m->acnhor_y);
     m->was_init = true;
     return 0;
 }
@@ -537,8 +520,6 @@ inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline) {
 
     /* get the number of frac lines to place */
     int cnt = std::ceil(std::max(bb_above.w, bb_below.w) / bb_sym.w);
-    DBG("frac: above: %f bellow: %f sym: %f cnt: %d",
-            bb_above.w, bb_below.w, bb_sym.w, cnt);
     if (cnt % 2 == 0)
         cnt++;
 
