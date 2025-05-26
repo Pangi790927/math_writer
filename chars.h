@@ -203,6 +203,8 @@ inline void char_draw(ImVec2 pos, const char_t& c) {
 }
 
 
+
+
 inline int chars_init() {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -213,6 +215,13 @@ inline int chars_init() {
                     font_lvl_mul[i] * size_pixels * font_sub_mul[j]);
          }
     }
+    // for (auto &file : list_dir("fonts/amsfonts-ttf")) {
+    //     if (!has_ending(file, ".ttf"))
+    //         continue;
+
+    //     DBG("file: %s", file.c_str());
+    //     io.Fonts->AddFontFromFileTTF(file.c_str(), size_pixels);
+    // }
     return 0;
 }
 
