@@ -39,7 +39,6 @@ struct cbox_t {
 inline int content_init();
 inline void content_uninit();
 
-inline void content_update();
 inline void content_draw();
 
 /* IMPLEMENTATION
@@ -57,12 +56,15 @@ inline int content_init() {
     return 0;
 }
 
-inline void content_update() {
+inline void content_draw() {
+    ImGui::BeginChild("child_main");
     bool is_left_clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     auto mouse_pos = ImGui::GetMousePos();
+    auto cursor = ImGui::GetCursorScreenPos();
 
-    /* First we figure out the active window */
-    float offset = CBOX_INCR * CBOX_TOP;
+    /* Pass1: First we figure out the active window
+    --------------------------------------------------------------------------------------------- */
+    float offset = CBOX_INCR * CBOX_TOP + cursor.y;
     for (auto &cb : cboxes) {
         auto box_min = ImVec2(WIN_LEFT_OFFSET, offset);
         auto box_max = ImVec2(WIN_LEFT_OFFSET + cb.width + CBOX_INCR, offset + cb.height + CBOX_INCR);
@@ -104,9 +106,10 @@ inline void content_update() {
         ImGui::EndPopup();
     }
 
-    /* Second we update that window and all draw areas */
+    /* Pass2: Second we update that window and all draw areas
+    --------------------------------------------------------------------------------------------- */
     ImVec2 win_end = ImGui::GetContentRegionMax();
-    offset = CBOX_INCR * CBOX_TOP;
+    offset = CBOX_INCR * CBOX_TOP + cursor.y;
     for (auto &cb : cboxes) {
         auto box_min = ImVec2(WIN_LEFT_OFFSET, offset);
 
@@ -126,9 +129,9 @@ inline void content_update() {
     /* TODO: if this is clicked, add items */
     if (mouse_pos.x < WIN_LEFT_OFFSET) {
     }
-}
 
-inline void content_draw() {
+    /* Pass3: Draw the content
+    --------------------------------------------------------------------------------------------- */
     auto *io = &ImGui::GetIO();
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
@@ -140,8 +143,8 @@ inline void content_draw() {
     auto bottom = ImVec2(CBOX_INCR * CBOX_LEFT, io->DisplaySize.y);
     draw_list->AddLine(top, bottom, sides_color, 1);
 
-    float offset = CBOX_INCR * CBOX_TOP;
-    ImVec2 win_end = ImGui::GetContentRegionMax();
+    offset = CBOX_INCR * CBOX_TOP + cursor.y;
+    win_end = ImGui::GetContentRegionMax();
 
     /* Assuming content_update was called we call all the draw functions */
     for (auto &cb : cboxes) {
@@ -175,13 +178,13 @@ inline void content_draw() {
 
         // Box contents
         auto box_pos = ImVec2(WIN_LEFT_OFFSET + CBOX_INCR/2., offset + CBOX_INCR/2.);
-        if (cb.obj)
+        if (cb.obj) {
             cb.obj->draw(box_pos, wb, hb);
+        }
 
         offset += CBOX_INCR * (CBOX_TOP + 1) + hb;
     }
 
-    auto mouse_pos = ImGui::GetMousePos();
     if (mouse_pos.x < WIN_LEFT_OFFSET) {
         auto circle_center = ImVec2(CBOX_INCR * CBOX_LEFT, mouse_pos.y);
         draw_list->AddCircle(circle_center, CBOX_INCR/2, sides_color);
@@ -190,6 +193,11 @@ inline void content_draw() {
         auto line_end   = ImVec2(mouse_pos.x, mouse_pos.y);
         draw_list->AddLine(line_start, line_end, sides_color, 1);
     }
+
+    // DBG("cursor: [%f, %f] mouse: [%f, %f] offset: %f",
+    //         cursor.x, cursor.y, mouse_pos.x, mouse_pos.y, offset);
+    ImGui::Dummy({0, offset-cursor.y});
+    ImGui::EndChild();
 }
 
 inline void content_uninit() {}

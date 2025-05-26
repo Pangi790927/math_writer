@@ -119,6 +119,8 @@ int main(int argc, char const *argv[]) {
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.WantTextInput = true;
     ImFont* font_default = io.Fonts->AddFontDefault();
     
     ImFontConfig config;
@@ -152,7 +154,6 @@ int main(int argc, char const *argv[]) {
 
         ImGui::Begin("Math Editor", NULL, main_flags);
 
-        content_update();
         content_draw();
 
         bool true_val = true;

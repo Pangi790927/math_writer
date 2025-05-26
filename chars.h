@@ -220,6 +220,41 @@ inline float char_get_lvl_mul(char_font_lvl_e lvl) {
     return font_lvl_mul[lvl];
 }
 
+struct alternative_t {
+    int with_alt = 0;
+    int with_alt_shift1 = 0;    /* from normal font */
+    int with_alt_shift2 = 0;    /* from math font */
+};
+
+inline std::unordered_map<uint8_t, alternative_t> greek_alternative = {
+    {'a', {.with_alt = 103, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* alpha */
+    {'b', {.with_alt = 104, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* beta */
+    {'c', {.with_alt = 123, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* chi */
+    {'d', {.with_alt = 106, .with_alt_shift1 =  93, .with_alt_shift2 = 127}},  /* delta */
+    {'e', {.with_alt = 107, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* epsilon */
+    {'f', {.with_alt = 122, .with_alt_shift1 = 100, .with_alt_shift2 = 134}},  /* phi */
+    {'g', {.with_alt = 105, .with_alt_shift1 =  92, .with_alt_shift2 = 126}},  /* gamma */
+    {'h', {.with_alt =   0, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},     
+    {'i', {.with_alt = 111, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* iota */
+    {'j', {.with_alt = 124, .with_alt_shift1 = 101, .with_alt_shift2 = 135}},  /* psi */
+    {'k', {.with_alt = 112, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* kappa */
+    {'l', {.with_alt = 113, .with_alt_shift1 =  95, .with_alt_shift2 = 129}},  /* lambda */     
+    {'m', {.with_alt =   0, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},
+    {'n', {.with_alt = 109, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* eta */
+    {'o', {.with_alt = 110, .with_alt_shift1 =  94, .with_alt_shift2 = 128}},  /* theta */
+    {'p', {.with_alt = 117, .with_alt_shift1 =  97, .with_alt_shift2 = 131}},  /* pi */
+    {'q', {.with_alt =   0, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},
+    {'r', {.with_alt = 118, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* rho */
+    {'s', {.with_alt = 119, .with_alt_shift1 =  98, .with_alt_shift2 = 132}},  /* sigma */
+    {'t', {.with_alt = 120, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* tau */
+    {'u', {.with_alt = 114, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* mu */
+    {'v', {.with_alt = 115, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* nu */
+    {'w', {.with_alt = 125, .with_alt_shift1 = 102, .with_alt_shift2 = 136}},  /* omega */
+    {'x', {.with_alt = 116, .with_alt_shift1 =  96, .with_alt_shift2 = 130}},  /* xi */
+    {'y', {.with_alt = 121, .with_alt_shift1 =  99, .with_alt_shift2 = 133}},  /* upsilon */
+    {'z', {.with_alt = 108, .with_alt_shift1 =   0, .with_alt_shift2 = 0}},    /* zeta */
+};
+
 inline char_desc_t _internal_chars[] = {
     {.ch = {.acod='!', .fcod=0x21, .fnum=FONT_NORMAL , .ncod=  0}, .desc="!" },               /* exclamation mark */
     {.ch = {.acod='"', .fcod=0x22, .fnum=FONT_NORMAL , .ncod=  1}, .desc="\""},               /* double quote */
@@ -338,15 +373,15 @@ inline char_desc_t _internal_chars[] = {
     {.ch = {.acod='\0',.fcod=0xB9, .fnum=FONT_MATH   , .ncod=114}, .desc="\\mu" },            /* Greek lowercase mu */
     {.ch = {.acod='\0',.fcod=0xBA, .fnum=FONT_MATH   , .ncod=115}, .desc="\\nu" },            /* Greek lowercase nu */
     {.ch = {.acod='\0',.fcod=0xBB, .fnum=FONT_MATH   , .ncod=116}, .desc="\\xi" },            /* Greek lowercase xi */
-    {.ch = {.acod='\0',.fcod=0xBC, .fnum=FONT_MATH   , .ncod=117}, .desc="\\pi" },            /* Greek lowercase omicron */
-    {.ch = {.acod='\0',.fcod=0xBD, .fnum=FONT_MATH   , .ncod=118}, .desc="\\rho" },           /* Greek lowercase pi */
-    {.ch = {.acod='\0',.fcod=0xBE, .fnum=FONT_MATH   , .ncod=119}, .desc="\\sigma" },         /* Greek lowercase rho */
-    {.ch = {.acod='\0',.fcod=0xBF, .fnum=FONT_MATH   , .ncod=120}, .desc="\\tau" },           /* Greek lowercase sigma */
-    {.ch = {.acod='\0',.fcod=0xC0, .fnum=FONT_MATH   , .ncod=121}, .desc="\\upsilon" },       /* Greek lowercase tau */
-    {.ch = {.acod='\0',.fcod=0xC1, .fnum=FONT_MATH   , .ncod=122}, .desc="\\phi" },           /* Greek lowercase upsilon */
-    {.ch = {.acod='\0',.fcod=0xC2, .fnum=FONT_MATH   , .ncod=123}, .desc="\\chi" },           /* Greek lowercase phi */
-    {.ch = {.acod='\0',.fcod=0xC3, .fnum=FONT_MATH   , .ncod=124}, .desc="\\psi" },           /* Greek lowercase chi */
-    {.ch = {.acod='\0',.fcod=0x21, .fnum=FONT_MATH   , .ncod=125}, .desc="\\omega" },         /* Greek lowercase psi */
+    {.ch = {.acod='\0',.fcod=0xBC, .fnum=FONT_MATH   , .ncod=117}, .desc="\\pi" },            /* Greek lowercase pi */
+    {.ch = {.acod='\0',.fcod=0xBD, .fnum=FONT_MATH   , .ncod=118}, .desc="\\rho" },           /* Greek lowercase rho */
+    {.ch = {.acod='\0',.fcod=0xBE, .fnum=FONT_MATH   , .ncod=119}, .desc="\\sigma" },         /* Greek lowercase sigma */
+    {.ch = {.acod='\0',.fcod=0xBF, .fnum=FONT_MATH   , .ncod=120}, .desc="\\tau" },           /* Greek lowercase tau */
+    {.ch = {.acod='\0',.fcod=0xC0, .fnum=FONT_MATH   , .ncod=121}, .desc="\\upsilon" },       /* Greek lowercase upsilon */
+    {.ch = {.acod='\0',.fcod=0xC1, .fnum=FONT_MATH   , .ncod=122}, .desc="\\phi" },           /* Greek lowercase phi */
+    {.ch = {.acod='\0',.fcod=0xC2, .fnum=FONT_MATH   , .ncod=123}, .desc="\\chi" },           /* Greek lowercase chi */
+    {.ch = {.acod='\0',.fcod=0xC3, .fnum=FONT_MATH   , .ncod=124}, .desc="\\psi" },           /* Greek lowercase psi */
+    {.ch = {.acod='\0',.fcod=0x21, .fnum=FONT_MATH   , .ncod=125}, .desc="\\omega" },         /* Greek lowercase omega */
     {.ch = {.acod='\0',.fcod=0xA1, .fnum=FONT_MATH   , .ncod=126}, .desc="\\Gamma" },         /* Greek uppercase Gamma */
     {.ch = {.acod='\0',.fcod=0xA2, .fnum=FONT_MATH   , .ncod=127}, .desc="\\Delta" },         /* Greek uppercase Delta */
     {.ch = {.acod='\0',.fcod=0xA3, .fnum=FONT_MATH   , .ncod=128}, .desc="\\Theta" },         /* Greek uppercase Theta */

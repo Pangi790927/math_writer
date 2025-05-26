@@ -58,6 +58,7 @@ struct comment_box_t : public cbox_i {
     float max_width = 0;
     int line_count = 0;
     std::vector<char_t> chars;
+
     int cursor_pos = 0;
     bool is_italic = false;
     bool is_bold = false;
@@ -66,26 +67,108 @@ struct comment_box_t : public cbox_i {
     float comments_pos_increment[FONT_LVL_CNT] = {0.0f};
 
     void update() override {
-        auto get_charset = [this]() -> char_t *{
-            if (is_italic)
-                return comment_italic;
-            if (is_bold)
-                return comment_bold;
-            return comment_normal;
-        };
         /* TODO: add some indicators for italic, bold, etc */
-        auto insert_char = [this](unsigned int c, char_t *charset) {
-            if (charset[c].flvl != FONT_LVL_SPECIAL)
-                charset[c].flvl = flvl;
-            chars.insert(chars.begin() + cursor_pos, charset[c]);
+        // ImGui::SetItemKeyOwner(ImGuiMod_Alt);
+        // ImGui::SetItemKeyOwner(ImGuiMod_Shift);
+        auto *io = &ImGui::GetIO();
+        bool is_ctrl = ImGui::IsKeyPressed(ImGuiKey_LeftCtrl)
+                    || ImGui::IsKeyPressed(ImGuiKey_RightCtrl)
+                    || ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
+                    || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+        bool is_alt = ImGui::IsKeyPressed(ImGuiKey_LeftAlt)
+                    || ImGui::IsKeyPressed(ImGuiKey_RightAlt)
+                    || ImGui::IsKeyDown(ImGuiKey_LeftAlt)
+                    || ImGui::IsKeyDown(ImGuiKey_RightAlt);
+        bool is_shift = ImGui::IsKeyPressed(ImGuiKey_LeftShift)
+                    || ImGui::IsKeyPressed(ImGuiKey_RightShift)
+                    || ImGui::IsKeyDown(ImGuiKey_LeftShift)
+                    || ImGui::IsKeyDown(ImGuiKey_RightShift);
+
+        auto insert_char = [&](unsigned int c) {
+            char_t elem;
+            bool ascii = false;
+            if (is_alt) {
+                if (is_shift) {
+                    if (greek_alternative[c].with_alt_shift1)
+                        elem = gchar(greek_alternative[c].with_alt_shift1);
+                    else  {
+                        ascii = true;
+                        c = toupper(c);
+                    }
+                }
+                else {
+                    if (greek_alternative[c].with_alt)
+                        elem = gchar(greek_alternative[c].with_alt);
+                    else
+                        ascii = true;
+                }
+            }
+            else
+                ascii = true;
+            if (ascii) {
+                elem = gascii(c);
+                if (elem.fnum == FONT_MATH)
+                    elem.fnum = FONT_NORMAL;
+            }
+            elem.flvl;
+            if (is_italic && elem.fnum == FONT_NORMAL)
+                elem.fnum = FONT_ITALIC;
+            if (is_bold && elem.fnum == FONT_NORMAL)
+                elem.fnum = FONT_BOLD;
+
+            chars.insert(chars.begin() + cursor_pos, elem);
             cursor_pos++;
         };
 
-        auto *io = &ImGui::GetIO();
+
+
+        auto insert_char_spec = [this](char_t elem) {
+            chars.insert(chars.begin() + cursor_pos, elem);
+            cursor_pos++;
+        };
+
+        struct key_t {
+            ImGuiKey imgui_key;
+            uint8_t ascii;
+
+            bool toggled = false;
+            uint64_t toggle_ms = 0;
+            uint64_t toggle_ms_skip = 0;
+        };
+
+        static key_t keys[] = {
+            {ImGuiKey_A, 'a'}, {ImGuiKey_B, 'b'}, {ImGuiKey_C, 'c'}, {ImGuiKey_D, 'd'},
+            {ImGuiKey_E, 'e'}, {ImGuiKey_F, 'f'}, {ImGuiKey_G, 'g'}, {ImGuiKey_H, 'h'},
+            {ImGuiKey_I, 'i'}, {ImGuiKey_J, 'j'}, {ImGuiKey_K, 'k'}, {ImGuiKey_L, 'l'},
+            {ImGuiKey_M, 'm'}, {ImGuiKey_N, 'n'}, {ImGuiKey_O, 'o'}, {ImGuiKey_P, 'p'},
+            {ImGuiKey_Q, 'q'}, {ImGuiKey_R, 'r'}, {ImGuiKey_S, 's'}, {ImGuiKey_T, 't'},
+            {ImGuiKey_U, 'u'}, {ImGuiKey_V, 'v'}, {ImGuiKey_W, 'w'}, {ImGuiKey_X, 'x'},
+            {ImGuiKey_Y, 'y'}, {ImGuiKey_Z, 'z'}
+        };
+
+        uint64_t time_now_ms = get_time_ms();
+        for (auto &key: keys) {
+            bool is_key = ImGui::IsKeyPressed(key.imgui_key) || ImGui::IsKeyDown(key.imgui_key);
+            if (is_key && is_alt && !key.toggled) {
+                key.toggled = true;
+                key.toggle_ms = time_now_ms + 1000 - key.toggle_ms_skip;
+                insert_char(key.ascii);
+            }
+            if (key.toggled && !is_key) {
+                key.toggled = false;
+            }
+            else if (key.toggled && (key.toggle_ms < time_now_ms)) {
+                key.toggled = false;
+                key.toggle_ms_skip = 990;
+            }
+            if (!is_key)
+                key.toggle_ms_skip = 0;                
+        }
+
         if (io->InputQueueCharacters.Size > 0) {
             for (int n = 0; n < io->InputQueueCharacters.Size; n++) {
                 unsigned int c = (unsigned int)io->InputQueueCharacters[n];
-                insert_char(c, get_charset());
+                insert_char(c);
             }
 
             // Consume characters
@@ -98,10 +181,7 @@ struct comment_box_t : public cbox_i {
                 chars.erase(chars.begin() + cursor_pos);
             }
         }
-        bool is_ctrl = ImGui::IsKeyPressed(ImGuiKey_LeftCtrl)
-                    || ImGui::IsKeyPressed(ImGuiKey_RightCtrl)
-                    || ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
-                    || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+        
         if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
             auto cursor_on_whitespace = [&] {
                 return cursor_pos != chars.size() && isspace(chars[cursor_pos].acod);
@@ -213,11 +293,11 @@ struct comment_box_t : public cbox_i {
             DBG("ascii_text: %s", ascii().c_str());
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
-            insert_char('\n', comment_special);
+            insert_char_spec(char_t{.acod='\n', .flvl=FONT_LVL_SPECIAL});
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
             for (int i = 0; i < 4; i++) {
-                insert_char(' ', comment_normal);
+                insert_char(' ');
             }
         }
     }
