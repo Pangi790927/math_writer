@@ -91,8 +91,6 @@ struct comment_box_t : public cbox_i {
             cursor_pos++;
         };
 
-
-
         auto insert_char_spec = [this](char_t elem) {
             chars.insert(chars.begin() + cursor_pos, elem);
             cursor_pos++;

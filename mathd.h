@@ -20,32 +20,10 @@ enum mathd_e : int {
     MATHD_TYPE_FRAC,
     MATHD_TYPE_SUPSUB,
     MATHD_TYPE_BRACKET,
-};
-
-/* TODO: maybe should stay in implementation */
-enum mathd_cmd_e : int {
-    /* movement: */
-    MATHD_ABOVE,
-    MATHD_BELLOW,
-    MATHD_LEFT,
-    MATHD_RIGHT,
-    MATHD_SUP,
-    MATHD_SUB,
-
-    /* modifier: */
-    MATHD_MAKEFIT,     /* Makes dst fit both src and dst */
-
-    /* creators: */
-    MATHD_EXPR,
-    MATHD_SYM,
-    MATHD_EMPTY,
-    MATHD_MERGE,
-};
-
-enum mathd_obj_e : int {
-    MATHD_OBJ_SYMB,
-    MATHD_OBJ_SUBEXPR,
-    MATHD_OBJ_EMPTY,
+    MATHD_TYPE_BINAR_OP,
+    MATHD_TYPE_UNAR_OP,
+    MATHD_TYPE_MERGE_VERTICAL,
+    MATHD_TYPE_MERGE_HORIZONTAL,
 };
 
 enum mathd_bracket_e : int {
@@ -71,61 +49,20 @@ struct mathd_bracket_t {
 };
 
 struct mathd_bb_t {
-    float h = 0, w = 0;
-};
-
-struct mathd_obj_t {
-    mathd_obj_e type;
-    int id;
-
-    char_t sym;
-    mathd_p expr;
-    mathd_bb_t bb;
-    ImVec2 off = {0, 0};     /* relative position to the origin of the mathd_t object
-                            (not the same as the center of the object) */
-};
-
-struct mathd_cmd_t {
-    mathd_cmd_e type;
-    int param = -1;         /* The parameter expresion in used in the command */
-    int spawn_id = -1;      /* If not -1, the id of the new block */
-    int src_id = -1;        /* If acting on an element, the id of the reference element */
-    int dst_id = -1;        /* If acting on an element, the id of the modified element */
-    char_t sym;             /* In case this is a symbol element */
-    mathd_bb_t bb;
-};
-
-// struct mathd_t {
-//     mathd_e type;
-//     int anchor_id = -1;
-//     std::vector<mathd_cmd_t> cmds;
-
-// /* TODO: maybe protect those? */
-//     std::vector<mathd_obj_t> objs;
-//     std::map<int, int> id_mapping;
-//     bool was_init = false;
-//     float acnhor_y = 0;
-//     float max_x = 0, max_y = 0, min_x = 0, min_y = 0;
-//     std::function<void(mathd_p, ImVec2)> cbk;
-//     std::shared_ptr<void> usr_ptr;
-// };
-
-/* NEW */
-
-struct mathd_bb_t {
     ImVec2 tl = ImVec2(0, 0); /*!< Holds the minimums of the bounding box, so, the top-left */
     ImVec2 br = ImVec2(0, 0); /*!< Holds the maximums of the bounding box, so, the bottom-right */
 };
 
 struct mathd_t {
-    mathd_e type;               /*!< IN: The type that this object will hold */
-    char_t symb;                /*!< IN: Optional symbol if this object is a leaf */
+    mathd_e type; /*!< The type that this object will hold */
+    char_t symb;  /*!< Optional symbol if this object is a leaf */
 
-    std::vector<math_p> subobj; /*!< IN:  The subobjects of this object */
-    std::vector<ImVec2> subpos; /*!< OUT: The position of the new objects after arranging them */
-    ImVec2 size;                /*!< OUT: The calculated bounding box of this element */
-    float voff = 0.0f;          /*!< OUT: Vertical offset of the object */
-    float vcenter = 0.0f;       /*!< IN:  The */
+    /*! The subobjects of this object and their relative positions are stored in this */
+    std::vector<std::pair<mathd_p, ImVec2>> subobjs;
+
+    ImVec2 size;          /*!< The calculated bounding box of this element */
+    float voff = 0.0f;    /*!< Vertical offset of the object */
+    float vcenter = 0.0f; /*!< The still don't know what to do with it */
 
     union {
         struct {
@@ -138,116 +75,22 @@ struct mathd_t {
     std::shared_ptr<void> usr_ptr;              /*!< This is the user's pointer */
 };
 
-/* \NEW */
-
 template <typename ...Args>
 inline mathd_p mathd_make(Args&&... args);
 
-inline std::pair<float, float> mathd_a_horiz_sz(char_font_lvl_e flvl) {
-    static std::unordered_map<char_font_lvl_e, std::pair<float, float>> sizes;
-    if (!has(sizes, flvl)) {
-        auto a = gascii('a');
-        a.flvl = flvl;
-        auto [a_min, a_max] = char_get_draw_box(a);
-        sizes[flvl] = std::pair{a_min.y, a_max.y};
-    }
-    return sizes[flvl];
-}
+inline mathd_bb_t mathd_get_bb(mathd_p m, ImVec2 pos = ImVec2(0, 0));
 
-inline void mathd_draw(ImVec2 pos, mathd_p m) {
-    if (m->type == MATHD_TYPE_SYMBOL) {
-        /* Characters are drawn from the baseline upwards */
-        /* TODO: use vcenter or voff or both */
-        char_draw(pos + ImVec2(0, -mathd_a_horiz_sz(m->symb.flvl).second), m->symb);
-    }
-    for (int i = 0; i < subobj.size(); i++)
-        mathd_draw(pos + subpos[i], subobj[i]);
-}
-
-inline mathd_p mathd_empty(float x, float y) {
-    return mathd_make(mathd_t{.type = MATHD_TYPE_EMPTY_BOX });
-}
-
-inline mathd_p mathd_symbol(char_t sym, bool is_char = true) {
-    float h = (mathd_a_horiz_sz(sym.flvl).first + mathd_a_horiz_sz(sym.flvl).second) / 2.;
-
-    auto [sym_min, sym_max] = char_get_draw_box(sym);
-    return mathd_make(mathd_t{
-        .type = MATHD_TYPE_SYMBOL,
-        .sym = sym,
-        .size = sym_max - sym_min,
-        .voff = 0,
-        .vcenter = is_char ? h : (sym_max.y + sym_min.y) / 2.,
-        .is_char = is_char,
-    });
-}
-
-inline mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t bigop) {
-    float distancer = MATHD_DISTANCER_BIGO * char_get_lvl_mul((char_font_lvl_e)bigop.flvl);
-    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_BIGOP });
-    auto op = mathd_symbol(bigop, false);
-
-    ret->subobj = std::vector<mathd_p>{ op, above, bellow, right };
-    ret->subpos = std::vector<ImVec2> {
-        ImVec2(0, 0), /* The operator is drawn first */
-        ImVec2( above->size.x/2.,-distancer - op->size.y/2. - above->size),
-        ImVec2(bellow->size.x/2., distancer + op->size.y/2. + bellow->size),
-        ImVec2(distancer + op->size.x, 0)
-    };
-    ret->size = ImVec2(  distancer + op->size.x + right->size.x,
-                       2*distancer + op->size.y + above->size.y + bellow.size.y);
-
-    return ret;
-}
-
-inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline) {
-    float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)divline.flvl);
-    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_FRAC });
-    auto dl = mathd_symbol(divline, false);
-
-    float sz = std::max(bellow->size.x, above->size.x);
-    int cnt = std::ceil(sz / dl->size.x);
-    if (cnt % 2 == 0)
-        cnt++;
-
-    sz = (cnt / 2) * dl->size.x;
-    ret->subobj = std::vector<mathd_p>{ above, bellow };
-    ret->subpos = std::vector<ImVec2> {
-        ImVec2(sz/2. - above.x/2., -above->size.y - distancer),
-        ImVec2(sz/2. - bellow.x/2., bellow->size.y + distancer)
-    };
-
-    for (int i = 0; i < cnt; i++) {
-        ret->subobj->push_back(mathd_symbol(divline, false));
-        ret->subpos->push_back(ImVec2(i * dl->size.x, 0));
-    }
-
-    ret->size = ImVec2(cnt * dl->size.x, 2*distancer + above->size.y + bellow->size.y);
-    return ret;
-}
-
-inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub) {
-    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_SUPSUB });
-
-    ret->subobj = std::vector<mathd_p>{ base, sup, sub };
-    ret->subpos = std::vector<ImVec2> {
-        ImVec2(0, 0),
-        ImVec2(base->size.x, 0 /* TODO: I want at most 1/3 of the base object and once that is ok*/),
-        ImVec2(base->size.x, 0 /* TODO: at least 2/3 of the other be outside (viewed vertically) */),
-    };
-
-    ret->size = ImVec2(base->size.x + std::max(sup->size.x, sub->size.x), /* TODO: */)
-}
-
-inline mathd_p mathd_bracket(mathd_p expr, char_t lb, char_t rb) {
-    /* TODO: this is very similar to */
-}
-
+inline void mathd_draw(ImVec2 pos, mathd_p m);
+inline mathd_p mathd_empty(float x, float y);
+inline mathd_p mathd_symbol(char_t sym, bool is_char = true);
+inline mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t bigop);
+inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline);
+inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub);
+inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket);
 inline mathd_p mathd_unarexpr(char_t op, mathd_p b);
 inline mathd_p mathd_binexpr(mathd_p a, char_t op, mathd_p b);
 inline mathd_p mathd_merge_h(mathd_p l, mathd_p r);
 inline mathd_p mathd_merge_v(mathd_p u, mathd_p d);
-inline mathd_bb_t mathd_get_bb(mathd_p m);
 
 inline char_t          mathd_convert(char_t msym, char_font_lvl_e font_lvl);
 inline mathd_bracket_t mathd_convert(mathd_bracket_t msym, char_font_lvl_e font_lvl);
@@ -323,494 +166,157 @@ inline mathd_bracket_t mathd_brack_curly = {
     .right = { gchar(217), gchar(218), gchar(219), gchar(220) },
 };
 
-inline mathd_bb_t mathd_get_bb(mathd_p m) {
-    return mathd_bb_t{
-        .h = (m->max_y - m->min_y) / 2.0f,
-        .w = (m->max_x - m->min_x) / 2.0f,
-    };
+inline std::pair<float, float> mathd_a_horiz_sz(char_font_lvl_e flvl) {
+    static std::unordered_map<char_font_lvl_e, std::pair<float, float>> sizes;
+    if (!HAS(sizes, flvl)) {
+        auto a = gascii('a');
+        a.flvl = flvl;
+        auto [a_min, a_max] = char_get_draw_box(a);
+        sizes[flvl] = std::pair{a_min.y, a_max.y};
+    }
+    return sizes[flvl];
 }
 
-inline void mathd_recalc_minmax(mathd_p m) {
-    m->max_x = m->max_y = m->min_x = m->min_y = 0;
-    for (auto &obj : m->objs) {
-        // DBG("obj.bb: [.w = %f .h = %f]", obj.bb.w, obj.bb.h);
-        m->max_x = std::max(m->max_x, obj.off.x + obj.bb.w);
-        m->max_y = std::max(m->max_y, obj.off.y + obj.bb.h);
-        m->min_x = std::min(m->min_x, obj.off.x - obj.bb.w);
-        m->min_y = std::min(m->min_y, obj.off.y - obj.bb.h);
+inline void mathd_draw(ImVec2 pos, mathd_p m) {
+    if (m->type == MATHD_TYPE_SYMBOL) {
+        /* Characters are drawn from the baseline upwards */
+        /* TODO: use vcenter or voff or both */
+        auto off = ImVec2(0, -mathd_a_horiz_sz((char_font_lvl_e)m->symb.flvl).second);
+        char_draw(pos + off, m->symb);
     }
+    for (auto &[obj, obj_pos] : m->subobjs)
+        mathd_draw(pos + obj_pos, obj);
 }
 
-inline int mathd_check_movcmd(mathd_p m, const mathd_cmd_t& cmd) {
-    if (cmd.src_id < 0 || !HAS(m->id_mapping, cmd.src_id)) {
-        DBG("the command source is invalid: cmd.src_id: %d", cmd.src_id);
-        return -1;
-    }
-    if (cmd.dst_id < 0 || !HAS(m->id_mapping, cmd.dst_id)) {
-        DBG("the command destination is invalid");
-        return -1;
-    }
-    return 0;
+inline mathd_p mathd_empty(float x, float y) {
+    return mathd_make(mathd_t{.type = MATHD_TYPE_EMPTY_BOX });
 }
 
-inline mathd_bb_t mathd_char_bb(const char_t &sym) {
-    auto ssz = char_get_sz(sym);
-    return mathd_bb_t{
-        .h = (float)abs(ssz.bl.y - ssz.tr.y) / 2.0f, 
-        .w = (float)abs(ssz.bl.x - ssz.tr.x) / 2.0f
-    };
-}
+inline mathd_p mathd_symbol(char_t sym, bool is_char) {
+    auto def_size = mathd_a_horiz_sz((char_font_lvl_e)sym.flvl);
+    float h = (def_size.first + def_size.second) / 2.;
 
-inline void mathd_draw_bb(const ImVec2& center, const mathd_bb_t& bb, uint32_t color) {
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    auto bl = center + ImVec2(-bb.w, +bb.h);
-    auto tr = center + ImVec2(+bb.w, -bb.h);
-
-    draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), color, 1);
-    draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), color, 1);
-    draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), color, 1);
-    draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), color, 1);
-}
-
-inline int mathd_init(mathd_p m, std::vector<mathd_p> params) {
-    if (!m) {
-        DBG("Invalid object passed for initialization");
-        return -1;
-    }
-    if (m->was_init) {
-        DBG("Can't initialize the object twice");
-        return -1;
-    }
-    if (m->anchor_id < 0) {
-        DBG("Invalid anchor id: %d", m->anchor_id);
-        return -1;
-    }
-    for (auto &cmd : m->cmds) {
-        int id = -1;
-        if (cmd.spawn_id != -1) {
-            if (HAS(m->id_mapping, cmd.spawn_id)) {
-                DBG("Id was already allocated, failing object creation");
-                return -1;
-            }
-            id = cmd.spawn_id;
-        }
-        switch (cmd.type) {
-            case MATHD_EXPR: {
-                if (cmd.param < 0) {
-                    DBG("A math expresion can't be formed from an unknown param");
-                    return -1;
-                }
-                if (cmd.param >= params.size()) {
-                    DBG("Out of bounds parameter");
-                    return -1;
-                }
-                if (!params[cmd.param] || !params[cmd.param]->was_init) {
-                    DBG("Parameter must be initialized before using it inside another expresion");
-                    return -1;
-                }
-                mathd_obj_t new_obj {
-                    .type = MATHD_OBJ_SUBEXPR,
-                    .id = id,
-                    .expr = params[cmd.param],
-                    .bb = mathd_get_bb(params[cmd.param]),
-                };
-                m->objs.push_back(new_obj);
-                m->id_mapping[id] = m->objs.size() - 1;
-            } break;
-            case MATHD_SYM: {
-                mathd_obj_t new_obj {
-                    .type = MATHD_OBJ_SYMB,
-                    .id = id,
-                    .sym = cmd.sym,
-                    .bb = mathd_char_bb(cmd.sym),
-                };
-                m->objs.push_back(new_obj);
-                m->id_mapping[id] = m->objs.size() - 1;
-            } break;
-            
-            case MATHD_EMPTY: {
-                mathd_obj_t new_obj {
-                    .type = MATHD_OBJ_EMPTY,
-                    .id = id,
-                    .bb = cmd.bb,
-                };
-                m->objs.push_back(new_obj);
-                m->id_mapping[id] = m->objs.size() - 1;
-            } break;
-            case MATHD_MERGE: {
-                mathd_recalc_minmax(m);
-                auto bb = mathd_get_bb(m);
-                mathd_obj_t new_obj {
-                    .type = MATHD_OBJ_EMPTY,
-                    .id = id,
-                    .bb = bb,
-                };
-                m->objs.push_back(new_obj);
-                m->id_mapping[id] = m->objs.size() - 1;
-            } break;
-            case MATHD_ABOVE: {
-                // if (intptr_t(mathd_check_movcmd(m, cmd)) < 0) {
-                //     DBG("[SYS] " "FAILED: " "mathd_check_movcmd(m, cmd)" "[err: %s [%s], code: %d]",, strerror(errno), errnoname(errno), errno)
-
-                //     return -1;
-                // }
-
-                ASSERT_FN(mathd_check_movcmd(m, cmd));
-
-                auto &src = m->objs[m->id_mapping[cmd.src_id]];
-                auto &dst = m->objs[m->id_mapping[cmd.dst_id]];
-
-                dst.off = src.off + ImVec2(0, -(src.bb.h + dst.bb.h));
-            } break;
-            case MATHD_BELLOW: {
-                ASSERT_FN(mathd_check_movcmd(m, cmd));
-
-                auto &src = m->objs[m->id_mapping[cmd.src_id]];
-                auto &dst = m->objs[m->id_mapping[cmd.dst_id]];
-
-                dst.off = src.off + ImVec2(0, +(src.bb.h + dst.bb.h));
-            } break;
-            case MATHD_LEFT: {
-                ASSERT_FN(mathd_check_movcmd(m, cmd));
-
-                auto &src = m->objs[m->id_mapping[cmd.src_id]];
-                auto &dst = m->objs[m->id_mapping[cmd.dst_id]];
-
-                dst.off = src.off + ImVec2(-(src.bb.w + dst.bb.w), 0);
-            } break;
-            case MATHD_RIGHT: {
-                ASSERT_FN(mathd_check_movcmd(m, cmd));
-
-                auto &src = m->objs[m->id_mapping[cmd.src_id]];
-                auto &dst = m->objs[m->id_mapping[cmd.dst_id]];
-
-                dst.off = src.off + ImVec2(+(src.bb.w + dst.bb.w), 0);
-            } break;
-            case MATHD_SUB: {
-                ASSERT_FN(mathd_check_movcmd(m, cmd));
-
-                auto &src = m->objs[m->id_mapping[cmd.src_id]];
-                auto &dst = m->objs[m->id_mapping[cmd.dst_id]];
-
-                dst.off = src.off + ImVec2(+(src.bb.w + dst.bb.w), src.bb.h);
-            } break;
-            case MATHD_SUP: {
-                ASSERT_FN(mathd_check_movcmd(m, cmd));
-
-                auto &src = m->objs[m->id_mapping[cmd.src_id]];
-                auto &dst = m->objs[m->id_mapping[cmd.dst_id]];
-
-                dst.off = src.off + ImVec2(+(src.bb.w + dst.bb.w), -src.bb.h);
-            } break;
-            case MATHD_MAKEFIT: {
-                ASSERT_FN(mathd_check_movcmd(m, cmd));
-
-                auto &src = m->objs[m->id_mapping[cmd.src_id]];
-                auto &dst = m->objs[m->id_mapping[cmd.dst_id]];
-                dst.bb = mathd_bb_t{
-                    .h = std::max(src.bb.h, dst.bb.h),
-                    .w = std::max(src.bb.w, dst.bb.w)
-                };
-            } break;
-            default :{
-                DBG("This type is not known");
-                return -1;
-            }
-        }
-    }
-    mathd_recalc_minmax(m);
-    if (m->anchor_id >= m->objs.size()) {
-        DBG("Invalid anchor id: %d", m->anchor_id);
-        return -1;
-    }
-    m->acnhor_y = m->objs[m->anchor_id].off.y;
-    m->was_init = true;
-    return 0;
-}
-
-/* The drawing position is to the left of the bb and on the center of that side  */
-inline int mathd_draw(ImVec2 pos, mathd_p m) {
-    if (!m || !m->was_init) {
-        DBG("Invalid element, can't draw it");
-        return -1;
-    }
-    auto bb = mathd_get_bb(m);
-    auto expr_tl = pos + ImVec2(0, -bb.h);
-    auto expr_origin = expr_tl + ImVec2(-m->min_x, -m->min_y);
-    if (m->cbk)
-        m->cbk(m, pos);
-    for (auto &obj : m->objs) {
-        auto obj_center = expr_origin + obj.off + ImVec2(0, m->acnhor_y);
-        switch (obj.type) {
-            case MATHD_OBJ_SUBEXPR: {
-                auto subexpr_bb = mathd_get_bb(obj.expr);
-                auto subexpr_pos = ImVec2(-subexpr_bb.w, 0) + obj_center;
-                ASSERT_FN(mathd_draw(subexpr_pos, obj.expr));
-                if (mathd_draw_boxes) {
-                    mathd_draw_bb(obj_center, subexpr_bb, 0xff'00ff00);
-                    mathd_draw_bb(obj_center, obj.bb, 0xff'00aa00);
-                }
-            } break;
-            case MATHD_OBJ_SYMB: {
-                auto ssz = char_get_sz(obj.sym);
-                auto symb_bb = mathd_char_bb(obj.sym);
-                auto symb_pos = ImVec2(-symb_bb.w, +symb_bb.h) - ssz.bl + obj_center;
-                char_draw(symb_pos, obj.sym);
-                if (mathd_draw_boxes) {
-                    mathd_draw_bb(obj_center, symb_bb, 0xff'ff0000);
-                    mathd_draw_bb(obj_center, obj.bb, 0xff'aa0000);
-                }
-            } break;
-            case MATHD_OBJ_EMPTY: {
-                if (mathd_draw_boxes) {
-                    mathd_draw_bb(obj_center, obj.bb, 0xff'0000ff); /* bgr */
-                }
-            } break;
-            default: {
-                DBG("Unknown expresion type to draw");
-                return -1;
-            };
-        }
-    }
-    return 0;
-}
-
-inline mathd_p mathd_empty() {
-    auto m = mathd_make(mathd_t {
-        .type = MATHD_TYPE_EMPTY_BOX,
-        .anchor_id = 0,
-        .cmds = {
-            { .type = MATHD_EMPTY, .spawn_id = 0, .bb = {0, 0} },
-        },
-    });
-    if (mathd_init(m, {}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
-}
-
-inline mathd_p mathd_symbol(char_t sym) {
-    auto m = mathd_make(mathd_t {
+    auto [sym_min, sym_max] = char_get_draw_box(sym);
+    auto ret = mathd_make(mathd_t{
         .type = MATHD_TYPE_SYMBOL,
-        .anchor_id = 0,
-        .cmds = {
-            { .type = MATHD_SYM, .spawn_id = 0, .sym = sym },
-        },
+        .symb = sym,
+        .size = sym_max - sym_min,
+        .voff = 0,
+        .vcenter = (is_char ? h : (sym_max.y + sym_min.y) / 2.0f),
+        .is_char = is_char,
     });
-    if (mathd_init(m, {}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
+
+    return ret;
 }
 
 inline mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t bigop) {
     float distancer = MATHD_DISTANCER_BIGO * char_get_lvl_mul((char_font_lvl_e)bigop.flvl);
-    auto m = mathd_make(mathd_t {
-        .type = MATHD_TYPE_BIGOP,
-        .anchor_id = 0,
-        .cmds = {
-            { .type = MATHD_SYM, .spawn_id = 0, .sym = bigop },
-            { .type = MATHD_EMPTY, .spawn_id = 5, .bb = {distancer, 0}},
-            { .type = MATHD_EMPTY, .spawn_id = 6, .bb = {distancer, 0}},
-            { .type = MATHD_EXPR, .param = 1, .spawn_id = 2 },
-            { .type = MATHD_EXPR, .param = 2, .spawn_id = 3 },
-            { .type = MATHD_ABOVE, .src_id = 0, .dst_id = 5 },
-            { .type = MATHD_ABOVE, .src_id = 5, .dst_id = 2 },
-            { .type = MATHD_BELLOW, .src_id = 0, .dst_id = 6 },
-            { .type = MATHD_BELLOW, .src_id = 6, .dst_id = 3 },
-            { .type = MATHD_MERGE, .spawn_id = 4 },
-            { .type = MATHD_EXPR, .param = 0, .spawn_id = 1 },
-            { .type = MATHD_RIGHT, .src_id = 4, .dst_id = 1 },
-        },
-    });
-    if (mathd_init(m, {right, above, bellow}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
-};
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_BIGOP });
+    auto op = mathd_symbol(bigop, false);
+
+    ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
+        {op,     ImVec2(0, 0)}, /* The operator is drawn first */
+        {above,  ImVec2( above->size.x/2.,-distancer - op->size.y/2. - above->size.y)},
+        {bellow, ImVec2(bellow->size.x/2., distancer + op->size.y/2. + bellow->size.y)},
+        {right,  ImVec2(distancer + op->size.x, 0)},
+    };
+    ret->size = ImVec2(  distancer + op->size.x + right->size.x,
+                       2*distancer + op->size.y + above->size.y + bellow->size.y);
+
+    return ret;
+}
 
 inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline) {
-    /* get the bounding boxes of the elements */
     float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)divline.flvl);
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_FRAC });
+    auto dl = mathd_symbol(divline, false);
 
-    auto bb_above = mathd_get_bb(above);
-    auto bb_below = mathd_get_bb(bellow);
-    auto bb_sym = mathd_char_bb(divline);
-
-    /* get the number of frac lines to place */
-    int cnt = std::ceil(std::max(bb_above.w, bb_below.w) / bb_sym.w);
+    float sz = std::max(bellow->size.x, above->size.x);
+    int cnt = std::ceil(sz / dl->size.x);
     if (cnt % 2 == 0)
         cnt++;
 
-    /* create the initial object */
-    auto m = mathd_make(mathd_t{
-        .type = MATHD_TYPE_FRAC,
-        .cmds = {},
-    });
+    sz = (cnt / 2) * dl->size.x;
+    ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
+        {above,  ImVec2(sz/2. - above->size.x/2., -above->size.y - distancer)},
+        {bellow, ImVec2(sz/2. - bellow->size.x/2., bellow->size.y + distancer)}
+    };
 
-    /* create the center line */
     for (int i = 0; i < cnt; i++) {
-        m->cmds.push_back({.type = MATHD_SYM, .spawn_id = i, .sym = divline });
+        ret->subobjs.push_back({mathd_symbol(divline, false), ImVec2(i * dl->size.x, 0)});
     }
-    for (int i = 1; i < cnt; i++) {
-        m->cmds.push_back({.type = MATHD_RIGHT, .src_id = i-1, .dst_id = i});
-    }
-    int center = cnt / 2;
-    m->anchor_id = center,
 
-    /* add the two elements  */
-    m->cmds.push_back({.type = MATHD_EXPR, .param = 0, .spawn_id = cnt  });
-    m->cmds.push_back({.type = MATHD_EXPR, .param = 1, .spawn_id = cnt+1});
-
-    /* put the two elements above and bellow the center line */
-    m->cmds.push_back({.type = MATHD_EMPTY, .spawn_id = cnt+2, .bb = {distancer, 0}});
-    m->cmds.push_back({.type = MATHD_EMPTY, .spawn_id = cnt+3, .bb = {distancer, 0}});
-    m->cmds.push_back({.type = MATHD_ABOVE, .src_id = center, .dst_id = cnt+2});
-    m->cmds.push_back({.type = MATHD_ABOVE, .src_id = cnt+2, .dst_id = cnt});
-    m->cmds.push_back({.type = MATHD_BELLOW, .src_id = center, .dst_id = cnt+3});
-    m->cmds.push_back({.type = MATHD_BELLOW, .src_id = cnt+3, .dst_id = cnt+1});
-
-    /* place a filler for the element that is smaller, such that the center line will remain in the
-    center */
-    // mathd_cmd_e fill_type = MATHD_BELLOW;
-    // int fill_id = cnt+1;
-    // if (bb_above.h < bb_below.h) {
-    //     fill_id = cnt;
-    //     fill_type = MATHD_ABOVE;
-    // }
-    // float fill_sz = (std::max(bb_above.h, bb_below.h) - std::min(bb_above.h, bb_below.h));
-    // m->cmds.push_back({.type = MATHD_EMPTY, .spawn_id = cnt+4, .bb = {fill_sz, 0}});
-    // m->cmds.push_back({.type = fill_type, .src_id = fill_id, .dst_id = cnt+4});
-
-    if (mathd_init(m, {above, bellow}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
+    ret->size = ImVec2(cnt * dl->size.x, 2*distancer + above->size.y + bellow->size.y);
+    return ret;
 }
 
 inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub) {
-    auto m = mathd_make(mathd_t {
-        .type = MATHD_TYPE_SUPSUB,
-        .anchor_id = 0,
-        .cmds = {
-            { .type = MATHD_EXPR, .param = 0, .spawn_id = 0 },
-            { .type = MATHD_EXPR, .param = 1, .spawn_id = 1 },
-            { .type = MATHD_EXPR, .param = 2, .spawn_id = 2 },
-            { .type = MATHD_SUP, .src_id = 0, .dst_id = 1},
-            { .type = MATHD_SUB, .src_id = 0, .dst_id = 2},
-        },
-    });
-    if (mathd_init(m, {base, sup, sub}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_SUPSUB });
+
+    ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
+        {base, ImVec2(0, 0)},
+        {sup,  ImVec2(base->size.x, 0 /* TODO: I want at most 1/3 of the base object and once that is ok*/)},
+        {sub,  ImVec2(base->size.x, 0 /* TODO: at least 2/3 of the other be outside (viewed vertically) */)},
+    };
+
+    ret->size = ImVec2(base->size.x + std::max(sup->size.x, sub->size.x), 0/* TODO: */);
+    return ret;
 }
 
-inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bsym) {
-    /* TODO: fix brackets to auto-resize */
-    auto m = mathd_make(mathd_t {
-        .type = MATHD_TYPE_BRACKET,
-        .anchor_id = 0,
-        .cmds = {
-            { .type = MATHD_EXPR, .param = 0, .spawn_id = 0 },
-            { .type = MATHD_SYM, .spawn_id = 1, .sym = bsym.left[0] },
-            { .type = MATHD_SYM, .spawn_id = 2, .sym = bsym.right[0] },
-            { .type = MATHD_LEFT, .src_id = 0, .dst_id = 1 },
-            { .type = MATHD_RIGHT, .src_id = 0, .dst_id = 2 },
-        },
-    });
-    if (mathd_init(m, {expr}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
+inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
+    // float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)op.flvl);
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_UNAR_OP });
+
+    // inline mathd_bracket_t mathd_brack_curly = {
+    //     .type = MATHD_BRACKET_CURLY,
+    //     .tl  = gchar(239),
+    //     .bl  = gchar(241),
+    //     .tr  = gchar(240),
+    //     .br  = gchar(242),
+    //     .cl  = gchar(243),
+    //     .cr  = gchar(244),
+    //     .con = gchar(225),
+    //     .left = { gchar(213), gchar(214), gchar(215), gchar(216) },
+    //     .right = { gchar(217), gchar(218), gchar(219), gchar(220) },
+    // };
+
+    // MATHD_TYPE_BRACKET
+    /* TODO: this is very similar to he vertical lines thing */
+    return ret;
 }
 
 inline mathd_p mathd_unarexpr(char_t op, mathd_p b) {
-    const float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)op.flvl);
-    auto m = mathd_make(mathd_t {
-        .type = MATHD_TYPE_BRACKET,
-        .anchor_id = 0,
-        .cmds = {
-            { .type = MATHD_EXPR, .param = 0, .spawn_id = 0 },
-            { .type = MATHD_SYM, .spawn_id = 1, .sym = op },
-            { .type = MATHD_EMPTY, .spawn_id = 2, .bb = {0, distancer} },
-            { .type = MATHD_RIGHT, .src_id = 1, .dst_id = 2 },
-            { .type = MATHD_RIGHT, .src_id = 2, .dst_id = 0 },
-        },
-    });
-    if (mathd_init(m, {b}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
+    float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)op.flvl);
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_UNAR_OP });
+    /* TODO: */
+    return ret;
 }
 
 inline mathd_p mathd_binexpr(mathd_p a, char_t op, mathd_p b) {
     float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)op.flvl);
-    auto m = mathd_make(mathd_t {
-        .type = MATHD_TYPE_BRACKET,
-        .anchor_id = 2,
-        .cmds = {
-            { .type = MATHD_EXPR, .param = 0, .spawn_id = 0 },
-            { .type = MATHD_EXPR, .param = 1, .spawn_id = 1 },
-            { .type = MATHD_SYM, .spawn_id = 2, .sym = op },
-            { .type = MATHD_EMPTY, .spawn_id = 3, .bb = {0, distancer} },
-            { .type = MATHD_EMPTY, .spawn_id = 4, .bb = {0, distancer} },
-            { .type = MATHD_LEFT, .src_id = 2, .dst_id = 3 },
-            { .type = MATHD_LEFT, .src_id = 3, .dst_id = 0 },
-            { .type = MATHD_RIGHT, .src_id = 2, .dst_id = 4 },
-            { .type = MATHD_RIGHT, .src_id = 4, .dst_id = 1 },
-        },
-    });
-    if (mathd_init(m, {a, b}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_BINAR_OP });
+    /* TODO: */
+
+    return ret;
 }
 
 inline mathd_p mathd_merge_h(mathd_p l, mathd_p r) {
-    auto m = mathd_make(mathd_t {
-        .type = MATHD_TYPE_BRACKET,
-        .anchor_id = 2,
-        .cmds = {
-            { .type = MATHD_EXPR, .param = 0, .spawn_id = 0 },
-            { .type = MATHD_EXPR, .param = 1, .spawn_id = 1 },
-            { .type = MATHD_EMPTY, .spawn_id = 2, .bb = {}},
-            { .type = MATHD_RIGHT, .src_id = 0, .dst_id = 2 },
-            { .type = MATHD_RIGHT, .src_id = 2, .dst_id = 1 },
-        },
-    });
-    if (mathd_init(m, {l, r}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_MERGE_HORIZONTAL });
+
+    /* TODO: */
+    return ret;
 }
 
 inline mathd_p mathd_merge_v(mathd_p u, mathd_p d) {
-    auto m = mathd_make(mathd_t {
-        .type = MATHD_TYPE_BRACKET,
-        .anchor_id = 2,
-        .cmds = {
-            { .type = MATHD_EXPR, .param = 0, .spawn_id = 0 },
-            { .type = MATHD_EXPR, .param = 1, .spawn_id = 1 },
-            { .type = MATHD_EMPTY, .spawn_id = 2, .bb = {}},
-            { .type = MATHD_BELLOW, .src_id = 0, .dst_id = 2 },
-            { .type = MATHD_BELLOW, .src_id = 2, .dst_id = 1 },
-        },
-    });
-    if (mathd_init(m, {u, d}) < 0) {
-        DBG("Failed to init object");
-        return nullptr;
-    }
-    return m;
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_MERGE_VERTICAL });
+
+    /* TODO: */
+    return ret;
+}
+
+inline mathd_bb_t mathd_get_bb(mathd_p m, ImVec2 pos) {
+    /* TODO: */
+    return mathd_bb_t {};
 }
 
 template <typename ...Args>

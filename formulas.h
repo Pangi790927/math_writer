@@ -29,7 +29,7 @@ struct formula_box_t : public cbox_i {
         char_font_lvl_e font1 = FONT_LVL_SUB2;
         char_font_lvl_e font2 = FONT_LVL_SUB4;
 
-        auto empty = mathd_empty();
+        auto empty = mathd_empty(0, 0);
         auto eset = mathd_symbol(mathd_convert(MATHD_hash, font2));
         auto sym_e = mathd_symbol(mathd_convert(MATHD_e, font0));
         auto sym_e1 = mathd_symbol(mathd_convert(MATHD_e, font1));
@@ -60,7 +60,7 @@ struct formula_box_t : public cbox_i {
     std::pair<float, float> draw_area(float width_limit, float height_limit) override {
         if (formula) {
             auto bb = mathd_get_bb(formula);
-            return {bb.w*2, bb.h*2};
+            return {bb.br.x - bb.tl.x, bb.br.y - bb.tl.y};
         }
         return {0.0f, 0.0f};
     }
@@ -68,7 +68,7 @@ struct formula_box_t : public cbox_i {
     void draw(ImVec2 pos, float width_limit, float height_limit) override {
         if (formula) {
             auto bb = mathd_get_bb(formula);
-            mathd_draw(pos + ImVec2(0, bb.h), formula);
+            mathd_draw(pos, formula);
         }
     }
 };
