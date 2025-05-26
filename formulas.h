@@ -24,7 +24,7 @@ inline formula_box_p formulas_create() {
 struct formula_box_t : public cbox_i {
     mathd_p formula;
 
-    void update() override {
+    formula_box_t() {
         char_font_lvl_e font0 = FONT_LVL_SUB0;
         char_font_lvl_e font1 = FONT_LVL_SUB2;
         char_font_lvl_e font2 = FONT_LVL_SUB4;
@@ -52,6 +52,9 @@ struct formula_box_t : public cbox_i {
         auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));
         auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
         formula = frac2;
+    }
+
+    void update() override {
     }
 
     std::pair<float, float> draw_area(float width_limit, float height_limit) override {
