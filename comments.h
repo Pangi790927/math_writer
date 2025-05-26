@@ -17,36 +17,7 @@ inline comment_box_p comments_create();
  * =================================================================================================
  */
 
-inline char_t comment_normal[128] = {};
-inline char_t comment_italic[128] = {};
-inline char_t comment_bold[128] = {};
-inline char_t comment_special[128] = {};
-
 inline int comments_init() {
-    for (uint8_t code = 0x20; code < 0x7F; code++) {
-        char_font_num_e fnum = FONT_NORMAL;
-        char_font_lvl_e flvl = FONT_LVL_SUB2;
-
-        uint8_t _fcod = code;
-        comment_normal[code] = gascii(code);
-        if (comment_normal[code].fnum == FONT_MATH)
-            comment_normal[code].fnum = FONT_NORMAL;
-        if (comment_normal[code].flvl != FONT_LVL_SPECIAL)
-            comment_normal[code].flvl = flvl;
-        else {
-            DBG("Failed to get code: %d [%c]", code, code);
-            return -1;
-        }
-
-        comment_bold[code] = comment_normal[code];
-        if (comment_bold[code].fnum == FONT_NORMAL)
-            comment_bold[code].fnum = FONT_BOLD;
-
-        comment_italic[code] = comment_normal[code];
-        if (comment_italic[code].fnum == FONT_NORMAL)
-            comment_italic[code].fnum = FONT_ITALIC;
-    }
-    comment_special['\n'] = char_t{.acod='\n', .flvl=FONT_LVL_SPECIAL};
     return 0;
 }
 
@@ -370,8 +341,8 @@ private:
             auto g = gascii('g');
             G.flvl = i;
             g.flvl = i;
-            auto [G1, G2] = char_get_draw_box(ImVec2(0, 0), G);
-            auto [g1, g2] = char_get_draw_box(ImVec2(0, 0), g);
+            auto [G1, G2] = char_get_draw_box(G, ImVec2(0, 0));
+            auto [g1, g2] = char_get_draw_box(g, ImVec2(0, 0));
             comments_line_height[i] = g2.y - G1.y;
             comments_pos_increment[i] = G1.y;
         }
