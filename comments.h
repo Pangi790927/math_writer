@@ -341,8 +341,8 @@ private:
             auto g = gascii('g');
             G.flvl = i;
             g.flvl = i;
-            auto [G1, G2] = char_get_draw_box(ImVec2(0, 0), G);
-            auto [g1, g2] = char_get_draw_box(ImVec2(0, 0), g);
+            auto [G1, G2] = char_get_draw_box(G, ImVec2(0, 0));
+            auto [g1, g2] = char_get_draw_box(g, ImVec2(0, 0));
             comments_line_height[i] = g2.y - G1.y;
             comments_pos_increment[i] = G1.y;
         }

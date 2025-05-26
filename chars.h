@@ -76,7 +76,7 @@ inline ImFont *char_get_font(const char_t& c);
 inline void char_draw(ImVec2 pos, const char_t& c);
 inline bool char_toggle_bb(bool val);
 inline float char_get_lvl_mul(char_font_lvl_e lvl);
-inline std::pair<ImVec2, ImVec2> char_get_draw_box(ImVec2 pos, const char_t& c);
+inline std::pair<ImVec2, ImVec2> char_get_draw_box(const char_t& c, ImVec2 pos = ImVec2(0, 0));
 
 /* IMPLEMENTATION
  * =================================================================================================
@@ -166,7 +166,7 @@ inline ImFont *char_get_font(const char_t& c) {
     return fonts[c.flvl][c.fnum];
 }
 
-inline std::pair<ImVec2, ImVec2> char_get_draw_box(ImVec2 pos, const char_t& c) {
+inline std::pair<ImVec2, ImVec2> char_get_draw_box(const char_t& c, ImVec2 pos) {
     auto ssz = char_get_sz(c);
 
     ImVec2 bl = ssz.bl + pos;

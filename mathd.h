@@ -95,32 +95,154 @@ struct mathd_cmd_t {
     mathd_bb_t bb;
 };
 
-struct mathd_t {
-    mathd_e type;
-    int anchor_id = -1;
-    std::vector<mathd_cmd_t> cmds;
+// struct mathd_t {
+//     mathd_e type;
+//     int anchor_id = -1;
+//     std::vector<mathd_cmd_t> cmds;
 
-/* TODO: maybe protect those? */
-    std::vector<mathd_obj_t> objs;
-    std::map<int, int> id_mapping;
-    bool was_init = false;
-    float acnhor_y = 0;
-    float max_x = 0, max_y = 0, min_x = 0, min_y = 0;
-    std::function<void(mathd_p, ImVec2)> cbk;
-    std::shared_ptr<void> usr_ptr;
+// /* TODO: maybe protect those? */
+//     std::vector<mathd_obj_t> objs;
+//     std::map<int, int> id_mapping;
+//     bool was_init = false;
+//     float acnhor_y = 0;
+//     float max_x = 0, max_y = 0, min_x = 0, min_y = 0;
+//     std::function<void(mathd_p, ImVec2)> cbk;
+//     std::shared_ptr<void> usr_ptr;
+// };
+
+/* NEW */
+
+struct mathd_bb_t {
+    ImVec2 tl = ImVec2(0, 0); /*!< Holds the minimums of the bounding box, so, the top-left */
+    ImVec2 br = ImVec2(0, 0); /*!< Holds the maximums of the bounding box, so, the bottom-right */
 };
+
+struct mathd_t {
+    mathd_e type;               /*!< IN: The type that this object will hold */
+    char_t symb;                /*!< IN: Optional symbol if this object is a leaf */
+
+    std::vector<math_p> subobj; /*!< IN:  The subobjects of this object */
+    std::vector<ImVec2> subpos; /*!< OUT: The position of the new objects after arranging them */
+    ImVec2 size;                /*!< OUT: The calculated bounding box of this element */
+    float voff = 0.0f;          /*!< OUT: Vertical offset of the object */
+    float vcenter = 0.0f;       /*!< IN:  The */
+
+    union {
+        struct {
+            uint64_t is_char : 1;
+        };
+        uint64_t flags = 0;
+    };
+
+    std::function<void(mathd_p, ImVec2)> cbk;   /*!< This will be called on diverse actions */
+    std::shared_ptr<void> usr_ptr;              /*!< This is the user's pointer */
+};
+
+/* \NEW */
 
 template <typename ...Args>
 inline mathd_p mathd_make(Args&&... args);
 
-inline int mathd_draw(ImVec2 pos, mathd_p m);
+inline std::pair<float, float> mathd_a_horiz_sz(char_font_lvl_e flvl) {
+    static std::unordered_map<char_font_lvl_e, std::pair<float, float>> sizes;
+    if (!has(sizes, flvl)) {
+        auto a = gascii('a');
+        a.flvl = flvl;
+        auto [a_min, a_max] = char_get_draw_box(a);
+        sizes[flvl] = std::pair{a_min.y, a_max.y};
+    }
+    return sizes[flvl];
+}
 
-inline mathd_p mathd_empty();
-inline mathd_p mathd_symbol(char_t sym);
-inline mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t bigop);
-inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline);
-inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub);
-inline mathd_p mathd_bracket(mathd_p expr, char_t lb, char_t rb);
+inline void mathd_draw(ImVec2 pos, mathd_p m) {
+    if (m->type == MATHD_TYPE_SYMBOL) {
+        /* Characters are drawn from the baseline upwards */
+        /* TODO: use vcenter or voff or both */
+        char_draw(pos + ImVec2(0, -mathd_a_horiz_sz(m->symb.flvl).second), m->symb);
+    }
+    for (int i = 0; i < subobj.size(); i++)
+        mathd_draw(pos + subpos[i], subobj[i]);
+}
+
+inline mathd_p mathd_empty(float x, float y) {
+    return mathd_make(mathd_t{.type = MATHD_TYPE_EMPTY_BOX });
+}
+
+inline mathd_p mathd_symbol(char_t sym, bool is_char = true) {
+    float h = (mathd_a_horiz_sz(sym.flvl).first + mathd_a_horiz_sz(sym.flvl).second) / 2.;
+
+    auto [sym_min, sym_max] = char_get_draw_box(sym);
+    return mathd_make(mathd_t{
+        .type = MATHD_TYPE_SYMBOL,
+        .sym = sym,
+        .size = sym_max - sym_min,
+        .voff = 0,
+        .vcenter = is_char ? h : (sym_max.y + sym_min.y) / 2.,
+        .is_char = is_char,
+    });
+}
+
+inline mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t bigop) {
+    float distancer = MATHD_DISTANCER_BIGO * char_get_lvl_mul((char_font_lvl_e)bigop.flvl);
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_BIGOP });
+    auto op = mathd_symbol(bigop, false);
+
+    ret->subobj = std::vector<mathd_p>{ op, above, bellow, right };
+    ret->subpos = std::vector<ImVec2> {
+        ImVec2(0, 0), /* The operator is drawn first */
+        ImVec2( above->size.x/2.,-distancer - op->size.y/2. - above->size),
+        ImVec2(bellow->size.x/2., distancer + op->size.y/2. + bellow->size),
+        ImVec2(distancer + op->size.x, 0)
+    };
+    ret->size = ImVec2(  distancer + op->size.x + right->size.x,
+                       2*distancer + op->size.y + above->size.y + bellow.size.y);
+
+    return ret;
+}
+
+inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline) {
+    float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)divline.flvl);
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_FRAC });
+    auto dl = mathd_symbol(divline, false);
+
+    float sz = std::max(bellow->size.x, above->size.x);
+    int cnt = std::ceil(sz / dl->size.x);
+    if (cnt % 2 == 0)
+        cnt++;
+
+    sz = (cnt / 2) * dl->size.x;
+    ret->subobj = std::vector<mathd_p>{ above, bellow };
+    ret->subpos = std::vector<ImVec2> {
+        ImVec2(sz/2. - above.x/2., -above->size.y - distancer),
+        ImVec2(sz/2. - bellow.x/2., bellow->size.y + distancer)
+    };
+
+    for (int i = 0; i < cnt; i++) {
+        ret->subobj->push_back(mathd_symbol(divline, false));
+        ret->subpos->push_back(ImVec2(i * dl->size.x, 0));
+    }
+
+    ret->size = ImVec2(cnt * dl->size.x, 2*distancer + above->size.y + bellow->size.y);
+    return ret;
+}
+
+inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub) {
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_SUPSUB });
+
+    ret->subobj = std::vector<mathd_p>{ base, sup, sub };
+    ret->subpos = std::vector<ImVec2> {
+        ImVec2(0, 0),
+        ImVec2(base->size.x, 0 /* TODO: I want at most 1/3 of the base object and once that is ok*/),
+        ImVec2(base->size.x, 0 /* TODO: at least 2/3 of the other be outside (viewed vertically) */),
+    };
+
+    ret->size = ImVec2(base->size.x + std::max(sup->size.x, sub->size.x), /* TODO: */)
+}
+
+inline mathd_p mathd_bracket(mathd_p expr, char_t lb, char_t rb) {
+    /* TODO: this is very similar to */
+}
+
 inline mathd_p mathd_unarexpr(char_t op, mathd_p b);
 inline mathd_p mathd_binexpr(mathd_p a, char_t op, mathd_p b);
 inline mathd_p mathd_merge_h(mathd_p l, mathd_p r);
