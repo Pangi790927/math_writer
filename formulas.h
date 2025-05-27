@@ -29,29 +29,49 @@ struct formula_box_t : public cbox_i {
         char_font_lvl_e font1 = FONT_LVL_SUB2;
         char_font_lvl_e font2 = FONT_LVL_SUB4;
 
-        auto empty = mathd_empty(0, 0);
-        auto eset = mathd_symbol(mathd_convert(MATHD_hash, font2));
-        auto sym_e = mathd_symbol(mathd_convert(MATHD_e, font0));
-        auto sym_e1 = mathd_symbol(mathd_convert(MATHD_e, font1));
-        auto sym_a0 = mathd_symbol(mathd_convert(MATHD_a, font0));
-        auto sym_a1 = mathd_symbol(mathd_convert(MATHD_a, font1));
-        auto sym_a2 = mathd_symbol(mathd_convert(MATHD_a, font2));
-        auto sym_n1 = mathd_symbol(mathd_convert(MATHD_n, font2));
-        auto binar = mathd_binexpr(sym_e, mathd_convert(MATHD_plus, font0), sym_a0);
-        auto binar_1 = mathd_binexpr(sym_e1, mathd_convert(MATHD_plus, font1), sym_a1);
-        auto integ = mathd_bigop(sym_a0, sym_e1, binar_1, mathd_convert(MATHD_integral, font0));
-        auto unar = mathd_unarexpr(mathd_convert(MATHD_minus, font0), sym_e);
-        auto unar_1 = mathd_unarexpr(mathd_convert(MATHD_minus, font1), sym_e1);
-        auto n_eq_1 = mathd_binexpr(sym_n1, mathd_convert(MATHD_equal, font1), sym_e1);
-        auto sum = mathd_bigop(integ, unar_1, n_eq_1, mathd_convert(MATHD_sum, font0));
-        auto sym_exp = mathd_supsub(sym_e, sym_a1, empty);
-        auto binar2 = mathd_binexpr(binar, mathd_convert(MATHD_plus, font0), sum);
-        auto frac = mathd_frac(sym_exp, binar2, mathd_convert(MATHD_hline_basic, font0));
-        auto binar3 = mathd_binexpr(frac, mathd_convert(MATHD_minus, font0), sym_exp);
-        auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
-        auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));
-        auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
-        formula = frac2;
+        auto empty      = mathd_empty(0, 0);
+        auto eset       = mathd_symbol(mathd_convert(MATHD_hash, font2));
+        auto sym_a      = mathd_symbol(mathd_convert(gascii('a'), font0));
+        auto sym_e      = mathd_symbol(mathd_convert(gascii('e'), font0));
+        auto sym_a_1    = mathd_symbol(mathd_convert(gascii('a'), font1));
+        auto sym_e_1    = mathd_symbol(mathd_convert(gascii('e'), font1));
+        auto sym_B      = mathd_symbol(mathd_convert(gascii('B'), font0));
+        auto sym_B_1    = mathd_symbol(mathd_convert(gascii('B'), font1));
+        auto sym_h_1    = mathd_symbol(mathd_convert(gascii('h'), font1));
+        auto sym_g      = mathd_symbol(mathd_convert(gascii('g'), font0));
+        auto sym_g_1    = mathd_symbol(mathd_convert(gascii('g'), font1));
+        auto sym_a_2    = mathd_symbol(mathd_convert(gascii('a'), font2));
+        auto sym_n_1    = mathd_symbol(mathd_convert(gascii('n'), font1));
+        auto plus       = mathd_convert(MATHD_plus, font0);
+        auto plus_1     = mathd_convert(MATHD_plus, font1);
+        auto sum        = mathd_convert(MATHD_sum, font0);
+        auto sum_1      = mathd_convert(MATHD_sum, font1);
+        auto minus      = mathd_convert(MATHD_minus, font0);
+        auto minus_1    = mathd_convert(MATHD_minus, font1);
+        auto integral   = mathd_convert(MATHD_integral, font0);
+        auto integral_1 = mathd_convert(MATHD_integral, font1);
+        auto equal      = mathd_convert(MATHD_equal, font0);
+        auto equal_1    = mathd_convert(MATHD_equal, font1);
+        auto plus1      = mathd_convert(MATHD_plus, font1);
+        auto binar      = mathd_binexpr(sym_g, plus, sym_B);
+        auto binar2     = mathd_binexpr(binar, plus, sym_a);
+        auto binar_1    = mathd_binexpr(sym_g_1, plus_1, sym_h_1);
+        auto integ_1    = mathd_bigop(sym_a, sym_e_1, binar_1, integral); /* keep the bigops symbols one tier higher */
+        auto int_sym    = mathd_symbol(integral, false);
+        auto unar       = mathd_unarexpr(minus, sym_e);
+        auto unar_1     = mathd_unarexpr(minus_1, sym_e_1);
+        auto n_eq_1     = mathd_binexpr(sym_n_1, equal_1, sym_e_1);
+        auto sum_eq     = mathd_bigop(integ_1, unar_1, n_eq_1, sum);
+        auto sym_exp    = mathd_supsub(sym_e, sym_a_1, nullptr);
+        auto sym_sub    = mathd_supsub(sym_e, nullptr, sym_a_1);
+        auto sym_sub_exp= mathd_supsub(sym_e, integ_1, sym_n_1);
+        // auto binar2 = mathd_binexpr(binar, mathd_convert(MATHD_plus, font0), sum);
+        // auto frac = mathd_frac(sym_exp, binar2, mathd_convert(MATHD_hline_basic, font0));
+        // auto binar3 = mathd_binexpr(frac, mathd_convert(MATHD_minus, font0), sym_exp);
+        // auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
+        // auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));
+        // auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
+        formula = sym_sub_exp;
     }
 
     void update() override {
@@ -66,10 +86,7 @@ struct formula_box_t : public cbox_i {
     }
 
     void draw(ImVec2 pos, float width_limit, float height_limit) override {
-        if (formula) {
-            auto bb = mathd_get_bb(formula);
-            mathd_draw(pos, formula);
-        }
+        mathd_draw(pos, formula);
     }
 };
 

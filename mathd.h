@@ -113,11 +113,6 @@ inline bool mathd_draw_boxes = false;
 #define MATHD_comma             (gchar( 11))
 
 #define MATHD_equal             (gchar( 27))
-
-#define MATHD_e                 (gchar( 65))
-#define MATHD_a                 (gchar( 61))
-#define MATHD_n                 (gchar( 74))
-
 #define MATHD_minus             (gchar(181))
 #define MATHD_integral          (gchar(191))
 #define MATHD_sum               (gchar(192))
@@ -166,43 +161,52 @@ inline mathd_bracket_t mathd_brack_curly = {
     .right = { gchar(217), gchar(218), gchar(219), gchar(220) },
 };
 
-inline std::pair<float, float> mathd_a_horiz_sz(char_font_lvl_e flvl) {
-    static std::unordered_map<char_font_lvl_e, std::pair<float, float>> sizes;
-    if (!HAS(sizes, flvl)) {
-        auto a = gascii('a');
-        a.flvl = flvl;
-        auto [a_min, a_max] = char_get_draw_box(a);
-        sizes[flvl] = std::pair{a_min.y, a_max.y};
-    }
-    return sizes[flvl];
-}
-
 inline void mathd_draw(ImVec2 pos, mathd_p m) {
+    if (!m)
+        return ;
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    auto bb = mathd_get_bb(m, pos);
+    if (mathd_draw_boxes) {
+        draw_list->AddRect(bb.tl, bb.br, 0xff'ffff00);
+
+        auto voff_center = bb.tl + ImVec2(0, m->voff);
+        draw_list->AddLine(voff_center - ImVec2(m->voff/4., 0), voff_center + ImVec2(m->voff/4., 0),
+                0xff'ff00ff);
+    }
     if (m->type == MATHD_TYPE_SYMBOL) {
-        /* Characters are drawn from the baseline upwards */
-        /* TODO: use vcenter or voff or both */
-        auto off = ImVec2(0, -mathd_a_horiz_sz((char_font_lvl_e)m->symb.flvl).second);
+        auto off = ImVec2(0, -char_get_draw_box(m->symb).first.y);
         char_draw(pos + off, m->symb);
     }
-    for (auto &[obj, obj_pos] : m->subobjs)
+    for (auto &[obj, obj_pos] : m->subobjs) {
         mathd_draw(pos + obj_pos, obj);
+    }
 }
 
 inline mathd_p mathd_empty(float x, float y) {
-    return mathd_make(mathd_t{.type = MATHD_TYPE_EMPTY_BOX });
+    return mathd_make(mathd_t{
+        .type = MATHD_TYPE_EMPTY_BOX,
+        .size = ImVec2(x, y)
+    });
 }
 
 inline mathd_p mathd_symbol(char_t sym, bool is_char) {
-    auto def_size = mathd_a_horiz_sz((char_font_lvl_e)sym.flvl);
-    float h = (def_size.first + def_size.second) / 2.;
+    auto a = gascii('a');
+    a.flvl = sym.flvl;
+    auto [a_min, a_max] = char_get_draw_box(a);
+    auto [s_min, s_max] = char_get_draw_box(sym);
+    float hmed = (a_max.y - a_min.y) / 2.;
 
-    auto [sym_min, sym_max] = char_get_draw_box(sym);
     auto ret = mathd_make(mathd_t{
         .type = MATHD_TYPE_SYMBOL,
         .symb = sym,
-        .size = sym_max - sym_min,
-        .voff = 0,
-        .vcenter = (is_char ? h : (sym_max.y + sym_min.y) / 2.0f),
+        .size = s_max - s_min,
+
+        /* If we have a character (in the sense: part of a name), it's anchor point is the middle of
+        the character 'a' above the baseline, else if it's a symbol, it's center is the anchor point
+        (for example for the integral sign) */
+        .voff = is_char ? a_min.y - s_min.y + hmed : (s_max.y - s_min.y) / 2.0f,
+
+        /* This is the flag that remembers that this symbol type is variable-like or sign-like */
         .is_char = is_char,
     });
 
@@ -214,14 +218,29 @@ inline mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t 
     auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_BIGOP });
     auto op = mathd_symbol(bigop, false);
 
+    float aux_x = std::max(std::max(op->size.x, above->size.x), bellow->size.x) / 2.0f;
+    float aux_y = std::max(above->size.y + distancer + op->size.y / 2.0f, right->voff);
+
+    float op_x = aux_x - op->size.x/2;
+    float above_x = aux_x - above->size.x/2.;
+    float bellow_x = aux_x - bellow->size.x/2.;
+
+    float op_y = aux_y - op->size.y/2.;
+
+    /* TODO: maybe see if it fits between the integrands and place the right side there */
+    float right_x = distancer + std::max(std::max(op_x + op->size.x, above_x + above->size.x),
+            bellow_x + bellow->size.x);
+    float right_y = op_y + op->voff - right->voff;
+
     ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
-        {op,     ImVec2(0, 0)}, /* The operator is drawn first */
-        {above,  ImVec2( above->size.x/2.,-distancer - op->size.y/2. - above->size.y)},
-        {bellow, ImVec2(bellow->size.x/2., distancer + op->size.y/2. + bellow->size.y)},
-        {right,  ImVec2(distancer + op->size.x, 0)},
+        {op,     ImVec2(op_x,     op_y)},
+        {above,  ImVec2(above_x,  op_y - distancer - above->size.y)},
+        {bellow, ImVec2(bellow_x, op_y + distancer + op->size.y)},
+        {right,  ImVec2(right_x,  right_y)},
     };
-    ret->size = ImVec2(  distancer + op->size.x + right->size.x,
-                       2*distancer + op->size.y + above->size.y + bellow->size.y);
+    float h = std::max(op_y + distancer + op->size.y + bellow->size.y, right_y + right->size.y);
+    ret->size = ImVec2(right_x + right->size.x, h);
+    ret->voff = op_y + op->voff;
 
     return ret;
 }
@@ -247,19 +266,30 @@ inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline) {
     }
 
     ret->size = ImVec2(cnt * dl->size.x, 2*distancer + above->size.y + bellow->size.y);
+    ret->voff = /* TODO */0;
     return ret;
 }
 
 inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub) {
     auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_SUPSUB });
 
+    float base_y = sup ? sup->size.y - base->size.y / 3. : 0;
+    if (sup && sup->size.y < base->size.y / 3.)
+        base_y = sup->size.y * 2./3.;
+
+    float sub_y = base_y + base->size.y / 3.;
+    if (sub && sub->size.y < base->size.y)
+        sub_y = base_y + base->size.y - sub->size.y / 3.;
+
     ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
-        {base, ImVec2(0, 0)},
-        {sup,  ImVec2(base->size.x, 0 /* TODO: I want at most 1/3 of the base object and once that is ok*/)},
-        {sub,  ImVec2(base->size.x, 0 /* TODO: at least 2/3 of the other be outside (viewed vertically) */)},
+        {sup,  ImVec2(base->size.x, 0)},
+        {base, ImVec2(0, base_y)},
+        {sub,  ImVec2(base->size.x, sub_y)},
     };
 
-    ret->size = ImVec2(base->size.x + std::max(sup->size.x, sub->size.x), 0/* TODO: */);
+    ret->size = ImVec2(base->size.x + std::max(sup ? sup->size.x : 0, sub ? sub->size.x : 0),
+            sub ? sub->size.y + sub_y : base_y + base->size.y);
+    ret->voff = base->voff + base_y;
     return ret;
 }
 
@@ -285,17 +315,46 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
     return ret;
 }
 
-inline mathd_p mathd_unarexpr(char_t op, mathd_p b) {
+inline mathd_p mathd_unarexpr(char_t op, mathd_p a) {
     float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)op.flvl);
-    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_UNAR_OP });
-    /* TODO: */
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_BINAR_OP });
+    auto sym_op = mathd_symbol(op);
+
+    float aoff = a->voff - sym_op->voff;
+    float hmax = std::max(aoff, 0.0f);
+    ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
+        {sym_op, ImVec2(0,                         hmax - 0)},
+        {a,      ImVec2(sym_op->size.x + distancer, hmax - aoff)},
+    };
+
+    float h = std::max(hmax - aoff + a->size.y, hmax + sym_op->size.y);
+    ret->size = ImVec2(a->size.x + sym_op->size.x + distancer, h);
+
+    /* the center is inherited from the operator */
+    ret->voff = hmax + sym_op->voff;
     return ret;
 }
 
 inline mathd_p mathd_binexpr(mathd_p a, char_t op, mathd_p b) {
     float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)op.flvl);
     auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_BINAR_OP });
-    /* TODO: */
+    auto sym_op = mathd_symbol(op);
+
+    float aoff = a->voff - sym_op->voff;
+    float boff = b->voff - sym_op->voff;
+    float hmax = std::max(std::max(aoff, boff), 0.0f);
+    ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
+        {a,      ImVec2(0,                                         hmax - aoff)},
+        {sym_op, ImVec2(a->size.x + distancer,                     hmax - 0)},
+        {b,      ImVec2(sym_op->size.x + a->size.x + 2.*distancer, hmax - boff)},
+    };
+
+    float h = std::max(std::max(hmax - aoff + a->size.y, hmax - boff + b->size.y),
+            hmax + sym_op->size.y);
+    ret->size = ImVec2(a->size.x + b->size.x + sym_op->size.x + distancer*2., h);
+
+    /* the center is inherited from the operator */
+    ret->voff = hmax + sym_op->voff;
 
     return ret;
 }
@@ -315,8 +374,7 @@ inline mathd_p mathd_merge_v(mathd_p u, mathd_p d) {
 }
 
 inline mathd_bb_t mathd_get_bb(mathd_p m, ImVec2 pos) {
-    /* TODO: */
-    return mathd_bb_t {};
+    return mathd_bb_t{ .tl = pos, .br = pos + m->size };
 }
 
 template <typename ...Args>
