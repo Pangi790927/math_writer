@@ -14,6 +14,7 @@
 #include "debug.h"
 
 enum mathd_e : int {
+    MATHD_TYPE_INTERNAL,
     MATHD_TYPE_EMPTY_BOX,
     MATHD_TYPE_SYMBOL,
     MATHD_TYPE_BIGOP,
@@ -37,15 +38,15 @@ using mathd_p = std::shared_ptr<mathd_t>;
 
 struct mathd_bracket_t {
     mathd_bracket_e type;
-    char_t tl;
-    char_t bl;
-    char_t tr;
-    char_t br;
-    char_t cl;
-    char_t cr;
-    char_t con;
-    char_t left[4];
-    char_t right[4];
+    char_t tl;          /* top left */
+    char_t bl;          /* bottom left */
+    char_t tr;          /* top right */
+    char_t br;          /* bottom right */
+    char_t cl;          /* center left */
+    char_t cr;          /* center right */
+    char_t con;         /* connector */
+    char_t left[4];     /* smaller brackets left part */
+    char_t right[4];    /* smaller brackets right part */
 };
 
 struct mathd_bb_t {
@@ -97,8 +98,8 @@ inline mathd_bracket_t mathd_convert(mathd_bracket_t msym, char_font_lvl_e font_
 
 /* TODO: matrix stuff */
 
-// inline bool mathd_draw_boxes = true;
-inline bool mathd_draw_boxes = false;
+inline bool mathd_draw_boxes = true;
+// inline bool mathd_draw_boxes = false;
 
 /* IMPLEMENTATION
  * =================================================================================================
@@ -246,6 +247,7 @@ inline mathd_p mathd_bigop(mathd_p right, mathd_p above, mathd_p bellow, char_t 
 }
 
 inline mathd_p mathd_frac(mathd_p above, mathd_p bellow, char_t divline) {
+    /* TODO; */
     float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)divline.flvl);
     auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_FRAC });
     auto dl = mathd_symbol(divline, false);
@@ -294,24 +296,92 @@ inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub) {
 }
 
 inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
-    // float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)op.flvl);
+    float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)bracket.left[0].flvl);
     auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_UNAR_OP });
 
-    // inline mathd_bracket_t mathd_brack_curly = {
-    //     .type = MATHD_BRACKET_CURLY,
-    //     .tl  = gchar(239),
-    //     .bl  = gchar(241),
-    //     .tr  = gchar(240),
-    //     .br  = gchar(242),
-    //     .cl  = gchar(243),
-    //     .cr  = gchar(244),
-    //     .con = gchar(225),
-    //     .left = { gchar(213), gchar(214), gchar(215), gchar(216) },
-    //     .right = { gchar(217), gchar(218), gchar(219), gchar(220) },
-    // };
+    auto sym_h = [](char_t sym) {
+        return char_get_draw_box(sym).second.y - char_get_draw_box(sym).first.y;
+    };
 
-    // MATHD_TYPE_BRACKET
-    /* TODO: this is very similar to he vertical lines thing */
+    /* First we need to select the appropiate paranthesis dimension for the expression and construct
+    the paranthesis objects */
+    mathd_p lb, rb;
+    if (sym_h(bracket.left[3]) > expr->size.y) {
+        lb = mathd_symbol(bracket.left[3], false);
+        rb = mathd_symbol(bracket.right[3], false);
+        DBG("level 0 bracket");
+    }
+    else if (sym_h(bracket.left[2]) > expr->size.y) {
+        lb = mathd_symbol(bracket.left[2], false);
+        rb = mathd_symbol(bracket.right[2], false);
+        DBG("level 1 bracket");
+    }
+    else if (sym_h(bracket.left[1]) > expr->size.y) {
+        lb = mathd_symbol(bracket.left[1], false);
+        rb = mathd_symbol(bracket.right[1], false);
+        DBG("level 2 bracket");
+    }
+    else if (sym_h(bracket.left[0]) > expr->size.y) {
+        lb = mathd_symbol(bracket.left[0], false);
+        rb = mathd_symbol(bracket.right[0], false);
+        DBG("level 3 bracket");
+    }
+    else {
+        DBG("level N bracket");
+        lb = mathd_make(mathd_t{ .type = MATHD_TYPE_INTERNAL });
+        rb = mathd_make(mathd_t{ .type = MATHD_TYPE_INTERNAL });
+        auto lb_tl = mathd_symbol(bracket.tl, false);
+        auto lb_bl = mathd_symbol(bracket.bl, false);
+        auto lb_cl = mathd_symbol(bracket.cl, false);
+        auto rb_tr = mathd_symbol(bracket.tr, false);
+        auto rb_br = mathd_symbol(bracket.br, false);
+        auto rb_cr = mathd_symbol(bracket.cr, false);
+        auto con = mathd_symbol(bracket.con, false);
+
+        float sz = lb_tl->size.y + lb_cl->size.y + lb_bl->size.y;
+        int con_cnt = 0;
+        if (sz < expr->size.y) {
+            con_cnt = std::ceil((sz - std::ceil(sz / con->size.y)) / con->size.y);
+            if (con_cnt % 2 == 1)
+                con_cnt++;
+        }
+
+        lb->subobjs.push_back({lb_tl, ImVec2(0, 0)});
+        rb->subobjs.push_back({rb_tr, ImVec2(0, 0)});
+        float off_y = lb_tl->size.y;
+        for (int i = 0; i < con_cnt / 2; i++) {
+            lb->subobjs.push_back({con, ImVec2(0, off_y)});
+            rb->subobjs.push_back({con, ImVec2(0, off_y)});
+            off_y += con->size.y;
+        }
+        lb->subobjs.push_back({lb_cl, ImVec2(0, off_y)});
+        rb->subobjs.push_back({rb_cr, ImVec2(0, off_y)});
+        off_y += lb_cl->size.y;
+        for (int i = 0; i < con_cnt / 2; i++) {
+            lb->subobjs.push_back({con, ImVec2(0, off_y)});
+            rb->subobjs.push_back({con, ImVec2(0, off_y)});
+            off_y += con->size.y;
+        }
+        lb->subobjs.push_back({lb_bl, ImVec2(0, off_y)});
+        rb->subobjs.push_back({rb_br, ImVec2(0, off_y)});
+        off_y += lb_bl->size.y;
+        lb->size = ImVec2(std::max({lb_tl->size.x, con->size.x, lb_cl->size.x, lb_bl->size.x}), off_y);
+        rb->size = ImVec2(std::max({rb_tr->size.x, con->size.x, rb_cr->size.x, rb_br->size.x}), off_y);
+        lb->voff = off_y/2.;
+        rb->voff = off_y/2.;
+    }
+
+    /* afterwards we construct the final object */
+    float h = (lb->size.y - expr->size.y) / 2.;
+    ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
+        {lb,   ImVec2(0, 0)},
+        {expr, ImVec2(lb->size.x + distancer, h)},
+        {rb,   ImVec2(expr->size.x + 2*distancer, 0)},
+    };    
+
+    ret->size = ImVec2(expr->size.x + 2*distancer + lb->size.x + rb->size.x, lb->size.y);
+    ret->voff = expr->voff + h;
+
     return ret;
 }
 
@@ -329,8 +399,6 @@ inline mathd_p mathd_unarexpr(char_t op, mathd_p a) {
 
     float h = std::max(hmax - aoff + a->size.y, hmax + sym_op->size.y);
     ret->size = ImVec2(a->size.x + sym_op->size.x + distancer, h);
-
-    /* the center is inherited from the operator */
     ret->voff = hmax + sym_op->voff;
     return ret;
 }
@@ -352,8 +420,6 @@ inline mathd_p mathd_binexpr(mathd_p a, char_t op, mathd_p b) {
     float h = std::max(std::max(hmax - aoff + a->size.y, hmax - boff + b->size.y),
             hmax + sym_op->size.y);
     ret->size = ImVec2(a->size.x + b->size.x + sym_op->size.x + distancer*2., h);
-
-    /* the center is inherited from the operator */
     ret->voff = hmax + sym_op->voff;
 
     return ret;

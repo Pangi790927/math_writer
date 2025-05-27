@@ -29,7 +29,7 @@ struct formula_box_t : public cbox_i {
         char_font_lvl_e font1 = FONT_LVL_SUB2;
         char_font_lvl_e font2 = FONT_LVL_SUB4;
 
-        auto empty      = mathd_empty(0, 0);
+        auto empty      = mathd_empty(100, 160);
         auto eset       = mathd_symbol(mathd_convert(MATHD_hash, font2));
         auto sym_a      = mathd_symbol(mathd_convert(gascii('a'), font0));
         auto sym_e      = mathd_symbol(mathd_convert(gascii('e'), font0));
@@ -65,13 +65,15 @@ struct formula_box_t : public cbox_i {
         auto sym_exp    = mathd_supsub(sym_e, sym_a_1, nullptr);
         auto sym_sub    = mathd_supsub(sym_e, nullptr, sym_a_1);
         auto sym_sub_exp= mathd_supsub(sym_e, integ_1, sym_n_1);
+        auto sq_brack   = mathd_convert(mathd_brack_square, font0);
+        auto brack      = mathd_bracket(empty, sq_brack);
         // auto binar2 = mathd_binexpr(binar, mathd_convert(MATHD_plus, font0), sum);
         // auto frac = mathd_frac(sym_exp, binar2, mathd_convert(MATHD_hline_basic, font0));
         // auto binar3 = mathd_binexpr(frac, mathd_convert(MATHD_minus, font0), sym_exp);
         // auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
         // auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));
         // auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
-        formula = sym_sub_exp;
+        formula = brack;
     }
 
     void update() override {
