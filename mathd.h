@@ -341,7 +341,7 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
         float sz = lb_tl->size.y + lb_cl->size.y + lb_bl->size.y;
         int con_cnt = 0;
         if (sz < expr->size.y) {
-            con_cnt = std::ceil((sz - std::ceil(sz / con->size.y)) / con->size.y);
+            con_cnt = std::ceil((expr->size.y - sz) / con->size.y);
             if (con_cnt % 2 == 1)
                 con_cnt++;
         }
