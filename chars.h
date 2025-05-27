@@ -176,7 +176,7 @@ inline std::pair<ImVec2, ImVec2> char_get_draw_box(const char_t& c, ImVec2 pos) 
             ImVec2{std::max(bl.x, tr.x), std::max(bl.y, tr.y)}};
 }
 
-inline void char_draw(ImVec2 pos, const char_t& c) {
+inline void char_draw(ImVec2 pos, const char_t& c, uint32_t color) {
     auto ssz = char_get_sz(c);
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -192,7 +192,7 @@ inline void char_draw(ImVec2 pos, const char_t& c) {
     auto font = char_get_font(c);
     ImGui::PushFont(font);
     
-    font->RenderChar(draw_list, font->FontSize, pos, 0xff'eeeeee, c.fcod);
+    font->RenderChar(draw_list, font->FontSize, pos, color, c.fcod);
     if (draw_bb_chars) {
         draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), 0xff'00ffff, 1);
         draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), 0xff'00ffff, 1);

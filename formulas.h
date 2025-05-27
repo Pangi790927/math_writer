@@ -29,7 +29,7 @@ struct formula_box_t : public cbox_i {
         char_font_lvl_e font1 = FONT_LVL_SUB2;
         char_font_lvl_e font2 = FONT_LVL_SUB4;
 
-        auto empty      = mathd_empty(100, 180);
+        auto empty      = mathd_empty(100, 2000);
         auto eset       = mathd_symbol(mathd_convert(MATHD_hash, font2));
         auto sym_a      = mathd_symbol(mathd_convert(gascii('a'), font0));
         auto sym_e      = mathd_symbol(mathd_convert(gascii('e'), font0));
@@ -65,15 +65,31 @@ struct formula_box_t : public cbox_i {
         auto sym_exp    = mathd_supsub(sym_e, sym_a_1, nullptr);
         auto sym_sub    = mathd_supsub(sym_e, nullptr, sym_a_1);
         auto sym_sub_exp= mathd_supsub(sym_e, integ_1, sym_n_1);
-        auto sq_brack   = mathd_convert(mathd_brack_square, font0);
-        auto brack      = mathd_bracket(empty, sq_brack);
+        auto sqr_brack  = mathd_convert(mathd_brack_square, font0);
+        auto crl_brack  = mathd_convert(mathd_brack_round, font0);
+        auto rnd_brack  = mathd_convert(mathd_brack_curly, font0);
+        auto sqr_brack_1= mathd_convert(mathd_brack_square, font1);
+        auto crl_brack_1= mathd_convert(mathd_brack_round, font1);
+        auto rnd_brack_1= mathd_convert(mathd_brack_curly, font1);
+        auto sqr_brack_2= mathd_convert(mathd_brack_square, font2);
+        auto crl_brack_2= mathd_convert(mathd_brack_round, font2);
+        auto rnd_brack_2= mathd_convert(mathd_brack_curly, font2);
+        auto brack      = mathd_bracket(empty, sqr_brack);
+        auto brack1     = mathd_bracket(brack, crl_brack);
+        auto brack2     = mathd_bracket(brack1, rnd_brack);
+        auto brack_1    = mathd_bracket(brack2, sqr_brack_1);
+        auto brack1_1   = mathd_bracket(brack_1, crl_brack_1);
+        auto brack2_1   = mathd_bracket(brack1_1, rnd_brack_1);
+        auto brack_2    = mathd_bracket(brack2_1, sqr_brack_2);
+        auto brack1_2   = mathd_bracket(brack_2, crl_brack_2);
+        auto brack2_2   = mathd_bracket(brack1_2, rnd_brack_2);
         // auto binar2 = mathd_binexpr(binar, mathd_convert(MATHD_plus, font0), sum);
         // auto frac = mathd_frac(sym_exp, binar2, mathd_convert(MATHD_hline_basic, font0));
         // auto binar3 = mathd_binexpr(frac, mathd_convert(MATHD_minus, font0), sym_exp);
         // auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
         // auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));
         // auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
-        formula = brack;
+        formula = brack2_2;
     }
 
     void update() override {

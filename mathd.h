@@ -15,6 +15,7 @@
 
 enum mathd_e : int {
     MATHD_TYPE_INTERNAL,
+    MATHD_TYPE_LINE,
     MATHD_TYPE_EMPTY_BOX,
     MATHD_TYPE_SYMBOL,
     MATHD_TYPE_BIGOP,
@@ -44,7 +45,8 @@ struct mathd_bracket_t {
     char_t br;          /* bottom right */
     char_t cl;          /* center left */
     char_t cr;          /* center right */
-    char_t con;         /* connector */
+    char_t conl;        /* connector */
+    char_t conr;        /* connector */
     char_t left[4];     /* smaller brackets left part */
     char_t right[4];    /* smaller brackets right part */
 };
@@ -55,15 +57,19 @@ struct mathd_bb_t {
 };
 
 struct mathd_t {
-    mathd_e type; /*!< The type that this object will hold */
-    char_t symb;  /*!< Optional symbol if this object is a leaf */
+    mathd_e type;       /*!< The type that this object will hold */
+
+    char_t symb;        /*!< Optional symbol if this object is a leaf */
+
+    ImVec2 line_start;  /*!< Optional, if type is line */
+    ImVec2 line_end;    /*!< Optional, if type is line */
+    float line_width;   /*!< Optional, if type is line */
 
     /*! The subobjects of this object and their relative positions are stored in this */
     std::vector<std::pair<mathd_p, ImVec2>> subobjs;
 
     ImVec2 size;          /*!< The calculated bounding box of this element */
     float voff = 0.0f;    /*!< Vertical offset of the object */
-    float vcenter = 0.0f; /*!< The still don't know what to do with it */
 
     union {
         struct {
@@ -98,8 +104,8 @@ inline mathd_bracket_t mathd_convert(mathd_bracket_t msym, char_font_lvl_e font_
 
 /* TODO: matrix stuff */
 
-inline bool mathd_draw_boxes = true;
-// inline bool mathd_draw_boxes = false;
+// inline bool mathd_draw_boxes = true;
+inline bool mathd_draw_boxes = false;
 
 /* IMPLEMENTATION
  * =================================================================================================
@@ -129,9 +135,10 @@ inline mathd_bracket_t mathd_brack_round = {
     .bl  = gchar(233),
     .tr  = gchar(232),
     .br  = gchar(234),
-    .cl  = gchar(243),
-    .cr  = gchar(244),
-    .con = gchar(225),
+    .cl  = gchar(228),
+    .cr  = gchar(229),
+    .conl = gchar(228),
+    .conr = gchar(229),
     .left = { gchar(197), gchar(198), gchar(199), gchar(200) },
     .right = { gchar(201), gchar(202), gchar(203), gchar(204) },
 };
@@ -142,9 +149,10 @@ inline mathd_bracket_t mathd_brack_square = {
     .bl  = gchar(237),
     .tr  = gchar(236),
     .br  = gchar(238),
-    .cl  = gchar(243),
-    .cr  = gchar(244),
-    .con = gchar(225),
+    .cl  = gchar(226),
+    .cr  = gchar(227),
+    .conl = gchar(226),
+    .conr = gchar(227),
     .left = { gchar(205), gchar(206), gchar(207), gchar(208) },
     .right = { gchar(209), gchar(210), gchar(211), gchar(212) },
 };
@@ -157,7 +165,8 @@ inline mathd_bracket_t mathd_brack_curly = {
     .br  = gchar(242),
     .cl  = gchar(243),
     .cr  = gchar(244),
-    .con = gchar(225),
+    .conl = gchar(224),
+    .conr = gchar(224),
     .left = { gchar(213), gchar(214), gchar(215), gchar(216) },
     .right = { gchar(217), gchar(218), gchar(219), gchar(220) },
 };
@@ -176,7 +185,10 @@ inline void mathd_draw(ImVec2 pos, mathd_p m) {
     }
     if (m->type == MATHD_TYPE_SYMBOL) {
         auto off = ImVec2(0, -char_get_draw_box(m->symb).first.y);
-        char_draw(pos + off, m->symb);
+        char_draw(pos + off, m->symb, 0xff'eeeeee);
+    }
+    else if (m->type == MATHD_TYPE_LINE) {
+        draw_list->AddLine(pos + m->line_start, pos + m->line_end, 0xff'eeeeee, m->line_width);
     }
     for (auto &[obj, obj_pos] : m->subobjs) {
         mathd_draw(pos + obj_pos, obj);
@@ -328,6 +340,7 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
     }
     else {
         DBG("level N bracket");
+        float f = 1;
         lb = mathd_make(mathd_t{ .type = MATHD_TYPE_INTERNAL });
         rb = mathd_make(mathd_t{ .type = MATHD_TYPE_INTERNAL });
         auto lb_tl = mathd_symbol(bracket.tl, false);
@@ -336,12 +349,13 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
         auto rb_tr = mathd_symbol(bracket.tr, false);
         auto rb_br = mathd_symbol(bracket.br, false);
         auto rb_cr = mathd_symbol(bracket.cr, false);
-        auto con = mathd_symbol(bracket.con, false);
+        auto conl = mathd_symbol(bracket.conl, false);
+        auto conr = mathd_symbol(bracket.conr, false);
 
         float sz = lb_tl->size.y + lb_cl->size.y + lb_bl->size.y;
         int con_cnt = 0;
         if (sz < expr->size.y) {
-            con_cnt = std::ceil((expr->size.y - sz) / con->size.y);
+            con_cnt = std::ceil((expr->size.y - sz) / (conl->size.y*f));
             if (con_cnt % 2 == 1)
                 con_cnt++;
         }
@@ -349,24 +363,36 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
         lb->subobjs.push_back({lb_tl, ImVec2(0, 0)});
         rb->subobjs.push_back({rb_tr, ImVec2(0, 0)});
         float off_y = lb_tl->size.y;
+
+        // TODO: This doesn't work, try to make own brackets with ths:
+        // PathBezierCubicCurveTo
+
+        auto line = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE });
+        auto [a_min, a_max] = char_get_draw_box(bracket.conl);
+        float pos_x = (a_max.x + a_min.x) / 2.;
+        line->line_start = ImVec2(pos_x, 0);
+        line->line_end = ImVec2(pos_x, (con_cnt / 2) * conl->size.y);
+        line->line_width = (a_max.x - a_min.x) / 2.;
+        lb->subobjs.push_back({line, ImVec2(0, off_y)});
+
         for (int i = 0; i < con_cnt / 2; i++) {
-            lb->subobjs.push_back({con, ImVec2(0, off_y)});
-            rb->subobjs.push_back({con, ImVec2(0, off_y)});
-            off_y += con->size.y;
+            // lb->subobjs.push_back({conl, ImVec2(0, off_y)});
+            rb->subobjs.push_back({conr, ImVec2(0, off_y)});
+            off_y += conl->size.y*f;
         }
         lb->subobjs.push_back({lb_cl, ImVec2(0, off_y)});
         rb->subobjs.push_back({rb_cr, ImVec2(0, off_y)});
         off_y += lb_cl->size.y;
         for (int i = 0; i < con_cnt / 2; i++) {
-            lb->subobjs.push_back({con, ImVec2(0, off_y)});
-            rb->subobjs.push_back({con, ImVec2(0, off_y)});
-            off_y += con->size.y;
+            lb->subobjs.push_back({conl, ImVec2(0, off_y)});
+            rb->subobjs.push_back({conr, ImVec2(0, off_y)});
+            off_y += conl->size.y*f;
         }
         lb->subobjs.push_back({lb_bl, ImVec2(0, off_y)});
         rb->subobjs.push_back({rb_br, ImVec2(0, off_y)});
         off_y += lb_bl->size.y;
-        lb->size = ImVec2(std::max({lb_tl->size.x, con->size.x, lb_cl->size.x, lb_bl->size.x}), off_y);
-        rb->size = ImVec2(std::max({rb_tr->size.x, con->size.x, rb_cr->size.x, rb_br->size.x}), off_y);
+        lb->size = ImVec2(std::max({lb_tl->size.x, conl->size.x, lb_cl->size.x, lb_bl->size.x}), off_y);
+        rb->size = ImVec2(std::max({rb_tr->size.x, conr->size.x, rb_cr->size.x, rb_br->size.x}), off_y);
         lb->voff = off_y/2.;
         rb->voff = off_y/2.;
     }
@@ -462,7 +488,8 @@ inline mathd_bracket_t mathd_convert(mathd_bracket_t bsym, char_font_lvl_e font_
         .br  = mathd_convert(bsym.br, font_lvl),
         .cl  = mathd_convert(bsym.cl, font_lvl),
         .cr  = mathd_convert(bsym.cr, font_lvl),
-        .con = mathd_convert(bsym.con, font_lvl),
+        .conl = mathd_convert(bsym.conl, font_lvl),
+        .conr = mathd_convert(bsym.conr, font_lvl),
         .left = {
             mathd_convert(bsym.left[0], font_lvl),
             mathd_convert(bsym.left[1], font_lvl),

@@ -310,7 +310,8 @@ struct comment_box_t : public cbox_i {
             }
             else {
                 chars[i].flvl = flvl;
-                char_draw(pos + off - ImVec2(0, comments_pos_increment[flvl]), chars[i]);
+                char_draw(pos + off - ImVec2(0, comments_pos_increment[flvl]), chars[i],
+                        0xff'eeeeee);
                 off.x += char_get_sz(chars[i]).adv;
             }
             if (i+1 == cursor_pos)
