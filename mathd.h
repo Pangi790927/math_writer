@@ -15,7 +15,7 @@
 
 enum mathd_e : int {
     MATHD_TYPE_INTERNAL,
-    MATHD_TYPE_LINE,
+    MATHD_TYPE_LINE_STRIP,
     MATHD_TYPE_EMPTY_BOX,
     MATHD_TYPE_SYMBOL,
     MATHD_TYPE_BIGOP,
@@ -61,9 +61,8 @@ struct mathd_t {
 
     char_t symb;        /*!< Optional symbol if this object is a leaf */
 
-    ImVec2 line_start;  /*!< Optional, if type is line */
-    ImVec2 line_end;    /*!< Optional, if type is line */
-    float line_width;   /*!< Optional, if type is line */
+    std::vector<ImVec2> line_strip; /*!< Optional, if type is MATHD_TYPE_LINE_STRIP */
+    float line_width = 1.0f;        /*!< Optional, if type is line */
 
     /*! The subobjects of this object and their relative positions are stored in this */
     std::vector<std::pair<mathd_p, ImVec2>> subobjs;
@@ -187,8 +186,10 @@ inline void mathd_draw(ImVec2 pos, mathd_p m) {
         auto off = ImVec2(0, -char_get_draw_box(m->symb).first.y);
         char_draw(pos + off, m->symb, 0xff'eeeeee);
     }
-    else if (m->type == MATHD_TYPE_LINE) {
-        draw_list->AddLine(pos + m->line_start, pos + m->line_end, 0xff'eeeeee, m->line_width);
+    else if (m->type == MATHD_TYPE_LINE_STRIP) {
+        for (int i = 1; i < m->line_strip.size(); i++)
+            draw_list->AddLine(pos + m->line_strip[i-1],
+                    pos + m->line_strip[i], 0xff'eeeeee, m->line_width);
     }
     for (auto &[obj, obj_pos] : m->subobjs) {
         mathd_draw(pos + obj_pos, obj);
@@ -307,6 +308,34 @@ inline mathd_p mathd_supsub(mathd_p base, mathd_p sup, mathd_p sub) {
     return ret;
 }
 
+/* This is taken from ImGui and transformed to fit my needs */
+static void beziere_path_rec(std::vector<ImVec2>& path, ImVec2 P1, ImVec2 P2, ImVec2 P3, ImVec2 P4,
+        int level = 0)
+{
+    static const float tess_tol = 1.25f;
+    float dx = P4.x4 - P1.x;
+    float dy = P4.y4 - P1.y;
+    float d2 = (P2.x2 - P4.x) * dy - (P2.y - P4.y) * dx;
+    float d3 = (x3 - P4.x) * dy - (y3 - P4.y) * dx;
+    d2 = (d2 >= 0) ? d2 : -d2;
+    d3 = (d3 >= 0) ? d3 : -d3;
+    if ((d2 + d3) * (d2 + d3) < tess_tol * (dx * dx + dy * dy))
+    {
+        path->push_back(ImVec2(x4, y4));
+    }
+    else if (level < 10)
+    {
+        float x12 = (P1.x + P2.x) * 0.5f, y12 = (P1.y + P2.y) * 0.5f;
+        float x23 = (P2.x2 + P3.x) * 0.5f, y23 = (P2.y + P3.y) * 0.5f;
+        float x34 = (P3.x + P4.x) * 0.5f, y34 = (P3.y + P4.y) * 0.5f;
+        float x123 = (x12 + x23) * 0.5f, y123 = (y12 + y23) * 0.5f;
+        float x234 = (x23 + x34) * 0.5f, y234 = (y23 + y34) * 0.5f;
+        float x1234 = (x123 + x234) * 0.5f, y1234 = (y123 + y234) * 0.5f;
+        beziere_path_rec(path, P1, ImVec2(x12, y12), ImVec2(x123, y123), ImVec2(x1234, y1234), level + 1);
+        beziere_path_rec(path, ImVec2(x1234, y1234), ImVec2(x234, y234), ImVec2(x34, y34), P4, level + 1);
+    }
+}
+
 inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
     float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)bracket.left[0].flvl);
     auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_UNAR_OP });
@@ -366,14 +395,18 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
 
         // TODO: This doesn't work, try to make own brackets with ths:
         // PathBezierCubicCurveTo
+        // CurveTessellationTol = 1.25f
 
-        auto line = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE });
+        auto line = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
         auto [a_min, a_max] = char_get_draw_box(bracket.conl);
         float pos_x = (a_max.x + a_min.x) / 2.;
-        line->line_start = ImVec2(pos_x, 0);
-        line->line_end = ImVec2(pos_x, (con_cnt / 2) * conl->size.y);
+        line->line_strip.push_back(ImVec2(pos_x, 0));
+        line->line_strip.push_back(ImVec2(pos_x, (con_cnt / 2) * conl->size.y));
         line->line_width = (a_max.x - a_min.x) / 2.;
         lb->subobjs.push_back({line, ImVec2(0, off_y)});
+
+        /* last p1, p2 - controll p3 - final point */
+        // PathBezierCubicCurveTo
 
         for (int i = 0; i < con_cnt / 2; i++) {
             // lb->subobjs.push_back({conl, ImVec2(0, off_y)});
