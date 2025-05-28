@@ -313,20 +313,20 @@ static void beziere_path_rec(std::vector<ImVec2>& path, ImVec2 P1, ImVec2 P2, Im
         int level = 0)
 {
     static const float tess_tol = 1.25f;
-    float dx = P4.x4 - P1.x;
-    float dy = P4.y4 - P1.y;
-    float d2 = (P2.x2 - P4.x) * dy - (P2.y - P4.y) * dx;
-    float d3 = (x3 - P4.x) * dy - (y3 - P4.y) * dx;
+    float dx = P4.x - P1.x;
+    float dy = P4.y - P1.y;
+    float d2 = (P2.x - P4.x) * dy - (P2.y - P4.y) * dx;
+    float d3 = (P3.x - P4.x) * dy - (P3.y - P4.y) * dx;
     d2 = (d2 >= 0) ? d2 : -d2;
     d3 = (d3 >= 0) ? d3 : -d3;
     if ((d2 + d3) * (d2 + d3) < tess_tol * (dx * dx + dy * dy))
     {
-        path->push_back(ImVec2(x4, y4));
+        path.push_back(ImVec2(P4.x, P4.y));
     }
     else if (level < 10)
     {
         float x12 = (P1.x + P2.x) * 0.5f, y12 = (P1.y + P2.y) * 0.5f;
-        float x23 = (P2.x2 + P3.x) * 0.5f, y23 = (P2.y + P3.y) * 0.5f;
+        float x23 = (P2.x + P3.x) * 0.5f, y23 = (P2.y + P3.y) * 0.5f;
         float x34 = (P3.x + P4.x) * 0.5f, y34 = (P3.y + P4.y) * 0.5f;
         float x123 = (x12 + x23) * 0.5f, y123 = (y12 + y23) * 0.5f;
         float x234 = (x23 + x34) * 0.5f, y234 = (y23 + y34) * 0.5f;
@@ -401,7 +401,12 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
         auto [a_min, a_max] = char_get_draw_box(bracket.conl);
         float pos_x = (a_max.x + a_min.x) / 2.;
         line->line_strip.push_back(ImVec2(pos_x, 0));
-        line->line_strip.push_back(ImVec2(pos_x, (con_cnt / 2) * conl->size.y));
+        beziere_path_rec(line->line_strip,
+                ImVec2(pos_x, 0),
+                ImVec2(pos_x + 100, 0),
+                ImVec2(pos_x - 100, (con_cnt / 2) * conl->size.y),
+                ImVec2(pos_x, (con_cnt / 2) * conl->size.y));
+
         line->line_width = (a_max.x - a_min.x) / 2.;
         lb->subobjs.push_back({line, ImVec2(0, off_y)});
 
