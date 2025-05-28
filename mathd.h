@@ -58,6 +58,7 @@ struct mathd_bb_t {
 
 struct mathd_t {
     mathd_e type;       /*!< The type that this object will hold */
+    uint32_t color = 0xff'eeeeee;
 
     char_t symb;        /*!< Optional symbol if this object is a leaf */
 
@@ -184,12 +185,15 @@ inline void mathd_draw(ImVec2 pos, mathd_p m) {
     }
     if (m->type == MATHD_TYPE_SYMBOL) {
         auto off = ImVec2(0, -char_get_draw_box(m->symb).first.y);
-        char_draw(pos + off, m->symb, 0xff'eeeeee);
+        char_draw(pos + off, m->symb, m->color);
     }
     else if (m->type == MATHD_TYPE_LINE_STRIP) {
         for (int i = 1; i < m->line_strip.size(); i++)
             draw_list->AddLine(pos + m->line_strip[i-1],
-                    pos + m->line_strip[i], 0xff'eeeeee, m->line_width);
+                    pos + m->line_strip[i], m->color, m->line_width);
+    }
+    else if (m->type == MATHD_TYPE_EMPTY_BOX) {
+        draw_list->AddRectFilled(bb.tl, bb.br, m->color);
     }
     for (auto &[obj, obj_pos] : m->subobjs) {
         mathd_draw(pos + obj_pos, obj);
@@ -350,25 +354,20 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
     if (sym_h(bracket.left[3]) > expr->size.y) {
         lb = mathd_symbol(bracket.left[3], false);
         rb = mathd_symbol(bracket.right[3], false);
-        DBG("level 0 bracket");
     }
     else if (sym_h(bracket.left[2]) > expr->size.y) {
         lb = mathd_symbol(bracket.left[2], false);
         rb = mathd_symbol(bracket.right[2], false);
-        DBG("level 1 bracket");
     }
     else if (sym_h(bracket.left[1]) > expr->size.y) {
         lb = mathd_symbol(bracket.left[1], false);
         rb = mathd_symbol(bracket.right[1], false);
-        DBG("level 2 bracket");
     }
     else if (sym_h(bracket.left[0]) > expr->size.y) {
         lb = mathd_symbol(bracket.left[0], false);
         rb = mathd_symbol(bracket.right[0], false);
-        DBG("level 3 bracket");
     }
     else {
-        DBG("level N bracket");
         float f = 1;
         lb = mathd_make(mathd_t{ .type = MATHD_TYPE_INTERNAL });
         rb = mathd_make(mathd_t{ .type = MATHD_TYPE_INTERNAL });
@@ -389,32 +388,30 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
                 con_cnt++;
         }
 
+        if (bracket.type == MATHD_BRACKET_SQUARE) {
+            float h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+            auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
+            auto [a_min, a_max] = char_get_draw_box(bracket.conl);
+            lines_l->line_strip.push_back(ImVec2(a_min.x + lb_tl->size.x, 0));
+            lines_l->line_strip.push_back(ImVec2(a_min.x + 0, 0));
+            lines_l->line_strip.push_back(ImVec2(a_min.x + 0, h));
+            lines_l->line_strip.push_back(ImVec2(a_min.x + lb_tl->size.x, h));
+            lines_l->line_width = conl->size.x;
+            lines_l->size = ImVec2(0, h);
+            lines_l->color = 0xff'ff00ff;
+            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+        }
+        // beziere_path_rec(line->line_strip,
+        //         ImVec2(pos_x, 0),
+        //         ImVec2(pos_x + 100, 0),
+        //         ImVec2(pos_x - 100, (con_cnt / 2) * conl->size.y),
+        //         ImVec2(pos_x, (con_cnt / 2) * conl->size.y));
+
         lb->subobjs.push_back({lb_tl, ImVec2(0, 0)});
         rb->subobjs.push_back({rb_tr, ImVec2(0, 0)});
         float off_y = lb_tl->size.y;
-
-        // TODO: This doesn't work, try to make own brackets with ths:
-        // PathBezierCubicCurveTo
-        // CurveTessellationTol = 1.25f
-
-        auto line = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
-        auto [a_min, a_max] = char_get_draw_box(bracket.conl);
-        float pos_x = (a_max.x + a_min.x) / 2.;
-        line->line_strip.push_back(ImVec2(pos_x, 0));
-        beziere_path_rec(line->line_strip,
-                ImVec2(pos_x, 0),
-                ImVec2(pos_x + 100, 0),
-                ImVec2(pos_x - 100, (con_cnt / 2) * conl->size.y),
-                ImVec2(pos_x, (con_cnt / 2) * conl->size.y));
-
-        line->line_width = (a_max.x - a_min.x) / 2.;
-        lb->subobjs.push_back({line, ImVec2(0, off_y)});
-
-        /* last p1, p2 - controll p3 - final point */
-        // PathBezierCubicCurveTo
-
         for (int i = 0; i < con_cnt / 2; i++) {
-            // lb->subobjs.push_back({conl, ImVec2(0, off_y)});
+            lb->subobjs.push_back({conl, ImVec2(0, off_y)});
             rb->subobjs.push_back({conr, ImVec2(0, off_y)});
             off_y += conl->size.y*f;
         }
@@ -519,7 +516,7 @@ inline char_t mathd_convert(char_t msym, char_font_lvl_e font_lvl) {
 
 inline mathd_bracket_t mathd_convert(mathd_bracket_t bsym, char_font_lvl_e font_lvl) {
     return mathd_bracket_t {
-        .type = MATHD_BRACKET_CURLY,
+        .type = bsym.type,
         .tl  = mathd_convert(bsym.tl, font_lvl),
         .bl  = mathd_convert(bsym.bl, font_lvl),
         .tr  = mathd_convert(bsym.tr, font_lvl),
