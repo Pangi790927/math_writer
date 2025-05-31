@@ -481,6 +481,7 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
                     ImVec2(c_min.x * .75 + c_max.x * .25, h),
                     ImVec2(c_max.x, h));
             lines_l->color = 0xff'eeeeee;
+            lines_l->line_width = conl->size.x;
             lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
 
             auto [d_min, d_max] = char_get_draw_box(bracket.tr);
@@ -513,6 +514,7 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
                     ImVec2(f_max.x * .75 + f_min.x * .25, h),
                     ImVec2(f_min.x, h));
             lines_r->color = 0xff'eeeeee;
+            lines_r->line_width = conr->size.x;
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
         }
 

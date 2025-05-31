@@ -29,7 +29,7 @@ struct formula_box_t : public cbox_i {
         char_font_lvl_e font1 = FONT_LVL_SUB2;
         char_font_lvl_e font2 = FONT_LVL_SUB4;
 
-        auto empty      = mathd_empty(100, 2000);
+        auto empty      = mathd_empty(100, 200);
         auto eset       = mathd_symbol(mathd_convert(MATHD_hash, font2));
         auto sym_a      = mathd_symbol(mathd_convert(gascii('a'), font0));
         auto sym_e      = mathd_symbol(mathd_convert(gascii('e'), font0));
