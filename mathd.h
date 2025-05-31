@@ -391,40 +391,149 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
         if (bracket.type == MATHD_BRACKET_SQUARE) {
             float h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
-            auto [a_min, a_max] = char_get_draw_box(bracket.conl);
-            lines_l->line_strip.push_back(ImVec2(a_min.x + lb_tl->size.x, 0));
-            lines_l->line_strip.push_back(ImVec2(a_min.x + 0, 0));
-            lines_l->line_strip.push_back(ImVec2(a_min.x + 0, h));
-            lines_l->line_strip.push_back(ImVec2(a_min.x + lb_tl->size.x, h));
+            auto [a_min, a_max] = char_get_draw_box(bracket.tl);
+            lines_l->line_strip.push_back(ImVec2(a_max.x, 0));
+            lines_l->line_strip.push_back(ImVec2(a_min.x, 0));
+            lines_l->line_strip.push_back(ImVec2(a_min.x, h));
+            lines_l->line_strip.push_back(ImVec2(a_max.x, h));
             lines_l->line_width = conl->size.x;
-            lines_l->size = ImVec2(0, h);
-            lines_l->color = 0xff'ff00ff;
+            lines_l->color = 0xff'eeeeee;
             lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
-        }
-        // beziere_path_rec(line->line_strip,
-        //         ImVec2(pos_x, 0),
-        //         ImVec2(pos_x + 100, 0),
-        //         ImVec2(pos_x - 100, (con_cnt / 2) * conl->size.y),
-        //         ImVec2(pos_x, (con_cnt / 2) * conl->size.y));
 
-        lb->subobjs.push_back({lb_tl, ImVec2(0, 0)});
-        rb->subobjs.push_back({rb_tr, ImVec2(0, 0)});
+            auto lines_r = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
+            auto [b_min, b_max] = char_get_draw_box(bracket.tr);
+            lines_r->line_strip.push_back(ImVec2(b_min.x + 0, 0));
+            lines_r->line_strip.push_back(ImVec2(b_max.x + 0, 0));
+            lines_r->line_strip.push_back(ImVec2(b_max.x + 0, h));
+            lines_r->line_strip.push_back(ImVec2(b_min.x + 0, h));
+            lines_r->line_width = conl->size.x;
+            lines_r->color = 0xff'eeeeee;
+            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+        }
+        else if (bracket.type == MATHD_BRACKET_ROUND) {
+            float h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+            auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
+            auto [a_min, a_max] = char_get_draw_box(bracket.tl);
+            lines_l->line_strip.push_back(ImVec2(a_max.x, 0));
+            beziere_path_rec(lines_l->line_strip,
+                ImVec2(a_max.x, 0),
+                ImVec2((a_max.x + a_min.x) / 2., lb_tl->size.y / 8.),
+                ImVec2(a_min.x, lb_tl->size.y / 8. * 3.),
+                ImVec2(a_min.x, lb_tl->size.y));
+            lines_l->line_strip.push_back(ImVec2(a_min.x, lb_tl->size.y));
+            beziere_path_rec(lines_l->line_strip,
+                    ImVec2(a_min.x, h - lb_bl->size.y),
+                    ImVec2(a_min.x, h - lb_bl->size.y / 8. * 3.),
+                    ImVec2((a_min.x + a_max.x) / 2., h - lb_bl->size.y / 8.),
+                    ImVec2(a_max.x, h));
+            lines_l->line_width = conl->size.x;
+            lines_l->color = 0xff'eeeeee;
+            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+
+            auto lines_r = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
+            auto [b_min, b_max] = char_get_draw_box(bracket.tr);
+            lines_r->line_strip.push_back(ImVec2(b_min.x, 0));
+            beziere_path_rec(lines_r->line_strip,
+                ImVec2(b_min.x, 0),
+                ImVec2((b_min.x + b_max.x) / 2., rb_tr->size.y / 8.),
+                ImVec2(b_max.x, rb_tr->size.y / 8. * 3.),
+                ImVec2(b_max.x, rb_tr->size.y));
+            lines_r->line_strip.push_back(ImVec2(b_max.x, rb_tr->size.y));
+            beziere_path_rec(lines_r->line_strip,
+                    ImVec2(b_max.x, h - rb_br->size.y),
+                    ImVec2(b_max.x, h - rb_br->size.y / 8. * 3.),
+                    ImVec2((b_max.x + b_min.x) / 2., h - rb_br->size.y / 8.),
+                    ImVec2(b_min.x, h));
+            lines_r->line_width = conr->size.x;
+            lines_r->color = 0xff'eeeeee;
+            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+        }
+        else if (bracket.type == MATHD_BRACKET_CURLY) {
+            float h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+            float h2 = h / 2.;
+            auto [a_min, a_max] = char_get_draw_box(bracket.tl);
+            auto [b_min, b_max] = char_get_draw_box(bracket.cl);
+            auto [c_min, c_max] = char_get_draw_box(bracket.bl);
+
+            auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
+            lines_l->line_strip.push_back(ImVec2(a_max.x, 0));
+            beziere_path_rec(lines_l->line_strip,
+                    ImVec2(a_max.x, 0),
+                    ImVec2(a_min.x * 0.75 + a_max.x * 0.25, 0),
+                    ImVec2(a_min.x, lb_tl->size.y * 0.25),
+                    ImVec2(a_min.x, lb_tl->size.y));
+            lines_l->line_strip.push_back(ImVec2(b_max.x, h2 - lb_cl->size.y * 0.5));
+            beziere_path_rec(lines_l->line_strip,
+                    ImVec2(b_max.x, h2 - lb_cl->size.y * 0.5),
+                    ImVec2(b_max.x, h2 + lb_cl->size.y * (.75 * .5 - .5)),
+                    ImVec2(b_max.x * 0.75 + b_min.x * 0.25, h2),
+                    ImVec2(b_min.x, h2));
+            lines_l->line_strip.push_back(ImVec2(b_min.x, h2));
+            beziere_path_rec(lines_l->line_strip,
+                    ImVec2(b_min.x, h2),
+                    ImVec2(b_min.x * .25 + b_max.x * .75, h2),
+                    ImVec2(b_max.x, h2 + lb_cl->size.y * .75 * .5),
+                    ImVec2(b_max.x, h2 + lb_cl->size.y * .5));
+            lines_l->line_strip.push_back(ImVec2(c_min.x, h - lb_bl->size.y));
+            beziere_path_rec(lines_l->line_strip,
+                    ImVec2(c_min.x, h - lb_bl->size.y),
+                    ImVec2(c_min.x, h - lb_bl->size.y * .25),
+                    ImVec2(c_min.x * .75 + c_max.x * .25, h),
+                    ImVec2(c_max.x, h));
+            lines_l->color = 0xff'eeeeee;
+            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+
+            auto [d_min, d_max] = char_get_draw_box(bracket.tr);
+            auto [e_min, e_max] = char_get_draw_box(bracket.cr);
+            auto [f_min, f_max] = char_get_draw_box(bracket.br);
+
+            auto lines_r = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
+            lines_r->line_strip.push_back(ImVec2(d_min.x, 0));
+            beziere_path_rec(lines_r->line_strip,
+                    ImVec2(d_min.x, 0),
+                    ImVec2(d_max.x * 0.75 + d_min.x * 0.25, 0),
+                    ImVec2(d_max.x, rb_tr->size.y * 0.25),
+                    ImVec2(d_max.x, rb_tr->size.y));
+            lines_r->line_strip.push_back(ImVec2(e_min.x, h2 - rb_cr->size.y * 0.5));
+            beziere_path_rec(lines_r->line_strip,
+                    ImVec2(e_min.x, h2 - rb_cr->size.y * 0.5),
+                    ImVec2(e_min.x, h2 + rb_cr->size.y * (.75 * .5 - .5)),
+                    ImVec2(e_min.x * 0.75 + e_max.x * 0.25, h2),
+                    ImVec2(e_max.x, h2));
+            lines_r->line_strip.push_back(ImVec2(e_max.x, h2));
+            beziere_path_rec(lines_r->line_strip,
+                    ImVec2(e_max.x, h2),
+                    ImVec2(e_max.x * .25 + e_min.x * .75, h2),
+                    ImVec2(e_min.x, h2 + rb_cr->size.y * .75 * .5),
+                    ImVec2(e_min.x, h2 + rb_cr->size.y * .5));
+            lines_r->line_strip.push_back(ImVec2(f_max.x, h - rb_br->size.y));
+            beziere_path_rec(lines_r->line_strip,
+                    ImVec2(f_max.x, h - rb_br->size.y),
+                    ImVec2(f_max.x, h - rb_br->size.y * .25),
+                    ImVec2(f_max.x * .75 + f_min.x * .25, h),
+                    ImVec2(f_min.x, h));
+            lines_r->color = 0xff'eeeeee;
+            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+        }
+
+        // lb->subobjs.push_back({lb_tl, ImVec2(0, 0)});
+        // rb->subobjs.push_back({rb_tr, ImVec2(0, 0)});
         float off_y = lb_tl->size.y;
         for (int i = 0; i < con_cnt / 2; i++) {
-            lb->subobjs.push_back({conl, ImVec2(0, off_y)});
-            rb->subobjs.push_back({conr, ImVec2(0, off_y)});
+            // lb->subobjs.push_back({conl, ImVec2(0, off_y)});
+            // rb->subobjs.push_back({conr, ImVec2(0, off_y)});
             off_y += conl->size.y*f;
         }
-        lb->subobjs.push_back({lb_cl, ImVec2(0, off_y)});
-        rb->subobjs.push_back({rb_cr, ImVec2(0, off_y)});
+        // lb->subobjs.push_back({lb_cl, ImVec2(0, off_y)});
+        // rb->subobjs.push_back({rb_cr, ImVec2(0, off_y)});
         off_y += lb_cl->size.y;
         for (int i = 0; i < con_cnt / 2; i++) {
-            lb->subobjs.push_back({conl, ImVec2(0, off_y)});
-            rb->subobjs.push_back({conr, ImVec2(0, off_y)});
+            // lb->subobjs.push_back({conl, ImVec2(0, off_y)});
+            // rb->subobjs.push_back({conr, ImVec2(0, off_y)});
             off_y += conl->size.y*f;
         }
-        lb->subobjs.push_back({lb_bl, ImVec2(0, off_y)});
-        rb->subobjs.push_back({rb_br, ImVec2(0, off_y)});
+        // lb->subobjs.push_back({lb_bl, ImVec2(0, off_y)});
+        // rb->subobjs.push_back({rb_br, ImVec2(0, off_y)});
         off_y += lb_bl->size.y;
         lb->size = ImVec2(std::max({lb_tl->size.x, conl->size.x, lb_cl->size.x, lb_bl->size.x}), off_y);
         rb->size = ImVec2(std::max({rb_tr->size.x, conr->size.x, rb_cr->size.x, rb_br->size.x}), off_y);
