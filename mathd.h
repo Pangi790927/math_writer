@@ -104,8 +104,8 @@ inline mathd_bracket_t mathd_convert(mathd_bracket_t msym, char_font_lvl_e font_
 
 /* TODO: matrix stuff */
 
-// inline bool mathd_draw_boxes = true;
-inline bool mathd_draw_boxes = false;
+inline bool mathd_draw_boxes = true;
+// inline bool mathd_draw_boxes = false;
 
 /* IMPLEMENTATION
  * =================================================================================================
@@ -388,8 +388,9 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
                 con_cnt++;
         }
 
+        float h = 0;
         if (bracket.type == MATHD_BRACKET_SQUARE) {
-            float h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+            h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
             auto [a_min, a_max] = char_get_draw_box(bracket.tl);
             lines_l->line_strip.push_back(ImVec2(a_max.x, 0));
@@ -411,7 +412,7 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
         }
         else if (bracket.type == MATHD_BRACKET_ROUND) {
-            float h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+            h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
             auto [a_min, a_max] = char_get_draw_box(bracket.tl);
             lines_l->line_strip.push_back(ImVec2(a_max.x, 0));
@@ -449,7 +450,7 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
         }
         else if (bracket.type == MATHD_BRACKET_CURLY) {
-            float h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+            h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             float h2 = h / 2.;
             auto [a_min, a_max] = char_get_draw_box(bracket.tl);
             auto [b_min, b_max] = char_get_draw_box(bracket.cl);
@@ -518,29 +519,8 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
         }
 
-        // lb->subobjs.push_back({lb_tl, ImVec2(0, 0)});
-        // rb->subobjs.push_back({rb_tr, ImVec2(0, 0)});
-        float off_y = lb_tl->size.y;
-        for (int i = 0; i < con_cnt / 2; i++) {
-            // lb->subobjs.push_back({conl, ImVec2(0, off_y)});
-            // rb->subobjs.push_back({conr, ImVec2(0, off_y)});
-            off_y += conl->size.y*f;
-        }
-        // lb->subobjs.push_back({lb_cl, ImVec2(0, off_y)});
-        // rb->subobjs.push_back({rb_cr, ImVec2(0, off_y)});
-        off_y += lb_cl->size.y;
-        for (int i = 0; i < con_cnt / 2; i++) {
-            // lb->subobjs.push_back({conl, ImVec2(0, off_y)});
-            // rb->subobjs.push_back({conr, ImVec2(0, off_y)});
-            off_y += conl->size.y*f;
-        }
-        // lb->subobjs.push_back({lb_bl, ImVec2(0, off_y)});
-        // rb->subobjs.push_back({rb_br, ImVec2(0, off_y)});
-        off_y += lb_bl->size.y;
-        lb->size = ImVec2(std::max({lb_tl->size.x, conl->size.x, lb_cl->size.x, lb_bl->size.x}), off_y);
-        rb->size = ImVec2(std::max({rb_tr->size.x, conr->size.x, rb_cr->size.x, rb_br->size.x}), off_y);
-        lb->voff = off_y/2.;
-        rb->voff = off_y/2.;
+        lb->size = ImVec2(std::max({lb_tl->size.x, conl->size.x, lb_cl->size.x, lb_bl->size.x}), h);
+        rb->size = ImVec2(std::max({rb_tr->size.x, conr->size.x, rb_cr->size.x, rb_br->size.x}), h);
     }
 
     /* afterwards we construct the final object */
@@ -548,7 +528,7 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
     ret->subobjs = std::vector<std::pair<mathd_p, ImVec2>> {
         {lb,   ImVec2(0, 0)},
         {expr, ImVec2(lb->size.x + distancer, h)},
-        {rb,   ImVec2(expr->size.x + 2*distancer, 0)},
+        {rb,   ImVec2(lb->size.x + expr->size.x + 2*distancer, 0)},
     };    
 
     ret->size = ImVec2(expr->size.x + 2*distancer + lb->size.x + rb->size.x, lb->size.y);
