@@ -341,9 +341,6 @@ static void beziere_path_rec(std::vector<ImVec2>& path, ImVec2 P1, ImVec2 P2, Im
 }
 
 inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
-    float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)bracket.left[0].flvl);
-    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_UNAR_OP });
-
     auto sym_h = [](char_t sym) {
         return char_get_draw_box(sym).second.y - char_get_draw_box(sym).first.y;
     };
@@ -393,20 +390,22 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
             h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
             auto [a_min, a_max] = char_get_draw_box(bracket.tl);
-            lines_l->line_strip.push_back(ImVec2(a_max.x, 0));
-            lines_l->line_strip.push_back(ImVec2(a_min.x, 0));
-            lines_l->line_strip.push_back(ImVec2(a_min.x, h));
-            lines_l->line_strip.push_back(ImVec2(a_max.x, h));
+            float minx = a_min.x;
+            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
+            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, 0));
+            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, h));
+            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, h));
             lines_l->line_width = conl->size.x;
             lines_l->color = 0xff'eeeeee;
             lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
 
             auto lines_r = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
             auto [b_min, b_max] = char_get_draw_box(bracket.tr);
-            lines_r->line_strip.push_back(ImVec2(b_min.x + 0, 0));
-            lines_r->line_strip.push_back(ImVec2(b_max.x + 0, 0));
-            lines_r->line_strip.push_back(ImVec2(b_max.x + 0, h));
-            lines_r->line_strip.push_back(ImVec2(b_min.x + 0, h));
+            minx = b_min.x;
+            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
+            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, 0));
+            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, h));
+            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, h));
             lines_r->line_width = conl->size.x;
             lines_r->color = 0xff'eeeeee;
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
@@ -415,36 +414,38 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
             h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
             auto [a_min, a_max] = char_get_draw_box(bracket.tl);
-            lines_l->line_strip.push_back(ImVec2(a_max.x, 0));
+            float minx = a_min.x;
+            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
             beziere_path_rec(lines_l->line_strip,
-                ImVec2(a_max.x, 0),
-                ImVec2((a_max.x + a_min.x) / 2., lb_tl->size.y / 8.),
-                ImVec2(a_min.x, lb_tl->size.y / 8. * 3.),
-                ImVec2(a_min.x, lb_tl->size.y));
-            lines_l->line_strip.push_back(ImVec2(a_min.x, lb_tl->size.y));
+                ImVec2(a_max.x - minx, 0),
+                ImVec2((a_max.x + a_min.x) / 2. - minx, lb_tl->size.y / 8.),
+                ImVec2(a_min.x - minx, lb_tl->size.y / 8. * 3.),
+                ImVec2(a_min.x - minx, lb_tl->size.y));
+            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, lb_tl->size.y));
             beziere_path_rec(lines_l->line_strip,
-                    ImVec2(a_min.x, h - lb_bl->size.y),
-                    ImVec2(a_min.x, h - lb_bl->size.y / 8. * 3.),
-                    ImVec2((a_min.x + a_max.x) / 2., h - lb_bl->size.y / 8.),
-                    ImVec2(a_max.x, h));
+                    ImVec2(a_min.x - minx, h - lb_bl->size.y),
+                    ImVec2(a_min.x - minx, h - lb_bl->size.y / 8. * 3.),
+                    ImVec2((a_min.x + a_max.x) / 2. - minx, h - lb_bl->size.y / 8.),
+                    ImVec2(a_max.x - minx, h));
             lines_l->line_width = conl->size.x;
             lines_l->color = 0xff'eeeeee;
             lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
 
             auto lines_r = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
             auto [b_min, b_max] = char_get_draw_box(bracket.tr);
-            lines_r->line_strip.push_back(ImVec2(b_min.x, 0));
+            minx = b_min.x;
+            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
             beziere_path_rec(lines_r->line_strip,
-                ImVec2(b_min.x, 0),
-                ImVec2((b_min.x + b_max.x) / 2., rb_tr->size.y / 8.),
-                ImVec2(b_max.x, rb_tr->size.y / 8. * 3.),
-                ImVec2(b_max.x, rb_tr->size.y));
-            lines_r->line_strip.push_back(ImVec2(b_max.x, rb_tr->size.y));
+                ImVec2(b_min.x - minx, 0),
+                ImVec2((b_min.x + b_max.x) / 2. - minx, rb_tr->size.y / 8.),
+                ImVec2(b_max.x - minx, rb_tr->size.y / 8. * 3.),
+                ImVec2(b_max.x - minx, rb_tr->size.y));
+            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, rb_tr->size.y));
             beziere_path_rec(lines_r->line_strip,
-                    ImVec2(b_max.x, h - rb_br->size.y),
-                    ImVec2(b_max.x, h - rb_br->size.y / 8. * 3.),
-                    ImVec2((b_max.x + b_min.x) / 2., h - rb_br->size.y / 8.),
-                    ImVec2(b_min.x, h));
+                    ImVec2(b_max.x - minx, h - rb_br->size.y),
+                    ImVec2(b_max.x - minx, h - rb_br->size.y / 8. * 3.),
+                    ImVec2((b_max.x + b_min.x) / 2. - minx, h - rb_br->size.y / 8.),
+                    ImVec2(b_min.x - minx, h));
             lines_r->line_width = conr->size.x;
             lines_r->color = 0xff'eeeeee;
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
@@ -456,31 +457,33 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
             auto [b_min, b_max] = char_get_draw_box(bracket.cl);
             auto [c_min, c_max] = char_get_draw_box(bracket.bl);
 
+            float minx = std::min({a_min.x, b_min.x, c_min.x});
+
             auto lines_l = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
-            lines_l->line_strip.push_back(ImVec2(a_max.x, 0));
+            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
             beziere_path_rec(lines_l->line_strip,
-                    ImVec2(a_max.x, 0),
-                    ImVec2(a_min.x * 0.75 + a_max.x * 0.25, 0),
-                    ImVec2(a_min.x, lb_tl->size.y * 0.25),
-                    ImVec2(a_min.x, lb_tl->size.y));
-            lines_l->line_strip.push_back(ImVec2(b_max.x, h2 - lb_cl->size.y * 0.5));
+                    ImVec2(a_max.x - minx, 0),
+                    ImVec2(a_min.x * 0.75 + a_max.x * 0.25 - minx, 0),
+                    ImVec2(a_min.x - minx, lb_tl->size.y * 0.25),
+                    ImVec2(a_min.x - minx, lb_tl->size.y));
+            lines_l->line_strip.push_back(ImVec2(b_max.x - minx, h2 - lb_cl->size.y * 0.5));
             beziere_path_rec(lines_l->line_strip,
-                    ImVec2(b_max.x, h2 - lb_cl->size.y * 0.5),
-                    ImVec2(b_max.x, h2 + lb_cl->size.y * (.75 * .5 - .5)),
-                    ImVec2(b_max.x * 0.75 + b_min.x * 0.25, h2),
-                    ImVec2(b_min.x, h2));
-            lines_l->line_strip.push_back(ImVec2(b_min.x, h2));
+                    ImVec2(b_max.x - minx, h2 - lb_cl->size.y * 0.5),
+                    ImVec2(b_max.x - minx, h2 + lb_cl->size.y * (.75 * .5 - .5)),
+                    ImVec2(b_max.x * 0.75 + b_min.x * 0.25 - minx, h2),
+                    ImVec2(b_min.x - minx, h2));
+            lines_l->line_strip.push_back(ImVec2(b_min.x - minx, h2));
             beziere_path_rec(lines_l->line_strip,
-                    ImVec2(b_min.x, h2),
-                    ImVec2(b_min.x * .25 + b_max.x * .75, h2),
-                    ImVec2(b_max.x, h2 + lb_cl->size.y * .75 * .5),
-                    ImVec2(b_max.x, h2 + lb_cl->size.y * .5));
-            lines_l->line_strip.push_back(ImVec2(c_min.x, h - lb_bl->size.y));
+                    ImVec2(b_min.x - minx, h2),
+                    ImVec2(b_min.x * .25 + b_max.x * .75 - minx, h2),
+                    ImVec2(b_max.x - minx, h2 + lb_cl->size.y * .75 * .5),
+                    ImVec2(b_max.x - minx, h2 + lb_cl->size.y * .5));
+            lines_l->line_strip.push_back(ImVec2(c_min.x - minx, h - lb_bl->size.y));
             beziere_path_rec(lines_l->line_strip,
-                    ImVec2(c_min.x, h - lb_bl->size.y),
-                    ImVec2(c_min.x, h - lb_bl->size.y * .25),
-                    ImVec2(c_min.x * .75 + c_max.x * .25, h),
-                    ImVec2(c_max.x, h));
+                    ImVec2(c_min.x - minx, h - lb_bl->size.y),
+                    ImVec2(c_min.x - minx, h - lb_bl->size.y * .25),
+                    ImVec2(c_min.x * .75 + c_max.x * .25 - minx, h),
+                    ImVec2(c_max.x - minx, h));
             lines_l->color = 0xff'eeeeee;
             lines_l->line_width = conl->size.x;
             lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
@@ -489,31 +492,33 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
             auto [e_min, e_max] = char_get_draw_box(bracket.cr);
             auto [f_min, f_max] = char_get_draw_box(bracket.br);
 
+            minx = std::min({d_min.x, e_min.x, f_min.x});
+
             auto lines_r = mathd_make(mathd_t{ .type = MATHD_TYPE_LINE_STRIP });
-            lines_r->line_strip.push_back(ImVec2(d_min.x, 0));
+            lines_r->line_strip.push_back(ImVec2(d_min.x - minx, 0));
             beziere_path_rec(lines_r->line_strip,
-                    ImVec2(d_min.x, 0),
-                    ImVec2(d_max.x * 0.75 + d_min.x * 0.25, 0),
-                    ImVec2(d_max.x, rb_tr->size.y * 0.25),
-                    ImVec2(d_max.x, rb_tr->size.y));
-            lines_r->line_strip.push_back(ImVec2(e_min.x, h2 - rb_cr->size.y * 0.5));
+                    ImVec2(d_min.x - minx, 0),
+                    ImVec2(d_max.x * 0.75 + d_min.x * 0.25 - minx, 0),
+                    ImVec2(d_max.x - minx, rb_tr->size.y * 0.25),
+                    ImVec2(d_max.x - minx, rb_tr->size.y));
+            lines_r->line_strip.push_back(ImVec2(e_min.x - minx, h2 - rb_cr->size.y * 0.5));
             beziere_path_rec(lines_r->line_strip,
-                    ImVec2(e_min.x, h2 - rb_cr->size.y * 0.5),
-                    ImVec2(e_min.x, h2 + rb_cr->size.y * (.75 * .5 - .5)),
-                    ImVec2(e_min.x * 0.75 + e_max.x * 0.25, h2),
-                    ImVec2(e_max.x, h2));
-            lines_r->line_strip.push_back(ImVec2(e_max.x, h2));
+                    ImVec2(e_min.x - minx, h2 - rb_cr->size.y * 0.5),
+                    ImVec2(e_min.x - minx, h2 + rb_cr->size.y * (.75 * .5 - .5)),
+                    ImVec2(e_min.x * 0.75 + e_max.x * 0.25 - minx, h2),
+                    ImVec2(e_max.x - minx, h2));
+            lines_r->line_strip.push_back(ImVec2(e_max.x - minx, h2));
             beziere_path_rec(lines_r->line_strip,
-                    ImVec2(e_max.x, h2),
-                    ImVec2(e_max.x * .25 + e_min.x * .75, h2),
-                    ImVec2(e_min.x, h2 + rb_cr->size.y * .75 * .5),
-                    ImVec2(e_min.x, h2 + rb_cr->size.y * .5));
-            lines_r->line_strip.push_back(ImVec2(f_max.x, h - rb_br->size.y));
+                    ImVec2(e_max.x - minx, h2),
+                    ImVec2(e_max.x * .25 + e_min.x * .75 - minx, h2),
+                    ImVec2(e_min.x - minx, h2 + rb_cr->size.y * .75 * .5),
+                    ImVec2(e_min.x - minx, h2 + rb_cr->size.y * .5));
+            lines_r->line_strip.push_back(ImVec2(f_max.x - minx, h - rb_br->size.y));
             beziere_path_rec(lines_r->line_strip,
-                    ImVec2(f_max.x, h - rb_br->size.y),
-                    ImVec2(f_max.x, h - rb_br->size.y * .25),
-                    ImVec2(f_max.x * .75 + f_min.x * .25, h),
-                    ImVec2(f_min.x, h));
+                    ImVec2(f_max.x - minx, h - rb_br->size.y),
+                    ImVec2(f_max.x - minx, h - rb_br->size.y * .25),
+                    ImVec2(f_max.x * .75 + f_min.x * .25 - minx, h),
+                    ImVec2(f_min.x - minx, h));
             lines_r->color = 0xff'eeeeee;
             lines_r->line_width = conr->size.x;
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
@@ -522,6 +527,9 @@ inline mathd_p mathd_bracket(mathd_p expr, mathd_bracket_t bracket) {
         lb->size = ImVec2(std::max({lb_tl->size.x, conl->size.x, lb_cl->size.x, lb_bl->size.x}), h);
         rb->size = ImVec2(std::max({rb_tr->size.x, conr->size.x, rb_cr->size.x, rb_br->size.x}), h);
     }
+
+    float distancer = MATHD_DISTANCER * char_get_lvl_mul((char_font_lvl_e)bracket.left[0].flvl);
+    auto ret = mathd_make(mathd_t{ .type = MATHD_TYPE_UNAR_OP });
 
     /* afterwards we construct the final object */
     float h = (lb->size.y - expr->size.y) / 2.;
