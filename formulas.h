@@ -52,7 +52,6 @@ struct formula_box_t : public cbox_i {
         auto integral_1 = mathd_convert(MATHD_integral, font1);
         auto equal      = mathd_convert(MATHD_equal, font0);
         auto equal_1    = mathd_convert(MATHD_equal, font1);
-        auto plus1      = mathd_convert(MATHD_plus, font1);
         auto binar      = mathd_binexpr(sym_g, plus, sym_B);
         auto binar2     = mathd_binexpr(binar, plus, sym_a);
         auto binar_1    = mathd_binexpr(sym_g_1, plus_1, sym_h_1);
@@ -83,8 +82,8 @@ struct formula_box_t : public cbox_i {
         auto brack_2    = mathd_bracket(brack2_1, crl_brack_2);
         auto brack1_2   = mathd_bracket(brack_2, sqr_brack_2);
         auto brack2_2   = mathd_bracket(brack1_2, rnd_brack_2);
-        // auto binar2 = mathd_binexpr(binar, mathd_convert(MATHD_plus, font0), sum);
-        // auto frac = mathd_frac(sym_exp, binar2, mathd_convert(MATHD_hline_basic, font0));
+        auto binar3     = mathd_binexpr(binar, plus, sum_eq);
+        // auto frac = mathd_frac(sym_exp, binar3, mathd_convert(MATHD_hline_basic, font0));
         // auto binar3 = mathd_binexpr(frac, mathd_convert(MATHD_minus, font0), sym_exp);
         // auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
         // auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));

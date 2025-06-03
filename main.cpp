@@ -12,6 +12,9 @@
 #include "defines.h"
 #include "formulas.h"
 
+/* TODO: sa mearga toate manipularile de aici:
+    https://www.youtube.com/@tesan3377/playlists */
+
 /* TODO:
  * =================================================================================================
     - Content menu, meaning, the main way we split information:
