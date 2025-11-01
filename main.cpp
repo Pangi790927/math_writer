@@ -117,6 +117,16 @@
 // . How can I do selections? And why does a character disaeppear when mobing ving outside of the screen? EHh? Well , the solution would be to remembreer the last cursor positoion before pn when pressing shift and when drawing draw all the positions between the tow wo cursors in a nother way. Cpoopy would copy this area, copying a line will move area, and I'll implement the rest of the things I rememgber liking, copy foover selection, copy etc.delete selection 
 
 
+/* All of those must work:
+(a+b)^2 = a^2+2ab+b^2
+(a-b)^2 = a^2-2ab+b^2
+a^2-b^2 = (a+b)(a-b)
+2(a^2+b^2) = (a+b)^2 + (a-b)^2
+(a+b)^3 = a^3+3a^2b+3ab^2+b^3
+(a-b)^3 = a^3-3a^2b+3ab^2-b^3
+
+ */
+
 int main(int argc, char const *argv[]) {
     imgui_init();
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
