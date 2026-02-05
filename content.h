@@ -1,7 +1,9 @@
 #ifndef CONTENT_H
 #define CONTENT_H
 
-/* The app has the content window, this content window contains boxes with, well, content. */
+/*! The app has the content window, this content window contains boxes with, well, content.
+ * 
+ * TODO: I don't remember what is the use of this, so I should re-read it and comment it here. */
 
 #define CBOX_INCR   20
 #define CBOX_LEFT   1.5

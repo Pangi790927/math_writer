@@ -1,6 +1,12 @@
 #ifndef COMMENTS_H
 #define COMMENTS_H
 
+/*!
+ * 
+ * This is a box holding a text comment.
+ * 
+ */
+
 #include "debug.h"
 #include "content.h"
 #include "chars.h"

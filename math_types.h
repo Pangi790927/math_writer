@@ -1,7 +1,12 @@
-#ifndef MATHT_H
-#define MATHT_H
+#ifndef MATH_TYPES_H
+#define MATH_TYPES_H
 
-/* Math Type */
+/*! Math Type
+ * 
+ * Building block for expressions. Those types are used to create a versatile base for the
+ * expressions and also decouple how the operators work from how the objects respond to said
+ * operation.
+ */
 
 struct matht_t {
     mathv_p symb;

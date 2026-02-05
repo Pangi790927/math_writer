@@ -1,7 +1,14 @@
 #ifndef FORMULAS_H
 #define FORMULAS_H
 
-#include "mathd.h"
+#include "math_drawing.h"
+
+/*!
+ * 
+ * This is the final 'formula' box. This holds a single formula and enables the user to morph
+ * formulas to other formulas via UI elements and mouse+keyboard controlls.
+ * 
+ */
 
 struct formula_box_t;
 using formula_box_p = std::shared_ptr<formula_box_t>;
@@ -73,22 +80,22 @@ struct formula_box_t : public cbox_i {
         auto sqr_brack_2= mathd_convert(mathd_brack_square, font2);
         auto crl_brack_2= mathd_convert(mathd_brack_curly, font2);
         auto rnd_brack_2= mathd_convert(mathd_brack_round, font2);
-        auto brack      = mathd_bracket(empty, crl_brack);
+        auto brack      = mathd_bracket(empty, rnd_brack);
         auto brack1     = mathd_bracket(brack, sqr_brack);
-        auto brack2     = mathd_bracket(brack1, rnd_brack);
-        auto brack_1    = mathd_bracket(brack2, crl_brack_1);
+        auto brack2     = mathd_bracket(brack1, crl_brack);
+        auto brack_1    = mathd_bracket(brack2, rnd_brack_1);
         auto brack1_1   = mathd_bracket(brack_1, sqr_brack_1);
-        auto brack2_1   = mathd_bracket(brack1_1, rnd_brack_1);
-        auto brack_2    = mathd_bracket(brack2_1, crl_brack_2);
+        auto brack2_1   = mathd_bracket(brack1_1, crl_brack_1);
+        auto brack_2    = mathd_bracket(brack2_1, rnd_brack_2);
         auto brack1_2   = mathd_bracket(brack_2, sqr_brack_2);
-        auto brack2_2   = mathd_bracket(brack1_2, rnd_brack_2);
+        auto brack2_2   = mathd_bracket(brack1_2, crl_brack_2);
         auto binar3     = mathd_binexpr(binar, plus, sum_eq);
         // auto frac = mathd_frac(sym_exp, binar3, mathd_convert(MATHD_hline_basic, font0));
         // auto binar3 = mathd_binexpr(frac, mathd_convert(MATHD_minus, font0), sym_exp);
         // auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
         // auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));
         // auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
-        formula = brack2_2;
+        formula = binar3;
     }
 
     void update() override {

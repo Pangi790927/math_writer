@@ -1,6 +1,14 @@
 #ifndef CHAR_H
 #define CHAR_H
 
+/*!
+ * 
+ * This header holds all the characters used in this project. I don't really understand how
+ * characters work (for example what charsets should I use and what are those) so I've hardcoded
+ * them here in the hope this won't backfire too much in the future. We shall see.
+ * 
+ */
+
 #include <string>
 #include <vector>
 

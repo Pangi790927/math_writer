@@ -1,7 +1,13 @@
 #ifndef DEFINES_H
 #define DEFINES_H
 
-#include "mathd.h"
+/*!
+ * 
+ * This is the final 'defines' box. This handles user defines of constants, functions, etc.
+ * 
+ */
+
+#include "math_drawing.h"
 
 struct define_box_t;
 using define_box_p = std::shared_ptr<define_box_t>;

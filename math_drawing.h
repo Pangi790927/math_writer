@@ -1,5 +1,5 @@
-#ifndef MATHD_H
-#define MATHD_H
+#ifndef MATH_DRAWING_H
+#define MATH_DRAWING_H
 
 /* Math Drawing: Symbol and Expression Drawing */
 
