@@ -92,10 +92,10 @@ struct formula_box_t : public cbox_i {
         auto binar3     = mathd_binexpr(binar, plus, sum_eq);
         // auto frac = mathd_frac(sym_exp, binar3, mathd_convert(MATHD_hline_basic, font0));
         // auto binar3 = mathd_binexpr(frac, mathd_convert(MATHD_minus, font0), sym_exp);
-        // auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
+        auto binar4 = mathd_binexpr(binar3, mathd_convert(MATHD_minus, font0), sym_e);
         // auto brack = mathd_bracket(binar3, mathd_convert(mathd_brack_square, font0));
-        // auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
-        formula = binar3;
+        auto frac2 = mathd_frac(sym_exp, binar4, mathd_convert(MATHD_hline_basic, font0));
+        formula = frac2;
     }
 
     void update() override {
