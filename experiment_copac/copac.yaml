@@ -1,0 +1,23 @@
+a:
+  m_type: ast_var_t
+  m_name: a
+
+b:
+  m_type: ast_var_t
+  m_name: b
+
+n1:
+  m_type: ast_integer_t
+  m_value: 10
+
+c:
+  m_type: ast_node_t
+  m_op: AST_NODE_ADDITION
+  m_childs:
+    - !ref a
+    - !ref b
+    - !ref n1
+
+main_script:
+    m_type: vc::lua_script_t
+    m_source_path: ./main.lua
