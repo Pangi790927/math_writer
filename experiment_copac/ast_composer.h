@@ -7,9 +7,35 @@ namespace ast_composer
 {
 
 enum ast_node_e : int32_t {
-    AST_NODE_ADDITION,
+    /* ---------- ast_node_t ---------- */
 
+    /*! Childs are the terms of the addition */
+    AST_NODE_ADD,
+
+    /*! Childs are the factors of the multiplication */
+    AST_NODE_MUL,
+
+    /*! 1st child is the function, rest of childs are args */
+    AST_NODE_FN_CALL,
+
+    /* A node with exactly two childs: num, den */
+    AST_NODE_DIV,
+
+    /* ---------- ast_var_t ---------- */
+
+    /*! Only for ast_var_t, holds the name of the var, eventually childs can be vector/matrix
+     * fields
+     */
     AST_NODE_VAR,
+
+    /* ---------- ast_integer_t ---------- */
+
+    /*! Holds an integer, not sure what use do the childs have for this one if they have any. This
+     * is a building block for other types, TODO: for example I think I want rational numbers to be
+     * made out of two numbers. for example the number 1.5*sqrt(2)*sqrt(3), can be made out to be:
+     *      node*(real(3, 2), fn(sqrt, 2), fn(sqrt, 3))
+     * where 2 and 3 are node_int, fn is fn_call, sqrt is node_var with the name of the var
+     */
     AST_NODE_INT,
 };
 
@@ -67,6 +93,38 @@ struct ast_node_t : public vc::object_t {
         return to_string_opt_rec_childs();
     }
 
+    virtual std::string generate_latex() {
+        DBG("Gen latex: m_op[%d] m_childs[%zd]", m_op, m_childs.size());
+        std::string result;
+        std::string biop = " + ";
+        switch (m_op) {
+            case AST_NODE_MUL:
+                biop = " \\times ";
+            case AST_NODE_ADD: {
+                if (!m_childs.size()) {
+                    result = "empty_biop";
+                    break;
+                }
+                for (int i = 0; i < (int)m_childs.size() - 1; i++)
+                    result += m_childs[i]->generate_latex() + biop;
+                result += m_childs[m_childs.size() - 1]->generate_latex();
+            } break;
+            case AST_NODE_FN_CALL: {
+                if (!m_childs.size()) {
+                    result = "empty_call";
+                    break;
+                }
+                result += m_childs[0]->generate_latex() + "(";
+                for (int i = 1; i < (int)m_childs.size() - 1; i++)
+                    result += m_childs[i]->generate_latex() + ", ";
+                if (m_childs.size() > 1)
+                    result += m_childs[m_childs.size() - 1]->generate_latex();
+                result += ")";
+            } break;
+        }
+        return result;
+    }
+
     int add_child(vc::ref_t<ast_node_t> c) {
         m_childs.push_back(c);
         return 0;
@@ -95,6 +153,11 @@ struct ast_var_t : public ast_node_t {
         std::string padd = std::string(lvl*2, ' ');
         return std::format("{}ast_var_t: m_name={} ", padd, m_name);
     }
+
+    virtual std::string generate_latex() override {
+        /* TODO: maybe escape things? */
+        return m_name;
+    }
 };
 
 struct ast_integer_t : public ast_node_t {
@@ -114,6 +177,10 @@ struct ast_integer_t : public ast_node_t {
         std::string padd = std::string(lvl*2, ' ');
         return std::format("{}ast_integer_t: m_value={} ", padd, m_value);
     }
+
+    virtual std::string generate_latex() override {
+        return std::to_string(m_value);
+    }
 };
 
 inline int register_meta(vc::virt_state_t *vs) {
@@ -126,6 +193,7 @@ inline int register_meta(vc::virt_state_t *vs) {
 
     /* TODO: this is temp, maybe add a full suite in the future? I'll see if needed*/
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, add_child, vc::ref_t<ast_node_t>);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, generate_latex);
 
     vc::add_lua_flag_mapping(vs, vc::ast_node_from_str);
 
@@ -178,7 +246,9 @@ inline int register_meta(vc::virt_state_t *vs) {
 
 inline std::string to_string(ast_node_e type) {
     switch (type) {
-        case AST_NODE_ADDITION: return "AST_NODE_ADDITION";
+        case AST_NODE_ADD: return "AST_NODE_ADD";
+        case AST_NODE_MUL: return "AST_NODE_MUL";
+        case AST_NODE_FN_CALL: return "AST_NODE_FN_CALL";
         case AST_NODE_VAR: return "AST_NODE_VAR";
         case AST_NODE_INT: return "AST_NODE_INT";
         default: return "INVALID_TYPE";
@@ -194,7 +264,9 @@ template <> inline astc::ast_node_e get_enum_val<astc::ast_node_e>(fkyaml::node 
 }
 
 inline std::unordered_map<std::string, astc::ast_node_e> ast_node_from_str = {
-    {"AST_NODE_ADDITION", astc::AST_NODE_ADDITION},
+    {"AST_NODE_ADD", astc::AST_NODE_ADD},
+    {"AST_NODE_MUL", astc::AST_NODE_MUL},
+    {"AST_NODE_FN_CALL", astc::AST_NODE_FN_CALL},
     {"AST_NODE_VAR", astc::AST_NODE_VAR},
     {"AST_NODE_INT", astc::AST_NODE_INT},
 };

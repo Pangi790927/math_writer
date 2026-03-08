@@ -10,13 +10,46 @@ n1:
   m_type: ast_integer_t
   m_value: 10
 
+fn_sqrt:
+  m_type: ast_var_t
+  m_name: sqrt
+
+fn_f:
+  m_type: ast_var_t
+  m_name: f
+
 c:
   m_type: ast_node_t
-  m_op: AST_NODE_ADDITION
+  m_op: AST_NODE_ADD
   m_childs:
     - !ref a
     - !ref b
     - !ref n1
+
+d:
+  m_type: ast_node_t
+  m_op: AST_NODE_MUL
+  m_childs:
+    - !ref a
+    - !ref b
+    - !ref n1
+
+e1:
+  m_type: ast_node_t
+  m_op: AST_NODE_FN_CALL
+  m_childs:
+    - !ref fn_f
+    - !ref a
+    - !ref b
+    - !ref c
+    - !ref d
+
+e2:
+  m_type: ast_node_t
+  m_op: AST_NODE_FN_CALL
+  m_childs:
+    - !ref fn_sqrt
+    - !ref e1
 
 main_script:
     m_type: vc::lua_script_t
