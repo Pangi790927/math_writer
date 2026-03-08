@@ -1,5 +1,11 @@
 vc = require("virt_composer")
 
+-- obs: I can draw a small dot for the specified mode of selection, thus
+-- letting the user select the term of choice
+
+-- obs: There needs not be any complicated ctrl+z because the steps are allways above, so
+-- a ctrl+z is practically: remove the current eq-state and goto prev one
+
 function main() 
     print("Hello from Lua!")
     print(vc.c:generate_latex())

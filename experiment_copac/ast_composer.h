@@ -243,6 +243,9 @@ static co::task_t parse_optionals(auto &vs, auto &node, auto &obj) {
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
 
+    luaw_register_inheritance<ast_node_t, ast_var_t>(vs);
+    luaw_register_inheritance<ast_node_t, ast_integer_t>(vs);
+
     VC_REGISTER_MEMBER_OBJECT(vs, ast_node_t, m_op);
     VC_REGISTER_MEMBER_OBJECT(vs, ast_var_t, m_name);
     VC_REGISTER_MEMBER_OBJECT(vs, ast_integer_t, m_value);
