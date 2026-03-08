@@ -5,6 +5,14 @@ vc = require("virt_composer")
 
 -- obs: There needs not be any complicated ctrl+z because the steps are allways above, so
 -- a ctrl+z is practically: remove the current eq-state and goto prev one
+--[[ 
+So How this is supposed to work:
+
+TODO: Add functions for diverse types.
+TODO: Add functions to do diverse things with types
+TODO: Remember that inheritance must be implemented
+]]--
+
 
 function main() 
     print("Hello from Lua!")
@@ -15,6 +23,7 @@ function main()
     print(vc.e2)
     print(vc.l1)
     print(vc.l1:generate_latex())
+    print(vc.M:generate_latex())
     -- print(tostring(vc.a))
     -- print(vc.b)
     -- print(vc.n1)
