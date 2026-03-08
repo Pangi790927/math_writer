@@ -17,6 +17,7 @@ fn_sqrt:
 fn_f:
   m_type: ast_var_t
   m_name: f
+  m_flags: AST_FLAG_RANDOM_FLAG
 
 c:
   m_type: ast_node_t
@@ -50,6 +51,14 @@ e2:
   m_childs:
     - !ref fn_sqrt
     - !ref e1
+
+l1:
+  m_type: ast_node_t
+  m_op: AST_NODE_LIST
+  m_childs:
+    - !ref a
+    - !ref b
+    - !ref n1 
 
 main_script:
     m_type: vc::lua_script_t

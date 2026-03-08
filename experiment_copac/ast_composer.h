@@ -6,6 +6,18 @@
 namespace ast_composer
 {
 
+/*! TODO: I need some sort of 'feature' addition to the node not sure if inheritance is the way to
+ * go. For example: I want to add subscripts to a variable, that is of course the job of a variable.
+ * Or maybe inheritance is the way to go? But how do I make for example integrals? Answ: I use the
+ * list node type. (So nothing to do)
+ * 
+ * TODO: I am pertty sure I need to keep a sort of graph of inheritance for all the types, as such,
+ * I will be able to use functions marked for base in child. (This seems important)
+ * 
+ * The advantage of the inheritance model is that things are easier to work with: faster, shorter
+ * init scripts, etc.
+ */
+
 enum ast_node_e : int32_t {
     /* ---------- ast_node_t ---------- */
 
@@ -18,14 +30,21 @@ enum ast_node_e : int32_t {
     /*! 1st child is the function, rest of childs are args */
     AST_NODE_FN_CALL,
 
-    /* A node with exactly two childs: num, den */
+    /*! A node with exactly two childs: num, den */
     AST_NODE_DIV,
+
+    /*! A node that doesn't do much, just holds a list of nodes */
+    /* TODO: */
+    AST_NODE_LIST,
 
     /* ---------- ast_var_t ---------- */
 
     /*! Only for ast_var_t, holds the name of the var, eventually childs can be vector/matrix
      * fields
      */
+    /* TOOD: configure to be able to have subscripts, maybe? Or create a new node type that
+    handles subscriptions? Or maybe leave it alone and make list nodes for vector-fields, subscripts,
+    superscripts, Inherited type, etc? */
     AST_NODE_VAR,
 
     /* ---------- ast_integer_t ---------- */
@@ -39,7 +58,22 @@ enum ast_node_e : int32_t {
     AST_NODE_INT,
 };
 
+enum ast_flags_e : uint64_t {
+    AST_FLAG_NONE = 0,
+
+    /* Flags for lists: */
+    AST_FLAG_LIST_VERTICAL = (1 << 0),
+    AST_FLAG_LIST_HORIZONTAL = (1 << 1),
+
+    /* Flags for vars: */
+
+    /* flags for all: */
+    /* OBS: whatever flag is >= bit 32 is common to all */
+    AST_FLAG_RANDOM_FLAG = (1ULL << 32),
+};
+
 inline std::string to_string(ast_node_e type);
+inline std::string to_string(ast_node_e type, ast_flags_e flag);
 
 } /*ast_composer*/
 
@@ -50,6 +84,9 @@ namespace astc = ast_composer;
 
 extern inline std::unordered_map<std::string, astc::ast_node_e> ast_node_from_str;
 template <> inline astc::ast_node_e get_enum_val<astc::ast_node_e>(fkyaml::node &n);
+
+extern inline std::unordered_map<std::string, astc::ast_flags_e> ast_flags_from_str;
+template <> inline astc::ast_flags_e get_enum_val<astc::ast_flags_e>(fkyaml::node &n);
 
 } /*virt_composer*/
 
@@ -66,17 +103,15 @@ VIRT_COMPOSER_REGISTER_TYPE(AST_TYPE_INT);
 
 struct ast_node_t : public vc::object_t {
     ast_node_e m_op;
+    ast_flags_e m_flags = AST_FLAG_NONE;
     std::vector<vc::ref_t<ast_node_t>> m_childs;
 
     static vc::object_type_e type_id_static() { return AST_TYPE_NODE; }
     virtual vc::object_type_e type_id() const override { return AST_TYPE_NODE; }
 
-    static vc::ref_t<ast_node_t> create(ast_node_e op,
-            const std::vector<vc::ref_t<ast_node_t>>& childs)
-    {
+    static vc::ref_t<ast_node_t> create(ast_node_e op) {
         auto ret = vc::ref_t<ast_node_t>::create_obj_ref(std::make_unique<ast_node_t>(), {});
         ret->m_op = op;
-        ret->m_childs = childs;
         return ret;
     }
 
@@ -86,7 +121,8 @@ struct ast_node_t : public vc::object_t {
         for (auto &r : m_childs)
             res += r->to_string_opt_rec_childs(lvl+1) + "\n";
         res += padd + "}\n";
-        return std::format("{}ast_node_t: m_op={} m_childs={} ", padd, astc::to_string(m_op), res);
+        return std::format("{}ast_node_t: m_op={} m_flags={} m_childs={} ",
+                padd, astc::to_string(m_op), astc::to_string(m_op, m_flags), res);
     }
 
     inline virtual std::string to_string() const override {
@@ -97,6 +133,14 @@ struct ast_node_t : public vc::object_t {
         DBG("Gen latex: m_op[%d] m_childs[%zd]", m_op, m_childs.size());
         std::string result;
         std::string biop = " + ";
+
+        auto childs_list_maker = [&](std::string separator, int start, int stop) {
+            for (int i = start; i < stop - 1; i++)
+                result += m_childs[i]->generate_latex() + separator;
+            if (stop - 1 < m_childs.size())
+                result += m_childs[stop - 1]->generate_latex();
+        };
+
         switch (m_op) {
             case AST_NODE_MUL:
                 biop = " \\times ";
@@ -105,9 +149,7 @@ struct ast_node_t : public vc::object_t {
                     result = "empty_biop";
                     break;
                 }
-                for (int i = 0; i < (int)m_childs.size() - 1; i++)
-                    result += m_childs[i]->generate_latex() + biop;
-                result += m_childs[m_childs.size() - 1]->generate_latex();
+                childs_list_maker(biop, 0, m_childs.size());
             } break;
             case AST_NODE_FN_CALL: {
                 if (!m_childs.size()) {
@@ -115,10 +157,12 @@ struct ast_node_t : public vc::object_t {
                     break;
                 }
                 result += m_childs[0]->generate_latex() + "(";
-                for (int i = 1; i < (int)m_childs.size() - 1; i++)
-                    result += m_childs[i]->generate_latex() + ", ";
-                if (m_childs.size() > 1)
-                    result += m_childs[m_childs.size() - 1]->generate_latex();
+                childs_list_maker(", ", 1, m_childs.size());
+                result += ")";
+            } break;
+            case AST_NODE_LIST: {
+                result += "(";
+                childs_list_maker(", ", 0, m_childs.size());
                 result += ")";
             } break;
         }
@@ -151,7 +195,8 @@ struct ast_var_t : public ast_node_t {
 
     virtual std::string to_string_opt_rec_childs(int lvl=0) const override {
         std::string padd = std::string(lvl*2, ' ');
-        return std::format("{}ast_var_t: m_name={} ", padd, m_name);
+        return std::format("{}ast_var_t: m_flags={} m_name={} ",
+                padd, astc::to_string(m_op, m_flags), m_name);
     }
 
     virtual std::string generate_latex() override {
@@ -175,13 +220,25 @@ struct ast_integer_t : public ast_node_t {
 
     virtual std::string to_string_opt_rec_childs(int lvl=0) const override {
         std::string padd = std::string(lvl*2, ' ');
-        return std::format("{}ast_integer_t: m_value={} ", padd, m_value);
+        return std::format("{}ast_integer_t: m_flags={} m_value={}",
+                padd, astc::to_string(m_op, m_flags), m_value);
     }
 
     virtual std::string generate_latex() override {
         return std::to_string(m_value);
     }
 };
+
+static co::task_t parse_optionals(auto &vs, auto &node, auto &obj) {
+    if (node.contains("m_childs")) {
+        for (auto attr : node["m_childs"].as_seq())
+            obj->m_childs.push_back(co_await resolve_obj<ast_node_t>(vs, attr));
+    }
+    if (node.contains("m_flags")) {
+        obj->m_flags = vc::get_enum_val<ast_flags_e>(node["m_flags"]);
+    }
+    co_return 0;
+}
 
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
@@ -196,6 +253,7 @@ inline int register_meta(vc::virt_state_t *vs) {
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, generate_latex);
 
     vc::add_lua_flag_mapping(vs, vc::ast_node_from_str);
+    vc::add_lua_flag_mapping(vs, vc::ast_flags_from_str);
 
     int ret = add_named_builder_callback(vs,
         "ast_node_t",
@@ -203,10 +261,9 @@ inline int register_meta(vc::virt_state_t *vs) {
             -> co::task<vc::ref_t<vc::object_t>>
         {
             auto m_op = vc::get_enum_val<ast_node_e>(node["m_op"]);
-            std::vector<vc::ref_t<ast_node_t>> childs;
-            for (auto attr : node["m_childs"].as_seq())
-                childs.push_back(co_await resolve_obj<ast_node_t>(vs, attr));
-            auto obj = ast_node_t::create(m_op, childs);
+            auto obj = ast_node_t::create(m_op);
+            if (co_await parse_optionals(vs, node, obj) != vc::VC_ERROR_OK)
+                throw vc::except_t("Failed to parse optionals in node");
             mark_dependency_solved(vs, node_name, obj.to_related<vc::object_t>());
             co_return obj.to_related<vc::object_t>();
         }
@@ -220,6 +277,8 @@ inline int register_meta(vc::virt_state_t *vs) {
         {
             auto m_name = co_await resolve_str(vs, node["m_name"]);
             auto obj = ast_var_t::create(m_name);
+            if (co_await parse_optionals(vs, node, obj) != vc::VC_ERROR_OK)
+                throw vc::except_t("Failed to parse optionals in var");
             mark_dependency_solved(vs, node_name, obj.to_related<vc::object_t>());
             co_return obj.to_related<vc::object_t>();
         }
@@ -234,6 +293,8 @@ inline int register_meta(vc::virt_state_t *vs) {
         {
             auto m_value = co_await resolve_int(vs, node["m_value"]);
             auto obj = ast_integer_t::create(m_value);
+            if (co_await parse_optionals(vs, node, obj) != vc::VC_ERROR_OK)
+                throw vc::except_t("Failed to parse optionals in const int");
             mark_dependency_solved(vs, node_name, obj.to_related<vc::object_t>());
             co_return obj.to_related<vc::object_t>();
         }
@@ -248,12 +309,43 @@ inline std::string to_string(ast_node_e type) {
     switch (type) {
         case AST_NODE_ADD: return "AST_NODE_ADD";
         case AST_NODE_MUL: return "AST_NODE_MUL";
+        case AST_NODE_LIST: return "AST_NODE_LIST";
         case AST_NODE_FN_CALL: return "AST_NODE_FN_CALL";
         case AST_NODE_VAR: return "AST_NODE_VAR";
         case AST_NODE_INT: return "AST_NODE_INT";
         default: return "INVALID_TYPE";
     }
 }
+
+#define ASTC_TO_STRING_FLAGS(flag) \
+do { \
+    if (flags & flag) { \
+        if (ret_str != "[") \
+            ret_str += ", "; \
+        ret_str += #flag; \
+        flags = ast_flags_e(flags & (~flag)); \
+    } \
+} while (0)
+
+inline std::string to_string(ast_node_e type, ast_flags_e flags) {
+    std::string ret_str = "[";
+
+    if (type == AST_NODE_LIST) {
+        ASTC_TO_STRING_FLAGS(AST_FLAG_LIST_VERTICAL);
+        ASTC_TO_STRING_FLAGS(AST_FLAG_LIST_HORIZONTAL);
+    }
+
+    ASTC_TO_STRING_FLAGS(AST_FLAG_RANDOM_FLAG);
+    
+    if (flags != 0) {
+        DBG("!!! ERROR: MISSED FLAGS IN TO_STRING !!! ");
+        return "!!! ERROR: MISSED FLAGS IN TO_STRING !!! ";
+    }
+    ret_str += "]";
+    return ret_str;
+}
+
+#undef ASTC_TO_STRING_FLAGS
 
 } /*ast_composer*/
 
@@ -266,11 +358,21 @@ template <> inline astc::ast_node_e get_enum_val<astc::ast_node_e>(fkyaml::node 
 inline std::unordered_map<std::string, astc::ast_node_e> ast_node_from_str = {
     {"AST_NODE_ADD", astc::AST_NODE_ADD},
     {"AST_NODE_MUL", astc::AST_NODE_MUL},
+    {"AST_NODE_LIST", astc::AST_NODE_LIST},
     {"AST_NODE_FN_CALL", astc::AST_NODE_FN_CALL},
     {"AST_NODE_VAR", astc::AST_NODE_VAR},
     {"AST_NODE_INT", astc::AST_NODE_INT},
 };
 
+template <> inline astc::ast_flags_e get_enum_val<astc::ast_flags_e>(fkyaml::node &n) {
+    return get_enum_val(n, ast_flags_from_str);
+}
+
+inline std::unordered_map<std::string, astc::ast_flags_e> ast_flags_from_str = {
+    {"AST_FLAG_LIST_VERTICAL", astc::AST_FLAG_LIST_VERTICAL},
+    {"AST_FLAG_LIST_HORIZONTAL", astc::AST_FLAG_LIST_HORIZONTAL},
+    {"AST_FLAG_RANDOM_FLAG", astc::AST_FLAG_RANDOM_FLAG},
+};
 
 } /*virt_composer*/
 
