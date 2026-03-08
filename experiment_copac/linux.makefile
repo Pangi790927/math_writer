@@ -1,6 +1,6 @@
 CXX       := g++-13
 CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
-LIBS      := -lpthread -ldl -lglfw -lcurl -lglfw -lGL
+LIBS      := -lpthread -ldl -lbacktrace
 
 UTILS     := ../../utils/
 
