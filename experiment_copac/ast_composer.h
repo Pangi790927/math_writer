@@ -61,11 +61,21 @@ enum ast_node_e : int32_t {
 enum ast_flags_e : uint64_t {
     AST_FLAG_NONE = 0,
 
-    /* Flags for lists: */
-    AST_FLAG_LIST_VERTICAL = (1 << 0),
-    AST_FLAG_LIST_HORIZONTAL = (1 << 1),
+    /* Flags for fn_call: */
+    AST_FLAG_FN_CALL_BUILTIN = (1 << 0),    /*!< handle it by it's built-in name (name of 
+                                                 childs[0]) */
 
     /* Flags for vars: */
+    AST_FLAG_VAR_REPLACE = (1 << 0),        /*!< replaces the var with it's content on draw/latex */
+    AST_FLAG_VAR_MATRIX = (1 << 1),         /*!< remembers that the result is a matrix (childs are
+                                                 rows, values for vec or lists in case of matrix) */
+
+    /* Flags for cints: */
+
+    /* Flags for lists: */
+    AST_FLAG_LIST_VERTICAL = (1 << 0),      /*!< specifies vertical list (\\ delimiter) */
+    AST_FLAG_LIST_HORIZ_BALANCED = (1 << 1),/*!< specifies the '&' as delimiter for horiz case */
+    AST_FLAG_LIST_VERT_SUBSTACK = (1 << 2), /*!< specifies the \substack{} guard for vert case */
 
     /* flags for all: */
     /* OBS: whatever flag is >= bit 32 is common to all */
@@ -101,6 +111,15 @@ VIRT_COMPOSER_REGISTER_TYPE(AST_TYPE_NODE);
 VIRT_COMPOSER_REGISTER_TYPE(AST_TYPE_VAR);
 VIRT_COMPOSER_REGISTER_TYPE(AST_TYPE_INT);
 
+inline void childs_list_maker(auto &childs, std::string &result, const std::string& separator,
+        int start, int stop)
+{
+    for (int i = start; i < stop - 1; i++)
+        result += childs[i]->generate_latex() + separator;
+    if (stop - 1 < childs.size())
+        result += childs[stop - 1]->generate_latex();
+};
+
 struct ast_node_t : public vc::object_t {
     ast_node_e m_op;
     ast_flags_e m_flags = AST_FLAG_NONE;
@@ -129,45 +148,7 @@ struct ast_node_t : public vc::object_t {
         return to_string_opt_rec_childs();
     }
 
-    virtual std::string generate_latex() {
-        DBG("Gen latex: m_op[%d] m_childs[%zd]", m_op, m_childs.size());
-        std::string result;
-        std::string biop = " + ";
-
-        auto childs_list_maker = [&](std::string separator, int start, int stop) {
-            for (int i = start; i < stop - 1; i++)
-                result += m_childs[i]->generate_latex() + separator;
-            if (stop - 1 < m_childs.size())
-                result += m_childs[stop - 1]->generate_latex();
-        };
-
-        switch (m_op) {
-            case AST_NODE_MUL:
-                biop = " \\times ";
-            case AST_NODE_ADD: {
-                if (!m_childs.size()) {
-                    result = "empty_biop";
-                    break;
-                }
-                childs_list_maker(biop, 0, m_childs.size());
-            } break;
-            case AST_NODE_FN_CALL: {
-                if (!m_childs.size()) {
-                    result = "empty_call";
-                    break;
-                }
-                result += m_childs[0]->generate_latex() + "(";
-                childs_list_maker(", ", 1, m_childs.size());
-                result += ")";
-            } break;
-            case AST_NODE_LIST: {
-                result += "(";
-                childs_list_maker(", ", 0, m_childs.size());
-                result += ")";
-            } break;
-        }
-        return result;
-    }
+    virtual std::string generate_latex();
 
     int add_child(vc::ref_t<ast_node_t> c) {
         m_childs.push_back(c);
@@ -194,14 +175,33 @@ struct ast_var_t : public ast_node_t {
     }
 
     virtual std::string to_string_opt_rec_childs(int lvl=0) const override {
+        bool replace = m_flags & AST_FLAG_VAR_REPLACE;
         std::string padd = std::string(lvl*2, ' ');
-        return std::format("{}ast_var_t: m_flags={} m_name={} ",
-                padd, astc::to_string(m_op, m_flags), m_name);
+        std::string content;
+
+        if (replace) {
+            content = "m_childs={\n";
+            for (auto &r : m_childs)
+                content += r->to_string_opt_rec_childs(lvl+1) + "\n";
+            content += padd + "}\n";
+        }
+        return std::format("{}ast_var_t: m_flags={} m_name={} {}",
+                padd, astc::to_string(m_op, m_flags), m_name, content);
     }
 
     virtual std::string generate_latex() override {
-        /* TODO: maybe escape things? */
-        return m_name;
+        /* TODO: maybe escape things in name? */
+        bool replace = m_flags & AST_FLAG_VAR_REPLACE;
+        bool is_matrix = m_flags & AST_FLAG_VAR_MATRIX;
+        if (replace && is_matrix) {
+            std::string ret = "\\begin{pmatrix}";
+            childs_list_maker(m_childs, ret, "\\\\", 0, m_childs.size());
+            ret += "\\end{pmatrix}";
+            return ret;
+        }
+        else {
+            return m_name;
+        }
     }
 };
 
@@ -240,6 +240,67 @@ static co::task_t parse_optionals(auto &vs, auto &node, auto &obj) {
     co_return 0;
 }
 
+inline std::string ast_node_t::generate_latex() {
+    DBG("Gen latex: m_op[%d] m_childs[%zd]", m_op, m_childs.size());
+    std::string result;
+    std::string biop = " + ";
+
+    switch (m_op) {
+        case AST_NODE_MUL:
+            biop = " \\times ";
+        case AST_NODE_ADD: {
+            if (!m_childs.size()) {
+                result = "[empty_biop]";
+                break;
+            }
+            childs_list_maker(m_childs, result, biop, 0, m_childs.size());
+        } break;
+        case AST_NODE_FN_CALL: {
+            if (!m_childs.size()) {
+                result = "[empty_call]";
+                break;
+            }
+            bool builtin = m_flags & AST_FLAG_FN_CALL_BUILTIN;
+
+            if (builtin) {
+                auto var = m_childs[0].to_related<ast_var_t>();
+                if (var->m_name == "sqrt") {
+                    if (m_childs.size() < 2)
+                        throw vc::except_t("sqrt must have at least one argument");
+                    result += "\\sqrt{";
+                    result += m_childs[1]->generate_latex();
+                    result += "}";
+                }
+                else
+                    throw vc::except_t("Not a known built-in");
+            }
+            else {
+                result += m_childs[0]->generate_latex() + "(";
+                childs_list_maker(m_childs, result, ", ", 1, m_childs.size());
+                result += ")";
+            }
+
+        } break;
+        case AST_NODE_LIST: {
+            bool horiz = !(m_flags & AST_FLAG_LIST_VERTICAL);
+            bool balanced = m_flags & AST_FLAG_LIST_HORIZ_BALANCED;
+            bool substack = m_flags & AST_FLAG_LIST_VERT_SUBSTACK;
+
+            if (horiz) {
+                childs_list_maker(m_childs, result, balanced ? "&" : ",", 0, m_childs.size());
+            }
+            else {
+                if (substack)
+                    result += "\\substack{";
+                childs_list_maker(m_childs, result, "\\\\", 0, m_childs.size());
+                if (substack)
+                    result += "}";
+            }
+        } break;
+    }
+    return result;
+}
+
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
 
@@ -251,6 +312,7 @@ inline int register_meta(vc::virt_state_t *vs) {
     /* TODO: this is temp, maybe add a full suite in the future? I'll see if needed*/
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, add_child, vc::ref_t<ast_node_t>);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, generate_latex);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_var_t, generate_latex);
 
     vc::add_lua_flag_mapping(vs, vc::ast_node_from_str);
     vc::add_lua_flag_mapping(vs, vc::ast_flags_from_str);
@@ -330,9 +392,19 @@ do { \
 inline std::string to_string(ast_node_e type, ast_flags_e flags) {
     std::string ret_str = "[";
 
+    if (type == AST_NODE_FN_CALL) {
+        ASTC_TO_STRING_FLAGS(AST_FLAG_FN_CALL_BUILTIN);
+    }
+
+    if (type == AST_NODE_VAR) {
+        ASTC_TO_STRING_FLAGS(AST_FLAG_VAR_REPLACE);
+        ASTC_TO_STRING_FLAGS(AST_FLAG_VAR_MATRIX);
+    }
+
     if (type == AST_NODE_LIST) {
         ASTC_TO_STRING_FLAGS(AST_FLAG_LIST_VERTICAL);
-        ASTC_TO_STRING_FLAGS(AST_FLAG_LIST_HORIZONTAL);
+        ASTC_TO_STRING_FLAGS(AST_FLAG_LIST_HORIZ_BALANCED);
+        ASTC_TO_STRING_FLAGS(AST_FLAG_LIST_VERT_SUBSTACK);
     }
 
     ASTC_TO_STRING_FLAGS(AST_FLAG_RANDOM_FLAG);
@@ -369,9 +441,14 @@ template <> inline astc::ast_flags_e get_enum_val<astc::ast_flags_e>(fkyaml::nod
 }
 
 inline std::unordered_map<std::string, astc::ast_flags_e> ast_flags_from_str = {
-    {"AST_FLAG_LIST_VERTICAL", astc::AST_FLAG_LIST_VERTICAL},
-    {"AST_FLAG_LIST_HORIZONTAL", astc::AST_FLAG_LIST_HORIZONTAL},
     {"AST_FLAG_RANDOM_FLAG", astc::AST_FLAG_RANDOM_FLAG},
+    {"AST_FLAG_LIST_VERTICAL", astc::AST_FLAG_LIST_VERTICAL},
+    {"AST_FLAG_LIST_HORIZ_BALANCED", astc::AST_FLAG_LIST_HORIZ_BALANCED},
+    {"AST_FLAG_LIST_VERT_SUBSTACK", astc::AST_FLAG_LIST_VERT_SUBSTACK},
+    {"AST_FLAG_VAR_REPLACE", astc::AST_FLAG_VAR_REPLACE},
+    {"AST_FLAG_VAR_MATRIX", astc::AST_FLAG_VAR_MATRIX},
+    {"AST_FLAG_FN_CALL_BUILTIN", astc::AST_FLAG_FN_CALL_BUILTIN},
+
 };
 
 } /*virt_composer*/
