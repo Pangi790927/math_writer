@@ -150,11 +150,38 @@ struct ast_node_t : public vc::object_t {
 
     virtual std::string generate_latex();
 
-    int add_child(vc::ref_t<ast_node_t> c) {
+    bool has_flags(ast_flags_e flags) {
+        return (m_flags & flags) == flags;
+    }
+
+    size_t num_childs() {
+        return m_childs.size();
+    }
+
+    int push_child(vc::ref_t<ast_node_t> c) {
         m_childs.push_back(c);
         return 0;
     }
+    int pop_child() {
+        m_childs.pop_back();
+        return 0;
+    }
 
+    vc::ref_t<ast_node_t> get_child(int i) {
+        if (i < 0 || i >= m_childs.size())
+            throw vc::except_t(std::format("Invalid index: {} size: {}", i, m_childs.size()));
+        return m_childs[i];
+    }
+
+    void set_child(int i, vc::ref_t<ast_node_t> to) {
+        if (i < 0 || i >= m_childs.size())
+            throw vc::except_t(std::format("Invalid index: {} size: {}", i, m_childs.size()));
+        m_childs[i] = to;
+    }
+
+    std::tuple<int, int, std::string> test_tuple_return() {
+        return {10, 12, "Ana are mere"};
+    }
 
 private:
     virtual vc::ret_t _init() override { return vc::VC_ERROR_OK; }
@@ -308,14 +335,21 @@ inline int register_meta(vc::virt_state_t *vs) {
     luaw_register_inheritance<ast_node_t, ast_integer_t>(vs);
 
     VC_REGISTER_MEMBER_OBJECT(vs, ast_node_t, m_op);
+    VC_REGISTER_MEMBER_OBJECT(vs, ast_node_t, m_flags);
     VC_REGISTER_MEMBER_OBJECT(vs, ast_var_t, m_name);
     VC_REGISTER_MEMBER_OBJECT(vs, ast_integer_t, m_value);
     // VC_REGISTER_MEMBER_OBJECT(vs, ast_node_t, m_childs);
 
     /* TODO: this is temp, maybe add a full suite in the future? I'll see if needed*/
-    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, add_child, vc::ref_t<ast_node_t>);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, push_child, vc::ref_t<ast_node_t>);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, generate_latex);
-    VC_REGISTER_MEMBER_FUNCTION(vs, ast_var_t, generate_latex);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, has_flags, vc::bm_t<ast_flags_e>);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, num_childs);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, push_child, vc::ref_t<ast_node_t>);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, pop_child);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, get_child, int);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, set_child, int, vc::ref_t<ast_node_t>);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, test_tuple_return);
 
     vc::add_lua_flag_mapping(vs, vc::ast_node_from_str);
     vc::add_lua_flag_mapping(vs, vc::ast_flags_from_str);
@@ -365,7 +399,6 @@ inline int register_meta(vc::virt_state_t *vs) {
         }
     );
     ASSERT_FN(ret);
-
 
     return 0;
 }
