@@ -1,5 +1,5 @@
 CXX       := cl
-CXX_FLAGS := /EHsc /await:strict /std:c++20 /Zi /MD /Zc:preprocessor
+CXX_FLAGS := /EHa /await:strict /std:c++20 /Zi /MD /Zc:preprocessor
 CXX_FLAGS += /DVIRT_COMPOSER_ENABLE_LUA_IO=1
 CXX_FLAGS += /DVIRT_COMPOSER_ENABLE_LUA_OS=1
 LIBS	  := /link gdi32.lib glfw3.lib opengl32.lib
