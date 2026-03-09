@@ -90,7 +90,7 @@ enum ast_flags_e : uint64_t {
     AST_FLAG_RANDOM_FLAG = (1ULL << 32),
 };
 
-enum ast_error_e : uint64_t {
+enum ast_error_e : int64_t {
     AST_ERROR_OK = 0,
     AST_ERROR_GENERIC = -1,
     AST_ERROR_HAS_PARENT = -2,
@@ -248,7 +248,7 @@ protected:
     }
 
     virtual void unset_parent(ast_node_t *parent) {
-        if (!vc::has(m_parents, parent))
+        if (!has(m_parents, parent))
             throw except_t(AST_ERROR_NO_PARENT, "ERROR: Not a parent of this object");
         m_parents.erase(parent);
     }
@@ -316,7 +316,7 @@ protected:
     }
 
     virtual void unset_parent(ast_node_t *parent) override {
-        if (!vc::has(m_parents, parent))
+        if (!has(m_parents, parent))
             throw except_t(AST_ERROR_NO_PARENT, "ERROR: Not a parent of this object");
         m_parents[parent]--;
         if (!m_parents[parent])
