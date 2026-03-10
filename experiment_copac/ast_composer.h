@@ -199,22 +199,36 @@ struct ast_node_t : public vc::object_t {
         return 0;
     }
 
+    void erase_child(int i) {
+        if (i < 0 || i >= m_childs.size())
+            throw except_t(AST_ERROR_GENERIC,
+                    std::format("erase: Invalid index: {} size: {}", i, m_childs.size()));
+        m_childs.erase(m_childs.begin() + i);
+    }
+
+    void insert_child(int i, vc::ref_t<ast_node_t> to_insert) {
+        if (i < 0 || i >= m_childs.size())
+            throw except_t(AST_ERROR_GENERIC,
+                    std::format("insert: Invalid index: {} size: {}", i, m_childs.size()));
+        m_childs.insert(m_childs.begin() + i, to_insert);
+    }
+
     vc::ref_t<ast_node_t> get_child(int i) {
         if (i < 0 || i >= m_childs.size())
             throw except_t(AST_ERROR_GENERIC,
-                    std::format("Invalid index: {} size: {}", i, m_childs.size()));
+                    std::format("getc: Invalid index: {} size: {}", i, m_childs.size()));
         return m_childs[i];
     }
 
-    void set_child(int i, vc::ref_t<ast_node_t> to) {
-        if (!to)
+    void set_child(int i, vc::ref_t<ast_node_t> to_set) {
+        if (!to_set)
             throw except_t(AST_ERROR_GENERIC, "Can't set a null/nil child");
         if (i < 0 || i >= m_childs.size())
             throw except_t(AST_ERROR_GENERIC, std::format("Invalid index: {} size: {}",
                     i, m_childs.size()));
         m_childs[i]->unset_parent(this);
-        m_childs[i] = to;
-        to->set_parent(this);
+        m_childs[i] = to_set;
+        to_set->set_parent(this);
     }
 
     virtual vc::ref_t<ast_node_t> create_copy() {
@@ -228,6 +242,29 @@ struct ast_node_t : public vc::object_t {
     std::tuple<int, int, std::string> test_tuple_return() {
         return {10, 12, "Ana are mere"};
     }
+
+    std::tuple<vc::ref_t<ast_node_t>, int> get_parent(int i) {
+        if (i < 0 || i >= m_parents.size())
+            return {nullptr, 0};
+        auto it = m_parents.begin();
+        std::advance(it, i);
+        auto ret = it->first->get_selfref();
+        for (int index = 0; index < ret->m_childs.size(); index++)
+            if (ret->m_childs[index].get() == this)
+                return {ret, index};
+        DBG("Something is very wrong if we didn't find the child in the parrents child list");
+        throw except_t(AST_ERROR_GENERIC, "Parent forgot it's child");
+    }
+
+    int num_parents() {
+        return m_parents.size();
+    }
+
+    intptr_t selfp() {
+        return (intptr_t)this;
+    }
+
+    /* TODO: check when ref_t objects are destroyed, if ever */
 
     /* TODO: is this not needed now that I have the parent? */
     /* This searches for the expression `to_find` inside the expression `expr_src` */
@@ -349,20 +386,29 @@ struct ast_integer_t : public ast_node_t {
     }
 };
 
+/* TODO: generate_latex has no place here, it stays just well in Lua */
+
 inline std::string ast_node_t::generate_latex() {
-    DBG("Gen latex: m_op[%d] m_childs[%zd]", m_op, m_childs.size());
+    // DBG("Gen latex: m_op[%d] m_childs[%zd]", m_op, m_childs.size());
     std::string result;
     std::string biop = " + ";
 
     switch (m_op) {
-        case AST_NODE_MUL:
-            biop = " \\times ";
-        case AST_NODE_ADD: {
+        case AST_NODE_MUL: {
             if (!m_childs.size()) {
-                result = "[empty_biop]";
+                result = "[empty_mul]";
                 break;
             }
-            childs_list_maker(m_childs, result, biop, 0, m_childs.size());
+            childs_list_maker(m_childs, result, "", 0, m_childs.size());
+        } break;
+        case AST_NODE_ADD: {
+            if (!m_childs.size()) {
+                result = "[empty_add]";
+                break;
+            }
+            result += "(";
+            childs_list_maker(m_childs, result, " + ", 0, m_childs.size());
+            result += ")";
         } break;
         case AST_NODE_FN_CALL: {
             if (!m_childs.size()) {
@@ -432,8 +478,28 @@ static co::task_t parse_optionals(auto &vs, auto &node, auto &obj) {
     co_return 0;
 }
 
+inline vc::ref_t<ast_node_t> create_ast_node(ast_node_e op) {
+    return ast_node_t::create(op);
+}
+
+inline vc::ref_t<ast_var_t> create_ast_var(const char *name) {
+    return ast_var_t::create(name);
+}
+
+inline vc::ref_t<ast_integer_t> create_ast_int(int64_t value) {
+    return ast_integer_t::create(value);
+}
+
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
+
+    std::vector<luaL_Reg> ast_tab_funcs = {
+        {"create_ast_node", vc::luaw_function_wrapper<create_ast_node, vc::bm_t<ast_node_e>>},
+        {"create_ast_var",  vc::luaw_function_wrapper<create_ast_var,  const char *>},
+        {"create_ast_int",  vc::luaw_function_wrapper<create_ast_int,  int64_t>},
+    };
+
+    ASSERT_FN(add_lua_tab_funcs(vs, ast_tab_funcs));
 
     luaw_register_inheritance<ast_node_t, ast_var_t>(vs);
     luaw_register_inheritance<ast_node_t, ast_integer_t>(vs);
@@ -451,8 +517,13 @@ inline int register_meta(vc::virt_state_t *vs) {
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, pop_child);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, get_child, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, set_child, int, vc::ref_t<ast_node_t>);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, erase_child, int);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, insert_child, int, vc::ref_t<ast_node_t>);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, test_tuple_return);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, create_copy);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, get_parent, int);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, num_parents);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, selfp);
 
     vc::add_lua_flag_mapping(vs, vc::ast_node_from_str);
     vc::add_lua_flag_mapping(vs, vc::ast_flags_from_str);
@@ -486,7 +557,6 @@ inline int register_meta(vc::virt_state_t *vs) {
         }
     );
     ASSERT_FN(ret);
-
 
     ret = add_named_builder_callback(vs,
         "ast_integer_t",
