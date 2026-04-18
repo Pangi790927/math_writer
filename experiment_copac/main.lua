@@ -72,27 +72,33 @@ function test_stuff()
     print("# Finished Testing Stuff")
 end
 
+function vref(var)
+    local vr = vc.create_ast_node(vc.AST_NODE_SHELL)
+    vr:push_child(var)
+    return vr
+end
+
 function test_work()
     local a = vc.create_ast_var("a")
     local b = vc.create_ast_var("b")
     local c = vc.create_ast_var("c")
     local n_10 = vc.create_ast_int(10)
     local abc = vc.create_ast_node(vc.AST_NODE_MUL)
-    abc:push_child(a)
-    abc:push_child(b)
-    abc:push_child(c)
+    abc:push_child(vref(a))
+    abc:push_child(vref(b))
+    abc:push_child(vref(c))
 
     local ab = vc.create_ast_node(vc.AST_NODE_MUL)
-    ab:push_child(a)
-    ab:push_child(b)
+    ab:push_child(vref(a))
+    ab:push_child(vref(b))
 
     local ac = vc.create_ast_node(vc.AST_NODE_MUL)
-    ac:push_child(a)
-    ac:push_child(c)
+    ac:push_child(vref(a))
+    ac:push_child(vref(c))
 
     local bc = vc.create_ast_node(vc.AST_NODE_MUL)
-    bc:push_child(b)
-    bc:push_child(c)
+    bc:push_child(vref(b))
+    bc:push_child(vref(c))
 
     -- I is for paranthesis and
     -- _ is for addition
@@ -103,7 +109,7 @@ function test_work()
     ab_ac_bc:push_child(bc)
 
     local aIab_ac_bcI = vc.create_ast_node(vc.AST_NODE_MUL)
-    aIab_ac_bcI:push_child(a)
+    aIab_ac_bcI:push_child(vref(a))
     aIab_ac_bcI:push_child(ab_ac_bc)
 
     -- Transform Name:
@@ -126,31 +132,33 @@ function test_work()
     --      `pop` the src so in that case we need to somehow signal that we failed and clean-up
     -- TODO: make sure objects get cleaned up after they die in lua, not to forever use space
 
-    local function common_ancestor(a, b)
-        local visited = {}
-        local ap = a and a:selfp() or 0
-        local bp = b and b:selfp() or 0
-        local i = 0
-        local j = 0
-        while true do
-            ap = a and a:selfp() or 0
-            bp = b and b:selfp() or 0
-            if visited[bp] then
-                return visited[bp]
-            end
-            if b then visited[bp] = b end
-            if visited[ap] then
-                return visited[ap]
-            end
-            if a then visited[ap] = a end
-            if a then a, i = table.unpack(a:get_parent(0)) end
-            if b then b, j = table.unpack(b:get_parent(0)) end
-            if (not a) and (not b) then
-                print("ERROR: Failed to find common ancestor")
-                return nil
-            end
-        end
-    end
+    print("# Start of operation:")
+    local copy = aIab_ac_bcI:create_copy()
+
+    print("## The copy: ")
+    print( copy:generate_latex())
+
+    print("## The parent:")
+    local parent, index_in_parent = table.unpack(bc:get_parent(0))
+    print(index_in_parent, parent:generate_latex())
+
+    print("## The grand-parent:")
+    local gparent, index_in_gparent = table.unpack(parent:get_parent(0))
+    print(index_in_gparent, gparent:generate_latex())
+
+    print("## The no-parent")
+    local nparent, index_in_nparent = table.unpack(gparent:get_parent(0))
+    print(index_in_nparent, nparent)
+
+    --[[ so this exemplifies how you would create a `path` from the selection to the root ]]
+    print("After erasure:")
+    parent:erase_child(index_in_parent)
+    print(aIab_ac_bcI:generate_latex())
+    print("Copy after erasure:")
+    print(copy:generate_latex())
+
+    a(ab + ac + bc)
+
 
     local common = common_ancestor(ab, aIab_ac_bcI)
     -- TODO: figure this out:

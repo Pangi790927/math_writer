@@ -4,6 +4,10 @@
 #include "imgui_helpers.h"
 #include "imgui_internal.h"
 
+/* composer plugins: */
+#include "draw_composer.h"
+#include "virt_composer_end.h"
+
 #include "debug.h"
 
 /*! TODO: rework this:
@@ -21,6 +25,9 @@
 
 /*! TODO: do a file that extends vulkan composer and does the parsing stuff. */
 
+namespace vc = virt_composer;
+namespace drawc = draw_composer;
+
 int main(int argc, char const *argv[])
 {
     imgui_init();
@@ -33,6 +40,11 @@ int main(int argc, char const *argv[])
     
     ImFontConfig config;
     config.MergeMode = true;
+
+    auto vs = vc::create_state();
+    ASSERT_FN(CHK_PTR(vs));
+    ASSERT_FN(drawc::register_meta(vs.get()));
+    ASSERT_FN(vc::parse_config(vs.get(), "math_writer.yaml"));
 
     // ASSERT_FN(chars_init());
     // ASSERT_FN(content_init());
@@ -63,6 +75,10 @@ int main(int argc, char const *argv[])
         ImGui::GetStyle().WindowRounding = 0.0f;
 
         ImGui::Begin("Math Editor", NULL, main_flags);
+
+        auto [ret, err] = vc::call_lua<int>(vs.get(), "test_draw");
+        ASSERT_FN(ret);
+        ASSERT_FN(err);
 
         // content_draw();
 

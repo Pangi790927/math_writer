@@ -42,8 +42,11 @@ enum ast_node_e : int32_t {
     AST_NODE_DIV,
 
     /*! A node that doesn't do much, just holds a list of nodes */
-    /* TODO: */
     AST_NODE_LIST,
+
+    /*! A reference to a variable of sorts, it does only one thing for now, it creates an
+     * additional node to the variable */
+    AST_NODE_SHELL,
 
     /* ---------- ast_var_t ---------- */
 
@@ -453,6 +456,13 @@ inline std::string ast_node_t::generate_latex() {
                     result += "}";
             }
         } break;
+        case AST_NODE_SHELL: {
+            if (m_childs.size() != 1) {
+                DBG("INVALID SHELL");
+                return "INVALID_SHELL";
+            }
+            result += m_childs[0]->generate_latex();
+        }
     }
     return result;
 }
@@ -509,21 +519,27 @@ inline int register_meta(vc::virt_state_t *vs) {
     VC_REGISTER_MEMBER_OBJECT(vs, ast_var_t, m_name);
     VC_REGISTER_MEMBER_OBJECT(vs, ast_integer_t, m_value);
 
-    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, push_child, vc::ref_t<ast_node_t>);
+    /* DEPRECATED: */
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, generate_latex);
-    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, has_flags, vc::bm_t<ast_flags_e>);
-    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, num_childs);
+
+    /* TEMPORARY*/
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, test_tuple_return);
+
+    /* AST Relations: */
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, push_child, vc::ref_t<ast_node_t>);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, pop_child);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, num_childs);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, get_child, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, set_child, int, vc::ref_t<ast_node_t>);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, erase_child, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, insert_child, int, vc::ref_t<ast_node_t>);
-    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, test_tuple_return);
-    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, create_copy);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, get_parent, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, num_parents);
+
+    /* MISC: */
     VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, selfp);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, has_flags, vc::bm_t<ast_flags_e>);
+    VC_REGISTER_MEMBER_FUNCTION(vs, ast_node_t, create_copy);
 
     vc::add_lua_flag_mapping(vs, vc::ast_node_from_str);
     vc::add_lua_flag_mapping(vs, vc::ast_flags_from_str);
@@ -581,6 +597,7 @@ inline std::string to_string(ast_node_e type) {
         case AST_NODE_ADD: return "AST_NODE_ADD";
         case AST_NODE_MUL: return "AST_NODE_MUL";
         case AST_NODE_LIST: return "AST_NODE_LIST";
+        case AST_NODE_SHELL: return "AST_NODE_SHELL";
         case AST_NODE_FN_CALL: return "AST_NODE_FN_CALL";
         case AST_NODE_VAR: return "AST_NODE_VAR";
         case AST_NODE_INT: return "AST_NODE_INT";
@@ -640,6 +657,7 @@ inline std::unordered_map<std::string, astc::ast_node_e> ast_node_from_str = {
     {"AST_NODE_ADD", astc::AST_NODE_ADD},
     {"AST_NODE_MUL", astc::AST_NODE_MUL},
     {"AST_NODE_LIST", astc::AST_NODE_LIST},
+    {"AST_NODE_SHELL", astc::AST_NODE_SHELL},
     {"AST_NODE_FN_CALL", astc::AST_NODE_FN_CALL},
     {"AST_NODE_VAR", astc::AST_NODE_VAR},
     {"AST_NODE_INT", astc::AST_NODE_INT},

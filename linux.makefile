@@ -1,6 +1,7 @@
 CXX       := g++-13
 CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
-LIBS      := -lpthread -ldl -lglfw -lcurl -lglfw -lGL
+# CXX_FLAGS += -Wl,--verbose
+LIBS      := -lpthread -ldl -lcurl -lglfw3 -lGL
 
 IMGUI     := ../imgui/
 IMPLOT    := ../implot/
@@ -25,6 +26,7 @@ INCLCUDES += -I${IMGUI} -I${IMGUI}/backends/ -I${IMPLOT}
 # This is a header-only project 
 DEPS      := $(wildcard ./*.h)
 SRCS      += ${IMGUI_SRC} ${BACKEND_SRC} ${IMPLOT_SRC}
+SRCS      += ${UTILS}/virt_composer.cpp
 OBJS      := $(SRCS:.cpp=.o)
 
 all: ${OBJS} $(DEPS)

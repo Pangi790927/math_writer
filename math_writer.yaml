@@ -1,0 +1,6 @@
+math_font0:
+  m_type: drawc_font_t
+
+main_script:
+    m_type: vc::lua_script_t
+    m_source_path: ./main.lua
