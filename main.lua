@@ -6,7 +6,6 @@ local FONT_NORMAL = 1
 local FONT_BOLD = 2
 local FONT_ITALIC = 3
 local FONT_MONO = 4
-
 local FONT_MATH = 5
 local FONT_SYMBOLS = 6
 local FONT_MATH_EX = 7
