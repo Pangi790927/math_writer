@@ -1,7 +1,7 @@
-CXX       := g++-13
+CXX       := g++
 CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
 # CXX_FLAGS += -Wl,--verbose
-LIBS      := -lpthread -ldl -lcurl -lglfw3 -lGL
+LIBS      := -lpthread -ldl -lglfw -lGL
 
 IMGUI     := ../imgui/
 IMPLOT    := ../implot/

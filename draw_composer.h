@@ -2,6 +2,9 @@
 #define DRAW_COMPOSER_H
 
 #include "virt_composer.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include "imgui_internal.h"
 
 /*! A bit of a description of what this file will hold. Not sure if I want a single composer to
  * hold all that I will describe, but here we go: 
@@ -38,80 +41,136 @@ namespace drawc = draw_composer;
 VIRT_COMPOSER_REGISTER_TYPE(DRAWC_TYPE_SYMBOL);
 VIRT_COMPOSER_REGISTER_TYPE(DRAWC_TYPE_FONT);
 
-/* TODO: drawc_content_t -- the holder of content, ast or text, depending of it's type */
-
-struct drawc_symbol_t : public vc::object_t {
-    /* TODO: */
-
-    static vc::object_type_e type_id_static() { return DRAWC_TYPE_SYMBOL; }
-    virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_SYMBOL; }
-
-    static vc::ref_t<drawc_symbol_t> create(/*TODO:*/) {
-        auto ret = vc::ref_t<drawc_symbol_t>::create_obj_ref(std::make_unique<drawc_symbol_t>(), {});
-        /* TODO: */
-        return ret;
-    }
-
-    inline virtual std::string to_string() const override {
-        return std::format("drawc_symbol_t[{}]", (void *)this);
-    }
-
-    virtual vc::ret_t _init() override { return vc::VC_ERROR_OK; }
-    virtual vc::ret_t _uninit() override { return vc::VC_ERROR_OK; }
-};
-
 struct drawc_font_t : public vc::object_t {
-    /* TODO: */
-    std::vector<vc::ref_t<drawc_symbol_t>> symbols;
+    std::string m_path;
+    float m_font_size = 42;
+
+    ImFont* font = nullptr;
 
     static vc::object_type_e type_id_static() { return DRAWC_TYPE_FONT; }
     virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_FONT; }
 
-    static vc::ref_t<drawc_font_t> create(/*TODO:*/) {
+    static vc::ref_t<drawc_font_t> create(std::string path, float font_size) {
         auto ret = vc::ref_t<drawc_font_t>::create_obj_ref(std::make_unique<drawc_font_t>(), {});
-        /* TODO: */
+        ret->m_path = path;
+        ret->m_font_size = font_size;
+        if (ret->_call_init() != vc::VC_ERROR_OK)
+            throw vc::except_t(sformat("Failed to load font: %s, sz: %f", path.c_str(), font_size));
         return ret;
     }
 
     inline virtual std::string to_string() const override {
-        return std::format("drawc_font_t[{}]", (void *)this);
+        return std::format("drawc_font_t[{}] path: %s sz: %f",
+                (void *)this, m_path.c_str(), m_font_size);
     }
 
-    virtual vc::ret_t _init() override { return vc::VC_ERROR_OK; }
-    virtual vc::ret_t _uninit() override { return vc::VC_ERROR_OK; }
+    /* returns advance_x, ascent, descent, botom_left, top_right  */
+    std::tuple<float, std::tuple<float, float>, std::tuple<float, float>>
+    char_get_sz(uint32_t code) {
+        auto glyph = font->GetFontBaked(m_font_size)->FindGlyphNoFallback(code);
+        return {
+            glyph->AdvanceX,
+            {
+                glyph->X0,
+                glyph->Y1,
+            },
+            {
+                glyph->X1,
+                glyph->Y0,
+            },
+        };
+    }
+
+    /* returns the bounding box as it will be drawn by the program */
+    std::tuple<std::tuple<float, float>, std::tuple<float, float>>
+    char_get_bb(uint32_t code, float posx, float posy) {
+        auto ssz = char_get_sz(code);
+
+        ImVec2 pos(posx, posy);
+        ImVec2 bb_bl(std::get<0>(std::get<1>(ssz)), std::get<1>(std::get<1>(ssz)));
+        ImVec2 bb_tr(std::get<0>(std::get<2>(ssz)), std::get<1>(std::get<2>(ssz)));
+
+        ImVec2 bl = bb_bl + pos;
+        ImVec2 tr = bb_tr + pos;
+
+        return {
+            {std::min(bl.x, tr.x), std::min(bl.y, tr.y)},
+            {std::max(bl.x, tr.x), std::max(bl.y, tr.y)},
+        };
+    }
+
+    void char_draw(uint32_t code, float posx, float posy, uint32_t color, bool draw_bb, uint32_t bb_color) {
+        auto ssz = char_get_sz(code);
+
+        ImVec2 pos(posx, posy);
+        ImVec2 bb_bl(std::get<0>(std::get<1>(ssz)), std::get<1>(std::get<1>(ssz)));
+        ImVec2 bb_tr(std::get<0>(std::get<2>(ssz)), std::get<1>(std::get<2>(ssz)));
+
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        if (window->SkipItems)
+            return ;
+
+        ImVec2 bl = bb_bl + pos;
+        ImVec2 tr = bb_tr + pos;
+
+        /* OBS: RenderChar is the only method that works, for unknown reasons, maybe I can
+        fix it?(in imgui). For now the thing will be made out of raw drawing */
+        ImGui::PushFont(font);
+        if (draw_bb) {
+            draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), bb_color, 1);
+            draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), bb_color, 1);
+            draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), bb_color, 1);
+            draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), bb_color, 1);
+        }
+        font->RenderChar(draw_list, m_font_size, pos, color, code);
+        ImGui::PopFont();
+    }
+
+    virtual vc::ret_t _init() override {
+        ImGuiIO& io = ImGui::GetIO();
+        font = io.Fonts->AddFontFromFileTTF(m_path.c_str(), m_font_size);
+        if (!font)
+            return vc::VC_ERROR_GENERIC;
+        return vc::VC_ERROR_OK;
+    }
+
+    virtual vc::ret_t _uninit() override {
+        ImGuiIO& io = ImGui::GetIO();
+        io.Fonts->RemoveFont(font);
+        return vc::VC_ERROR_OK;
+    }
 };
 
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
 
-    std::vector<luaL_Reg> ast_tab_funcs = {
+    std::vector<luaL_Reg> drawc_tab_funcs = {
         // {"create_symbol", vc::luaw_function_wrapper<fnname, TODO:>},
         // {"draw_symbol", vc::luaw_function_wrapper<fnname, TODO:>},
     };
 
-    ASSERT_FN(add_lua_tab_funcs(vs, ast_tab_funcs));
+    ASSERT_FN(add_lua_tab_funcs(vs, drawc_tab_funcs));
+
+    VC_REGISTER_MEMBER_OBJECT(vs, drawc_font_t, m_path);
+    VC_REGISTER_MEMBER_OBJECT(vs, drawc_font_t, m_font_size);
+
+    VC_REGISTER_MEMBER_FUNCTION(vs, drawc_font_t, char_draw,
+            uint32_t, float, float, uint32_t, bool, uint32_t);
+    VC_REGISTER_MEMBER_FUNCTION(vs, drawc_font_t, char_get_sz, uint32_t);
+    VC_REGISTER_MEMBER_FUNCTION(vs, drawc_font_t, char_get_bb, uint32_t, float, float);
 
     // VC_REGISTER_MEMBER_OBJECT(vs, ast_node_t, ...)
     // vc::add_lua_flag_mapping(vs, ...);
 
     int ret = add_named_builder_callback(vs,
-        "drawc_symbol_t",
-        [](vc::virt_state_t *vs, const std::string& node_name, fkyaml::node& node)
-            -> co::task<vc::ref_t<vc::object_t>>
-        {
-            auto obj = drawc_symbol_t::create();
-            mark_dependency_solved(vs, node_name, obj.to_related<vc::object_t>());
-            co_return obj.to_related<vc::object_t>();
-        }
-    );
-    ASSERT_FN(ret);
-
-    ret = add_named_builder_callback(vs,
         "drawc_font_t",
         [](vc::virt_state_t *vs, const std::string& node_name, fkyaml::node& node)
             -> co::task<vc::ref_t<vc::object_t>>
         {
-            auto obj = drawc_font_t::create();
+            auto m_path = co_await resolve_str(vs, node["m_path"]);
+            auto m_fontsz = co_await resolve_float(vs, node["m_font_size"]);
+            auto obj = drawc_font_t::create(m_path, m_fontsz);
             mark_dependency_solved(vs, node_name, obj.to_related<vc::object_t>());
             co_return obj.to_related<vc::object_t>();
         }

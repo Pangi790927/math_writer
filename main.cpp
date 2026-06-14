@@ -57,6 +57,10 @@ int main(int argc, char const *argv[])
     // cboxes[1].obj = defines_create();
     // cboxes[2].obj = formulas_create();
     imgui_render(clear_color);
+        
+    auto [ret, err] = vc::call_lua<int>(vs.get(), "test_init");
+    ASSERT_FN(ret);
+    ASSERT_FN(err);
 
     while (!glfwWindowShouldClose(imgui_window)) {
         glfwPollEvents();
