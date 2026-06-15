@@ -1,0 +1,94 @@
+a:
+  m_type: ast_var_t
+  m_name: a
+
+b:
+  m_type: ast_var_t
+  m_name: b
+
+n1:
+  m_type: ast_integer_t
+  m_value: 10
+
+fn_sqrt:
+  m_type: ast_var_t
+  m_name: sqrt
+
+fn_f:
+  m_type: ast_var_t
+  m_name: f
+  m_flags: AST_FLAG_RANDOM_FLAG
+
+c:
+  m_type: ast_node_t
+  m_op: AST_NODE_ADD
+  m_childs:
+    - !ref a
+    - !ref b
+    - !ref n1
+
+d:
+  m_type: ast_node_t
+  m_op: AST_NODE_MUL
+  m_childs:
+    - !ref a
+    - !ref b
+    - !ref n1
+
+e1:
+  m_type: ast_node_t
+  m_op: AST_NODE_FN_CALL
+  m_childs:
+    - !ref fn_f
+    - !ref a
+    - !ref b
+    - !ref c
+    - !ref d
+
+e2:
+  m_type: ast_node_t
+  m_op: AST_NODE_FN_CALL
+  m_flags: AST_FLAG_FN_CALL_BUILTIN
+  m_childs:
+    - !ref fn_sqrt
+    - !ref e1
+
+l1:
+  m_type: ast_node_t
+  m_op: AST_NODE_LIST
+  m_flags: [AST_FLAG_LIST_VERTICAL, AST_FLAG_LIST_VERT_SUBSTACK]
+  m_childs:
+    - !ref a
+    - !ref b
+    - !ref n1 
+
+V1:
+  m_type: ast_node_t
+  m_op: AST_NODE_LIST
+  m_flags: [AST_FLAG_LIST_HORIZ_BALANCED]
+  m_childs: [!ref e2, !ref a, !ref b, !ref n1]
+
+V2:
+  m_type: ast_node_t
+  m_op: AST_NODE_LIST
+  m_flags: [AST_FLAG_LIST_HORIZ_BALANCED]
+  m_childs: [!ref e2, !ref a, !ref b, !ref n1]
+
+V3:
+  m_type: ast_node_t
+  m_op: AST_NODE_LIST
+  m_flags: [AST_FLAG_LIST_HORIZ_BALANCED]
+  m_childs: [!ref e2, !ref a, !ref b, !ref n1]
+
+M:
+  m_type: ast_var_t
+  m_name: M
+  m_flags: [AST_FLAG_VAR_REPLACE, AST_FLAG_VAR_MATRIX]
+  m_childs:
+    - !ref V1
+    - !ref V2
+    - !ref V3
+
+main_script:
+    m_type: vc::lua_script_t
+    m_source_path: ./main.lua

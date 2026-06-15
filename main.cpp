@@ -12,18 +12,63 @@
 
 /*! TODO: rework this:
  * 
- * - Maybe? Use the new vulkan-lua to rework interactions
- * - The fonts should be loaded from a font remapping file. This file will define characters, it
- * will clasify them (give them namespaces) and give them names.
  * - Mathematical objects or objects in general will have mathematical object files that will again
  * give them namespaces and names. Those will also have a small drawing rules description, maybe a
  * lua script that will explain how to draw them. Most importantly, those description will contain
  * diverse rules of composition: number of parameters and things like asociativness with other
- * objects.
+ * objects. ---- in LUA
  * 
  * As such, all the hardcoded behaviours should be scripted from now on. */
 
-/*! TODO: do a file that extends vulkan composer and does the parsing stuff. */
+/*!
+ * TAKE 3
+ * 
+ * Ok, so the first two attempts are not good, they are overly complicated and hard to
+ * serialize, hard to transform, etc.
+ * 
+ * I want to have a third try in which:
+ * 1. All actions must be made clear, ie the structure must be made such that ctrl+z, ctrl+shift+z
+ * will work
+ * 2. The ast node will be much simpler, encoded as tuples: (type, args...) where args can be
+ * anything, depending on the type
+ * 
+ * tuples:
+ * _ID:(...)                    -- tuple with it's id, each tupple will have such an ID 
+ * (=, a1, a2)                  -- equality
+ * (<, a1, a2)                  -- inequality (and all others <, <=. >=, >, !=)
+ * (+, a1, a2, a3, ...)         -- sum of elements
+ * (*, a1, a2, a3, ...)         -- product of elements
+ * (/, a1, a2)                  -- division
+ * (^, a1, a2)                  -- exponentiation
+ * (N, m, n, sign)              -- rational/natural number m/n
+ * (@, f, a1, a2, a3, ...)      -- function call
+ * (&, vref)                    -- variable reference
+ * (#, name)                    -- named variable
+ * (V, a1, a2, a3, ...)         -- vector
+ * (M, m, n, a1, ... a[m+n])    -- matrix
+ * (_, a1)                      -- paranthesis
+ * ...                          -- other custom ones to be thought about later?
+ * 
+ * -- bigops are special forms of functions, example sum (@, sum, k, 0, N, expr)
+ * -- there are a lot of implicit functions
+ * -- functions decide how the thing is drawn, for example a_n is a function of integer parameter n
+ * -- = is used to corelate var, functions and other with other expressions (sure?)
+ * 
+ * 
+ * !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! SOOOOOO:
+ * Steps are:
+ * 1. write those above in lua, ie the AST moves to lua, with operators =, <, +, ... defined inside
+ * lua
+ * 2. render those operators moving the rendering stuff inside lua partially, ie, I want mathd to
+ * have a lua counterpart
+ * 3. implement two main operations: move around sumation elements, product elements
+ * 4. see what else can be implemented for each operator type
+ * 5. 3 and 4 operations should be remembered in a queue and be reversible
+ * 6. figure out gestures and such to do those operations
+ * 7. finally implement the final product, with all the content boxes and save/load options
+ *  
+ */
+
 
 namespace vc = virt_composer;
 namespace drawc = draw_composer;
@@ -46,16 +91,7 @@ int main(int argc, char const *argv[])
     ASSERT_FN(drawc::register_meta(vs.get()));
     ASSERT_FN(vc::parse_config(vs.get(), "math_writer.yaml"));
 
-    // ASSERT_FN(chars_init());
-    // ASSERT_FN(content_init());
-    // ASSERT_FN(comments_init());
-    // ASSERT_FN(defines_init());
-    // ASSERT_FN(formulas_init());
-
     imgui_prepare_render();
-    // cboxes[0].obj = comments_create();
-    // cboxes[1].obj = defines_create();
-    // cboxes[2].obj = formulas_create();
     imgui_render(clear_color);
         
     auto [ret, err] = vc::call_lua<int>(vs.get(), "test_init");
