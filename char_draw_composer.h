@@ -50,10 +50,10 @@ struct font_t : public vc::object_t {
     virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_FONT; }
 
     static vc::ref_t<font_t> create(std::string path, float font_size) {
-        auto ret = vc::ref_t<font_t>::create_obj_ref(std::make_unique<font_t>(), {});
+        auto ret = std::make_shared<font_t>();
         ret->m_path = path;
         ret->m_font_size = font_size;
-        if (ret->_call_init() != vc::VC_ERROR_OK)
+        if (ret->init() != vc::VC_ERROR_OK)
             throw vc::except_t(sformat("Failed to load font: %s, sz: %f", path.c_str(), font_size));
         return ret;
     }
@@ -126,7 +126,7 @@ struct font_t : public vc::object_t {
         ImGui::PopFont();
     }
 
-    virtual vc::ret_t _init() override {
+    virtual vc::ret_t init() override {
         ImGuiIO& io = ImGui::GetIO();
         font = io.Fonts->AddFontFromFileTTF(m_path.c_str(), m_font_size);
         if (!font)
@@ -134,7 +134,7 @@ struct font_t : public vc::object_t {
         return vc::VC_ERROR_OK;
     }
 
-    virtual vc::ret_t _uninit() override {
+    virtual vc::ret_t uninit() override {
         ImGuiIO& io = ImGui::GetIO();
         io.Fonts->RemoveFont(font);
         return vc::VC_ERROR_OK;
@@ -170,8 +170,8 @@ inline int register_meta(vc::virt_state_t *vs) {
             auto m_path = co_await resolve_str(vs, node["m_path"]);
             auto m_fontsz = co_await resolve_float(vs, node["m_font_size"]);
             auto obj = font_t::create(m_path, m_fontsz);
-            mark_dependency_solved(vs, node_name, obj.to_related<vc::object_t>());
-            co_return obj.to_related<vc::object_t>();
+            mark_dependency_solved(vs, node_name, obj->to_related<vc::object_t>());
+            co_return obj->to_related<vc::object_t>();
         }
     );
     ASSERT_FN(ret);
