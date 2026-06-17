@@ -5,7 +5,7 @@
 #include "imgui_internal.h"
 
 /* composer plugins: */
-#include "draw_composer.h"
+#include "char_draw_composer.h"
 #include "virt_composer_end.h"
 
 #include "debug.h"
@@ -42,7 +42,6 @@
  * (^, a1, a2)                  -- exponentiation
  * (N, m, n, sign)              -- rational/natural number m/n
  * (@, f, a1, a2, a3, ...)      -- function call
- * (&, vref)                    -- variable reference
  * (#, name)                    -- named variable
  * (V, a1, a2, a3, ...)         -- vector
  * (M, m, n, a1, ... a[m+n])    -- matrix

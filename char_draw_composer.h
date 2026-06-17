@@ -38,10 +38,9 @@ namespace vo = virt_object;
 namespace vc = virt_composer;
 namespace drawc = draw_composer;
 
-VIRT_COMPOSER_REGISTER_TYPE(DRAWC_TYPE_SYMBOL);
 VIRT_COMPOSER_REGISTER_TYPE(DRAWC_TYPE_FONT);
 
-struct drawc_font_t : public vc::object_t {
+struct font_t : public vc::object_t {
     std::string m_path;
     float m_font_size = 42;
 
@@ -50,8 +49,8 @@ struct drawc_font_t : public vc::object_t {
     static vc::object_type_e type_id_static() { return DRAWC_TYPE_FONT; }
     virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_FONT; }
 
-    static vc::ref_t<drawc_font_t> create(std::string path, float font_size) {
-        auto ret = vc::ref_t<drawc_font_t>::create_obj_ref(std::make_unique<drawc_font_t>(), {});
+    static vc::ref_t<font_t> create(std::string path, float font_size) {
+        auto ret = vc::ref_t<font_t>::create_obj_ref(std::make_unique<font_t>(), {});
         ret->m_path = path;
         ret->m_font_size = font_size;
         if (ret->_call_init() != vc::VC_ERROR_OK)
@@ -60,7 +59,7 @@ struct drawc_font_t : public vc::object_t {
     }
 
     inline virtual std::string to_string() const override {
-        return std::format("drawc_font_t[{}] path: %s sz: %f",
+        return std::format("drawc::font_t[{}] path: %s sz: %f",
                 (void *)this, m_path.c_str(), m_font_size);
     }
 
@@ -152,25 +151,25 @@ inline int register_meta(vc::virt_state_t *vs) {
 
     ASSERT_FN(add_lua_tab_funcs(vs, drawc_tab_funcs));
 
-    VC_REGISTER_MEMBER_OBJECT(vs, drawc_font_t, m_path);
-    VC_REGISTER_MEMBER_OBJECT(vs, drawc_font_t, m_font_size);
+    VC_REGISTER_MEMBER_OBJECT(vs, font_t, m_path);
+    VC_REGISTER_MEMBER_OBJECT(vs, font_t, m_font_size);
 
-    VC_REGISTER_MEMBER_FUNCTION(vs, drawc_font_t, char_draw,
+    VC_REGISTER_MEMBER_FUNCTION(vs, font_t, char_draw,
             uint32_t, float, float, uint32_t, bool, uint32_t);
-    VC_REGISTER_MEMBER_FUNCTION(vs, drawc_font_t, char_get_sz, uint32_t);
-    VC_REGISTER_MEMBER_FUNCTION(vs, drawc_font_t, char_get_bb, uint32_t, float, float);
+    VC_REGISTER_MEMBER_FUNCTION(vs, font_t, char_get_sz, uint32_t);
+    VC_REGISTER_MEMBER_FUNCTION(vs, font_t, char_get_bb, uint32_t, float, float);
 
     // VC_REGISTER_MEMBER_OBJECT(vs, ast_node_t, ...)
     // vc::add_lua_flag_mapping(vs, ...);
 
     int ret = add_named_builder_callback(vs,
-        "drawc_font_t",
+        "drawc::font_t",
         [](vc::virt_state_t *vs, const std::string& node_name, fkyaml::node& node)
             -> co::task<vc::ref_t<vc::object_t>>
         {
             auto m_path = co_await resolve_str(vs, node["m_path"]);
             auto m_fontsz = co_await resolve_float(vs, node["m_font_size"]);
-            auto obj = drawc_font_t::create(m_path, m_fontsz);
+            auto obj = font_t::create(m_path, m_fontsz);
             mark_dependency_solved(vs, node_name, obj.to_related<vc::object_t>());
             co_return obj.to_related<vc::object_t>();
         }

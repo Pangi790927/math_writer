@@ -16,40 +16,68 @@ function capi.load_font_set(fontsz)
 		-- Roman
         -- 		* Has some math operators/Symbols
         -- 		* Usefull for description parts of the app
-		[capi.FONT_NORMAL]  = vc.create_object(nil, { m_path = "fonts/cmr10.ttf", m_font_size = fontsz, m_type = "drawc_font_t" }),
+		[capi.FONT_NORMAL] = vc.create_object(nil, {
+            m_path = "fonts/cmr10.ttf",
+            m_font_size = fontsz,
+            m_type = "drawc::font_t"
+        }),
 
 		-- Bold Extended
         -- 		* Has some math operators/Symbols
         -- 		* Usefull for description parts of the app
-		[capi.FONT_BOLD]    = vc.create_object(nil, { m_path = "fonts/cmbx10.ttf", m_font_size = fontsz, m_type = "drawc_font_t" }),
+		[capi.FONT_BOLD] = vc.create_object(nil, {
+            m_path = "fonts/cmbx10.ttf",
+            m_font_size = fontsz,
+            m_type = "drawc::font_t"
+        }),
 
 		-- Text Italic
         -- 		* Has some math operators/Symbols
         -- 		* Usefull for description parts of the app
-		[capi.FONT_ITALIC]  = vc.create_object(nil, { m_path = "fonts/cmti10.ttf", m_font_size = fontsz, m_type = "drawc_font_t" }),
+		[capi.FONT_ITALIC] = vc.create_object(nil, {
+            m_path = "fonts/cmti10.ttf",
+            m_font_size = fontsz,
+            m_type = "drawc::font_t"
+        }),
 
 		-- Typewriter Type
         -- 		* Has some math operators/Symbols
         -- 		* Usefull for description parts of the app
         -- 		* Has constant spacing, can be used for code writing
-		[capi.FONT_MONO]    = vc.create_object(nil, { m_path = "fonts/cmtt10.ttf", m_font_size = fontsz, m_type = "drawc_font_t" }),
-		
+		[capi.FONT_MONO] = vc.create_object(nil, {
+            m_path = "fonts/cmtt10.ttf",
+            m_font_size = fontsz,
+            m_type = "drawc::font_t"
+        }),
+
 		-- Math Italic
 		-- 		* Used for formulas (the variable names)
 		-- 		* Has more/all greek
 		-- 		* has some operators
-		[capi.FONT_MATH]    = vc.create_object(nil, { m_path = "fonts/cmmi10.ttf", m_font_size = fontsz, m_type = "drawc_font_t" }),
+		[capi.FONT_MATH] = vc.create_object(nil, {
+            m_path = "fonts/cmmi10.ttf",
+            m_font_size = fontsz,
+            m_type = "drawc::font_t"
+        }),
 
 		-- Math Symbols
 		-- 		* Used for formulas
 		-- 		* A lot of signs
-		[capi.FONT_SYMBOLS] = vc.create_object(nil, { m_path = "fonts/cmsy10.ttf", m_font_size = fontsz, m_type = "drawc_font_t" }),
+		[capi.FONT_SYMBOLS] = vc.create_object(nil, {
+            m_path = "fonts/cmsy10.ttf",
+            m_font_size = fontsz,
+            m_type = "drawc::font_t"
+        }),
 
 		-- Math Extension
 		--		* Used for formulas
         --		* big operators
         --		* brackets
-		[capi.FONT_MATH_EX] = vc.create_object(nil, { m_path = "fonts/cmex10.ttf", m_font_size = fontsz, m_type = "drawc_font_t" }),
+		[capi.FONT_MATH_EX] = vc.create_object(nil, {
+            m_path = "fonts/cmex10.ttf",
+            m_font_size = fontsz,
+            m_type = "drawc::font_t"
+        }),
 	}
 end
 
