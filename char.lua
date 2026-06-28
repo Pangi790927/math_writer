@@ -10,82 +10,155 @@ local capi = {
 	FONT_MATH_EX = 7,
 }
 
-function capi.load_font_set(fontsz)
-	return {
-		fontsz = fontsz,
-		-- Roman
-        -- 		* Has some math operators/Symbols
-        -- 		* Usefull for description parts of the app
-		[capi.FONT_NORMAL] = vc.create_object(nil, {
-            m_path = "fonts/cmr10.ttf",
-            m_font_size = fontsz,
-            m_type = "drawc::font_t"
-        }),
+function capi.load_font_set()
+    local base_sz = 42
 
-		-- Bold Extended
-        -- 		* Has some math operators/Symbols
-        -- 		* Usefull for description parts of the app
-		[capi.FONT_BOLD] = vc.create_object(nil, {
-            m_path = "fonts/cmbx10.ttf",
-            m_font_size = fontsz,
-            m_type = "drawc::font_t"
-        }),
+    local paths = {}
+    -- Roman
+    --      * Has some math operators/Symbols
+    --      * Usefull for description parts of the app
+    paths[capi.FONT_NORMAL] = "fonts/cmr10.ttf"
 
-		-- Text Italic
-        -- 		* Has some math operators/Symbols
-        -- 		* Usefull for description parts of the app
-		[capi.FONT_ITALIC] = vc.create_object(nil, {
-            m_path = "fonts/cmti10.ttf",
-            m_font_size = fontsz,
-            m_type = "drawc::font_t"
-        }),
+    -- Bold Extended
+    --      * Has some math operators/Symbols
+    --      * Usefull for description parts of the app
+    paths[capi.FONT_BOLD] = "fonts/cmbx10.ttf"
 
-		-- Typewriter Type
-        -- 		* Has some math operators/Symbols
-        -- 		* Usefull for description parts of the app
-        -- 		* Has constant spacing, can be used for code writing
-		[capi.FONT_MONO] = vc.create_object(nil, {
-            m_path = "fonts/cmtt10.ttf",
-            m_font_size = fontsz,
-            m_type = "drawc::font_t"
-        }),
+    -- Text Italic
+    --      * Has some math operators/Symbols
+    --      * Usefull for description parts of the app
+    paths[capi.FONT_ITALIC] = "fonts/cmti10.ttf"
 
-		-- Math Italic
-		-- 		* Used for formulas (the variable names)
-		-- 		* Has more/all greek
-		-- 		* has some operators
-		[capi.FONT_MATH] = vc.create_object(nil, {
-            m_path = "fonts/cmmi10.ttf",
-            m_font_size = fontsz,
-            m_type = "drawc::font_t"
-        }),
+    -- Typewriter Type
+    --      * Has some math operators/Symbols
+    --      * Usefull for description parts of the app
+    --      * Has constant spacing, can be used for code writing
+    paths[capi.FONT_MONO] = "fonts/cmtt10.ttf"
 
-		-- Math Symbols
-		-- 		* Used for formulas
-		-- 		* A lot of signs
-		[capi.FONT_SYMBOLS] = vc.create_object(nil, {
-            m_path = "fonts/cmsy10.ttf",
-            m_font_size = fontsz,
-            m_type = "drawc::font_t"
-        }),
+    -- Math Italic
+    --      * Used for formulas (the variable names)
+    --      * Has more/all greek
+    --      * has some operators
+    paths[capi.FONT_MATH] = "fonts/cmmi10.ttf"
 
-		-- Math Extension
-		--		* Used for formulas
-        --		* big operators
-        --		* brackets
-		[capi.FONT_MATH_EX] = vc.create_object(nil, {
-            m_path = "fonts/cmex10.ttf",
-            m_font_size = fontsz,
-            m_type = "drawc::font_t"
-        }),
-	}
+    -- Math Symbols
+    --      * Used for formulas
+    --      * A lot of signs
+    paths[capi.FONT_SYMBOLS] = "fonts/cmsy10.ttf"
+
+    -- Math Extension
+    --      * Used for formulas
+    --      * big operators
+    --      * brackets
+    paths[capi.FONT_MATH_EX] = "fonts/cmex10.ttf"
+
+    local ret = vc.create_object(nil, {
+        m_type = "drawc::fontset_t",
+        m_a_code = 61,
+        m_font_sizes = {
+            360.0,  288.0,  216.0,  180.0,  --[[  1,  2,  3,  4]]
+            144.0,  120.0,  96.0,   72.0,   --[[  5,  6,  7,  8]]
+            42.0,   36.0,   24.0,   18.0,   --[[  9, 10, 11, 12]] --[[ 9 shall be the default one]]
+            14.0,   12.0,   10.0,   8.0     --[[ 13, 14, 15, 16]]
+        },
+        m_font_paths = paths
+    })
+
+    for i in ipairs(capi.chars) do
+        ret:register_code(capi.chars[i].ncod, capi.chars[i].fnum, capi.chars[i].fcod)
+    end
+
+    return ret
 end
 
-function capi.draw_char(fontset, c, px, py, color, do_box, box_color)
-	color = color or 0xffffffff
-	do_box = do_box or 0
-	box_color = box_color or 0xff00ff00
-	fontset[c.fnum]:char_draw(c.fcod, px, py, color, do_box, box_color)
+--[[ Some character definitions ]]
+function capi.hash(fontsz)        return {size=fontsz, code=2} end
+function capi.comma(fontsz)       return {size=fontsz, code=11} end
+function capi.plus(fontsz)        return {size=fontsz, code=10} end
+function capi.minus(fontsz)       return {size=fontsz, code=181} end
+function capi.equal(fontsz)       return {size=fontsz, code=27} end
+function capi.integral(fontsz)    return {size=fontsz, code=191} end
+function capi.bigsum(fontsz)      return {size=fontsz, code=192} end
+function capi.hline_basic(fontsz) return {size=fontsz, code=221} end
+function capi.hline_long(fontsz)  return {size=fontsz, code=222} end
+function capi.hline_above(fontsz) return {size=fontsz, code=223} end
+
+function capi.round_bracket(fontsz)
+    return {
+        type = vc.MEXPR_BRACKET_ROUND,
+        tl   = { size=fontsz, code=231 },
+        bl   = { size=fontsz, code=233 },
+        tr   = { size=fontsz, code=232 },
+        br   = { size=fontsz, code=234 },
+        cl   = { size=fontsz, code=228 },
+        cr   = { size=fontsz, code=229 },
+        conl = { size=fontsz, code=228 },
+        conr = { size=fontsz, code=229 },
+        left = {
+            { size=fontsz, code=197 },
+            { size=fontsz, code=198 },
+            { size=fontsz, code=199 },
+            { size=fontsz, code=200 },
+        },
+        right = {
+            { size=fontsz, code=201 },
+            { size=fontsz, code=202 },
+            { size=fontsz, code=203 },
+            { size=fontsz, code=204 },
+        }
+    }
+end
+
+function capi.square_bracket(fontsz)
+    return {
+        type = vc.MEXPR_BRACKET_SQUARE,
+        tl   = { size=fontsz, code=235 },
+        bl   = { size=fontsz, code=237 },
+        tr   = { size=fontsz, code=236 },
+        br   = { size=fontsz, code=238 },
+        cl   = { size=fontsz, code=226 },
+        cr   = { size=fontsz, code=227 },
+        conl = { size=fontsz, code=226 },
+        conr = { size=fontsz, code=227 },
+        left = {
+            { size=fontsz, code=205 },
+            { size=fontsz, code=206 },
+            { size=fontsz, code=207 },
+            { size=fontsz, code=208 },
+        },
+        right = {
+            { size=fontsz, code=209 },
+            { size=fontsz, code=210 },
+            { size=fontsz, code=211 },
+            { size=fontsz, code=212 },
+        }
+    }
+end
+
+function capi.curly_bracket(fontsz)
+    return {
+        type = vc.MEXPR_BRACKET_CURLY,
+        tl   = { size=fontsz, code=239 },
+        bl   = { size=fontsz, code=241 },
+        tr   = { size=fontsz, code=240 },
+        br   = { size=fontsz, code=242 },
+        cl   = { size=fontsz, code=243 },
+        cr   = { size=fontsz, code=244 },
+        conl = { size=fontsz, code=224 },
+        conr = { size=fontsz, code=224 },
+        left = {
+            { size=fontsz, code=213 },
+            { size=fontsz, code=214 },
+            { size=fontsz, code=215 },
+            { size=fontsz, code=216 },
+        },
+        right = {
+            { size=fontsz, code=217 },
+            { size=fontsz, code=218 },
+            { size=fontsz, code=219 },
+            { size=fontsz, code=220 },
+        }
+    }
 end
 
 capi.chars = {

@@ -5,7 +5,7 @@ local ast = require("ast")
 local fontset = nil
 
 function test_init()
-    fontset = char.load_font_set(42)
+    fontset = char.load_font_set()
 end
 
 --[[ TODO: Add imports into code ]]
@@ -24,7 +24,7 @@ function test_draw()
             ast.new_num(ns, -10, 1, 1)
         )
     )
-    print(ast.to_string(ns, node), ast.to_latex(ns, node))
+    -- print(ast.to_string(ns, node), ast.to_latex(ns, node))
     local b = ast.new_var(ns, "b")
     local c = ast.new_var(ns, "c")
     local bc = ast.new_mul(ns, ast.new_vref(ns, b), ast.new_vref(ns, c))
@@ -36,7 +36,7 @@ function test_draw()
             bc
         )
     )
-    print(ast.to_string(ns, aIab_ac_bcI), ast.to_latex(ns, aIab_ac_bcI))
+    -- print(ast.to_string(ns, aIab_ac_bcI), ast.to_latex(ns, aIab_ac_bcI))
 
     -- transforms.initial_traverse(aIab_ac_bcI)
     -- local found_bc = transforms.find(aIab_ac_bcI, bc.id)
@@ -44,16 +44,28 @@ function test_draw()
     --     error("HUH?")
     -- end
 
-    if i == 10 then
-        increment = increment + 1
-        if increment > 248 then
-            increment = 1
-        end
-        i = 0
-    end
-    i = i + 1
-
-    local c = char.chars[increment]
-    -- print(c.desc)
-    char.draw_char(fontset, c, 0, 0)
+    local sz = 10
+    local a = vc.mexpr_symbol(fontset, {size=sz, code=61}, 1)
+    local b = vc.mexpr_symbol(fontset, {size=sz, code=62}, 1)
+    local c = vc.mexpr_symbol(fontset, {size=sz, code=63}, 1)
+    local d = vc.mexpr_symbol(fontset, {size=sz, code=64}, 1)
+    local _a = vc.mexpr_symbol(fontset, {size=sz+1, code=61}, 1)
+    local _b = vc.mexpr_symbol(fontset, {size=sz+1, code=62}, 1)
+    local _c = vc.mexpr_symbol(fontset, {size=sz+1, code=63}, 1)
+    local _d = vc.mexpr_symbol(fontset, {size=sz+1, code=64}, 1)
+    local sub = vc.mexpr_supsub(fontset, a, nil, _a)
+    local sup = vc.mexpr_supsub(fontset, b, _b, nil)
+    local subp = vc.mexpr_supsub(fontset, c, _a, _b)
+    local a_b = vc.mexpr_binexpr(fontset, a, char.plus(sz), sub)
+    local a_b_c = vc.mexpr_binexpr(fontset, a_b, char.minus(sz), sup)
+    local a_b_c_d = vc.mexpr_binexpr(fontset, a_b_c, char.plus(sz), subp)
+    -- TODO: fix fractions
+    -- local frac = vc.mexpr_frac(fontset, a_b_c_d, a_b_c, char.hline_basic(sz))
+    local int = vc.mexpr_bigop(fontset, a_b_c_d, a, b, char.integral(math.max(sz-5, 1)))
+    local sum = vc.mexpr_bigop(fontset, a_b_c_d, a, b, char.bigsum(math.max(sz-5, 1)))
+    local brack1 = vc.mexpr_bracket(fontset, int, char.round_bracket(sz))
+    local brack2 = vc.mexpr_bracket(fontset, sum, char.round_bracket(sz))
+    local sum_brack = vc.mexpr_binexpr(fontset, brack1, char.plus(sz), brack2)
+    local brack3 = vc.mexpr_bracket(fontset, sum_brack, char.square_bracket(sz))
+    vc.mexpr_draw(fontset, {x=100, y=100}, brack3, 0)
 end

@@ -30,17 +30,26 @@
  * 
  */
 
+namespace char_draw_composer
+{
+
+struct char_t {
+    uint32_t size = 0;
+    uint32_t code = 0;
+};
+
+}; /* char_draw_composer */
+
 namespace virt_composer {
 
 template <ssize_t index>
 struct luaw_param_t<ImVec2, index> {
-    auto luaw_single_param(lua_State *L) {
-        ImVec2 ret;
-        if (lua_isnil(L, index))
-            return ret;
-        /* TODO: this table must be filled, of the form { x=float, y=float } */
-        return ret;
-    }
+    ImVec2 luaw_single_param(lua_State *L);
+};
+
+template <ssize_t index>
+struct luaw_param_t<char_draw_composer::char_t, index> {
+    char_draw_composer::char_t luaw_single_param(lua_State *L);
 };
 
 } /* virt_composer */
@@ -66,36 +75,83 @@ struct char_sz_t {
     ImVec2 tr;
 };
 
-struct char_t {
-    uint32_t font;
-    uint32_t code;
-};
 
-struct subfont_t : public vc::object_t {
-    std::string m_path;
-    float m_font_size = 42;
+struct fontset_t : public vc::object_t {
+    struct font_loc_t {
+        uint32_t font;
+        uint32_t fcode;
+    };
 
-    ImFont* font = nullptr;
+    /*! Code of letter a inside the subfont, or more precisely, some letter that stays above the
+     * write line and is a `small` letter (as oposed to `tall` letters such as "tlikjhf")
+     * It's dimensions are used internally assuming those properties. */
+    uint32_t m_a_code; 
 
-    static vc::object_type_e type_id_static() { return DRAWC_TYPE_FONT; }
-    virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_FONT; }
+    std::vector<std::string> font_paths;
+    std::vector<float> font_sizes;
 
-    static vc::ref_t<subfont_t> create(std::string path, float font_size) {
-        auto ret = std::make_shared<subfont_t>();
-        ret->m_path = path;
-        ret->m_font_size = font_size;
+    std::map<int, font_loc_t> code_to_font_loc;
+    std::vector<std::vector<std::shared_ptr<ImFont>>> fonts;
+
+    static vc::object_type_e type_id_static() { return DRAWC_TYPE_FONTSET; }
+    virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_FONTSET; }
+
+    static vc::ref_t<fontset_t> create(const std::vector<std::string>& font_paths,
+            const std::vector<float>& font_sizes, int a_code)
+    {
+        auto ret = std::make_shared<fontset_t>();
+        ret->font_paths = font_paths;
+        ret->font_sizes = font_sizes;
+        ret->m_a_code = a_code;
         if (ret->init() != vc::VC_ERROR_OK)
-            throw vc::except_t(sformat("Failed to load font: %s, sz: %f", path.c_str(), font_size));
+            throw vc::except_t(sformat("Failed to load fontset"));
         return ret;
     }
 
     inline virtual std::string to_string() const override {
-        return std::format("drawc::subfont_t[{}] path: %s sz: %f",
-                (void *)this, m_path.c_str(), m_font_size);
+        /* TODO: maybe describe more? */
+        return std::format("drawc::fontset_t[{}]", (void *)this);
     }
 
-    char_sz_t char_get_sz(uint32_t code) {
-        auto glyph = font->GetFontBaked(m_font_size)->FindGlyphNoFallback(code);
+    virtual vc::ret_t init() override {
+        ImGuiIO& io = ImGui::GetIO();
+        fonts = std::vector<std::vector<std::shared_ptr<ImFont>>>(font_sizes.size());
+
+        for (size_t sz_id = 0; sz_id < font_sizes.size(); sz_id++) {
+            fonts[sz_id] = std::vector<std::shared_ptr<ImFont>>(font_paths.size());
+
+            for (size_t font_id = 0; font_id < font_paths.size(); font_id++) {
+                auto font = io.Fonts->AddFontFromFileTTF(
+                        font_paths[font_id].c_str(), font_sizes[sz_id]);
+                if (!font) {
+                    fonts = std::vector<std::vector<std::shared_ptr<ImFont>>>();
+                    DBG("Failed to load font: %s of font size: %d",
+                            font_paths[font_id].c_str(), font_sizes[sz_id]);
+                    return vc::VC_ERROR_GENERIC;
+                }
+                fonts[sz_id][font_id] = std::shared_ptr<ImFont>(font, [](ImFont *font){
+                    ImGuiIO& io = ImGui::GetIO();
+                    io.Fonts->RemoveFont(font);
+                });
+            }
+        }
+
+        return vc::VC_ERROR_OK;
+    }
+
+    virtual vc::ret_t uninit() override {
+        fonts = std::vector<std::vector<std::shared_ptr<ImFont>>>();
+        return vc::VC_ERROR_OK;
+    }
+
+    void register_code(uint32_t code, uint32_t font, uint32_t fcode) {
+        code_to_font_loc[code] = font_loc_t{ .font = font, .fcode = fcode };
+    }
+
+    char_sz_t char_get_sz(char_t c) {
+        check_char(c);
+        auto glyph = fonts[c.size-1][code_to_font_loc[c.code].font-1]
+                ->GetFontBaked(font_sizes[c.size-1])->FindGlyphNoFallback(code_to_font_loc[c.code].fcode);
         return {
             .adv = glyph->AdvanceX,
             .bl = ImVec2(glyph->X0, glyph->Y1),
@@ -103,8 +159,8 @@ struct subfont_t : public vc::object_t {
         };
     }
 
-    char_bb_t char_get_bb(uint32_t code, ImVec2 pos) {
-        auto ssz = char_get_sz(code);
+    char_bb_t char_get_bb(char_t c, ImVec2 pos = ImVec2(0, 0)) {
+        auto ssz = char_get_sz(c);
 
         ImVec2 bl = ssz.bl + pos;
         ImVec2 tr = ssz.tr + pos;
@@ -115,8 +171,8 @@ struct subfont_t : public vc::object_t {
         };
     }
 
-    void char_draw(uint32_t code, ImVec2 pos, uint32_t color, bool draw_bb, uint32_t bb_color) {
-        auto ssz = char_get_sz(code);
+    void char_draw(char_t c, ImVec2 pos, uint32_t color, bool draw_bb, uint32_t bb_color) {
+        auto ssz = char_get_sz(c);
 
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -128,154 +184,50 @@ struct subfont_t : public vc::object_t {
 
         /* OBS: RenderChar is the only method that works, for unknown reasons, maybe I can
         fix it?(in imgui). For now the thing will be made out of raw drawing */
-        ImGui::PushFont(font);
+        auto font = fonts[c.size-1][code_to_font_loc[c.code].font-1];
+        ImGui::PushFont(font.get());
         if (draw_bb) {
             draw_list->AddLine(ImVec2(bl.x, bl.y), ImVec2(tr.x, bl.y), bb_color, 1);
             draw_list->AddLine(ImVec2(tr.x, bl.y), ImVec2(tr.x, tr.y), bb_color, 1);
             draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), bb_color, 1);
             draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), bb_color, 1);
         }
-        font->RenderChar(draw_list, m_font_size, pos, color, code);
+        font->RenderChar(draw_list, font_sizes[c.size-1], pos, color, code_to_font_loc[c.code].fcode);
         ImGui::PopFont();
     }
 
-    virtual vc::ret_t init() override {
-        ImGuiIO& io = ImGui::GetIO();
-        font = io.Fonts->AddFontFromFileTTF(m_path.c_str(), m_font_size);
-        if (!font)
-            return vc::VC_ERROR_GENERIC;
-        return vc::VC_ERROR_OK;
-    }
-
-    virtual vc::ret_t uninit() override {
-        ImGuiIO& io = ImGui::GetIO();
-        io.Fonts->RemoveFont(font);
-        return vc::VC_ERROR_OK;
-    }
-};
-
-struct font_t : public vc::object_t {
-    std::vector<vc::ref_t<subfont_t>> m_subfonts;
-
-    static vc::object_type_e type_id_static() { return DRAWC_TYPE_SUBFONT; }
-    virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_SUBFONT; }
-
-    static vc::ref_t<font_t> create(std::vector<vc::ref_t<subfont_t>> subfonts) {
-        auto ret = std::make_shared<font_t>();
-        ret->m_subfonts = subfonts;
-        return ret;
-    }
-
-    inline virtual std::string to_string() const override {
-        return std::format("drawc::subfont_t[{}]", (void *)this);
-    }
-};
-
-struct fontset_t : public vc::object_t {
-    std::vector<vc::ref_t<font_t>> m_fonts;
-    std::vector<uint32_t> m_code_redirect;
-    std::vector<uint32_t> m_subf_redirect;
-    uint32_t m_a_code = 61;
-
-    static vc::object_type_e type_id_static() { return DRAWC_TYPE_FONT; }
-    virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_FONT; }
-
-    static vc::ref_t<fontset_t> create(std::vector<vc::ref_t<font_t>> fonts,
-            std::vector<uint32_t> m_code_redirect, std::vector<uint32_t> m_subf_redirect,
-            uint32_t m_a_code = 61)
-    {
-        auto ret = std::make_shared<fontset_t>();
-        ret->m_fonts = fonts;
-        return ret;
-    }
-
-    inline virtual std::string to_string() const override {
-        return std::format("drawc::fontset_t[{}]", (void *)this);
-    }
-
-    char_sz_t char_get_sz(char_t c) {
-        return get_subf(c.font, c.code)->char_get_sz(get_subcode(c.code));
-    }
-
-    char_bb_t char_get_bb(char_t c, ImVec2 pos = ImVec2(0, 0)) {
-        return get_subf(c.font, c.code)->char_get_bb(get_subcode(c.code), pos);
-    }
-
-    void char_draw(char_t c, ImVec2 pos, uint32_t color, bool draw_bb, uint32_t bb_color) {
-        return get_subf(c.font, c.code)->char_draw(
-                get_subcode(c.code), pos, color, draw_bb, bb_color);
-    }
-
 private:
-    uint32_t get_subcode(uint32_t code) {
-        if (code >= m_code_redirect.size())
-            throw vc::except_t("Invalid char code [character redirect]");
-        return m_code_redirect[code];
-    }
-
-    subfont_t *get_subf(uint32_t font, uint32_t code) {
-        if (font >= m_fonts.size())
-            throw vc::except_t("Invalid font code (size code");
-        if (code >= m_subf_redirect.size())
-            throw vc::except_t("Invalid char code [subfont redirect]");
-        if (m_subf_redirect[code] >= m_fonts[font]->m_subfonts.size())
-            throw vc::except_t("Invalid font sub-code");
-        return m_fonts[font]->m_subfonts[m_subf_redirect[code]].get();
+    void check_char(char_t c) {
+        if (c.size <= 0 || c.size > fonts.size())
+            throw vc::except_t(std::format("char size invalid: {} vs {}", c.size, fonts.size()));
+        if (!has(code_to_font_loc, c.code))
+            throw vc::except_t(std::format("char code not known: {}", c.code));
+        if (code_to_font_loc[c.code].font <= 0 || code_to_font_loc[c.code].font > font_paths.size())
+            throw vc::except_t(std::format("invalid font loc: {}", code_to_font_loc[c.code].font));
     }
 };
 
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
 
-    std::vector<luaL_Reg> drawc_tab_funcs = {
-        // {"create_symbol", vc::luaw_function_wrapper<fnname, TODO:>},
-        // {"draw_symbol", vc::luaw_function_wrapper<fnname, TODO:>},
-    };
+    VC_REGISTER_MEMBER_OBJECT(vs, fontset_t, m_a_code);
 
-    ASSERT_FN(add_lua_tab_funcs(vs, drawc_tab_funcs));
-
-    VC_REGISTER_MEMBER_OBJECT(vs, subfont_t, m_path);
-    VC_REGISTER_MEMBER_OBJECT(vs, subfont_t, m_font_size);
+    VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, register_code, uint32_t, uint32_t, uint32_t);
+    VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, char_draw, char_t, ImVec2, uint32_t, bool, uint32_t);
 
     int ret = add_named_builder_callback(vs,
-        "drawc::subfont_t",
-        [](vc::virt_state_t *vs, const std::string& node_name, fkyaml::node& node)
-            -> co::task<vc::ref_t<vc::object_t>>
-        {
-            auto m_path = co_await resolve_str(vs, node["m_path"]);
-            auto m_fontsz = co_await resolve_float(vs, node["m_font_size"]);
-            auto obj = subfont_t::create(m_path, m_fontsz);
-            mark_dependency_solved(vs, node_name, obj->to_related<vc::object_t>());
-            co_return obj->to_related<vc::object_t>();
-        }
-    );
-    ASSERT_FN(ret);
-
-    ret = add_named_builder_callback(vs,
-        "drawc::font_t",
-        [](vc::virt_state_t *vs, const std::string& node_name, fkyaml::node& node)
-            -> co::task<vc::ref_t<vc::object_t>>
-        {
-            std::vector<vc::ref_t<subfont_t>> m_subfonts;
-            /* TODO: fill this */
-            auto obj = font_t::create(m_subfonts);
-            mark_dependency_solved(vs, node_name, obj->to_related<vc::object_t>());
-            co_return obj->to_related<vc::object_t>();
-        }
-    );
-    ASSERT_FN(ret);
-
-    ret = add_named_builder_callback(vs,
         "drawc::fontset_t",
         [](vc::virt_state_t *vs, const std::string& node_name, fkyaml::node& node)
             -> co::task<vc::ref_t<vc::object_t>>
         {
-            std::vector<vc::ref_t<font_t>> m_fonts;
-            std::vector<uint32_t> m_code_redirect;
-            std::vector<uint32_t> m_subf_redirect;
-            uint32_t m_a_code;
-            /* TODO: fill this */
-            auto obj = fontset_t::create(m_fonts, m_code_redirect, m_subf_redirect, m_a_code);
+            std::vector<std::string> font_paths;
+            std::vector<float> font_sizes;
+            for (auto& subnode : node["m_font_paths"])
+                font_paths.push_back(subnode.as_str());
+            for (auto& subnode : node["m_font_sizes"])
+                font_sizes.push_back(subnode.as_float());
+            int a_code = co_await vc::resolve_int(vs, node["m_a_code"]);
+            auto obj = fontset_t::create(font_paths, font_sizes, a_code);
             mark_dependency_solved(vs, node_name, obj->to_related<vc::object_t>());
             co_return obj->to_related<vc::object_t>();
         }
@@ -286,5 +238,40 @@ inline int register_meta(vc::virt_state_t *vs) {
 }
 
 } /* char_draw_composer */
+
+namespace virt_composer
+{
+    
+template <ssize_t index>
+inline ImVec2 luaw_param_t<ImVec2, index>::luaw_single_param(lua_State *L) {
+    ImVec2 ret;
+    if (lua_isnil(L, index))
+        return ret;
+    lua_getfield(L, index, "x");
+    ret.x = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, index, "y");
+    ret.y = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    return ret;
+}
+
+template <ssize_t index>
+inline char_draw_composer::char_t
+luaw_param_t<char_draw_composer::char_t, index>::luaw_single_param(lua_State *L)
+{
+    char_draw_composer::char_t ret;
+    if (lua_isnil(L, index))
+        return ret;
+    lua_getfield(L, index, "code");
+    ret.code = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, index, "size");
+    ret.size = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    return ret;
+}
+
+}; /* virt_composer */
 
 #endif

@@ -16,9 +16,9 @@
 namespace math_expr_composer {
 
 enum mexpr_bracket_e : int {
-    MATHD_BRACKET_ROUND,
-    MATHD_BRACKET_SQUARE,
-    MATHD_BRACKET_CURLY,
+    MEXPR_BRACKET_ROUND,
+    MEXPR_BRACKET_SQUARE,
+    MEXPR_BRACKET_CURLY,
 };
 
 struct mexpr_bracket_t {
@@ -39,26 +39,15 @@ struct mexpr_bracket_t {
 
 namespace virt_composer {
 
-template <ssize_t index>
-struct luaw_param_t<char_draw_composer::char_t, index> {
-    auto luaw_single_param(lua_State *L) {
-        char_draw_composer::char_t ret{ .font=0, .code=0 };
-        if (lua_isnil(L, index))
-            return ret;
-        /* TODO: this table must be filled, of the form { font=number, code=number } */
-        return ret;
-    }
-};
+extern inline std::unordered_map<std::string, math_expr_composer::mexpr_bracket_e>
+        mexpr_bracket_from_str;
+
+template <> inline math_expr_composer::mexpr_bracket_e
+get_enum_val<math_expr_composer::mexpr_bracket_e>(fkyaml::node &n);
 
 template <ssize_t index>
 struct luaw_param_t<math_expr_composer::mexpr_bracket_t, index> {
-    auto luaw_single_param(lua_State *L) {
-        math_expr_composer::mexpr_bracket_t ret{};
-        if (lua_isnil(L, index))
-            return ret;
-        /* TODO: this table must be filled, of the form { type=... } see above */
-        return ret;
-    }
+    math_expr_composer::mexpr_bracket_t luaw_single_param(lua_State *L);
 };
 
 } /* virt_composer */
@@ -187,6 +176,8 @@ inline int register_meta(vc::virt_state_t *vs) {
         },
     };
 
+    vc::add_lua_flag_mapping(vs, vc::mexpr_bracket_from_str);
+
     ASSERT_FN(add_lua_tab_funcs(vs, mexpr_tab_funcs));
     return vc::VC_ERROR_OK;
 }
@@ -194,63 +185,6 @@ inline int register_meta(vc::virt_state_t *vs) {
 
 #define MATHD_DISTANCER         4
 #define MATHD_DISTANCER_BIGO    2
-
-/* Those should be moved to Lua */
-// #define MATHD_hash              (gchar(  2))
-// #define MATHD_plus              (gchar( 10))
-// #define MATHD_comma             (gchar( 11))
-
-// #define MATHD_equal             (gchar( 27))
-// #define MATHD_minus             (gchar(181))
-// #define MATHD_integral          (gchar(191))
-// #define MATHD_sum               (gchar(192))
-
-// #define MATHD_hline_basic       (gchar(221))
-// #define MATHD_hline_long        (gchar(222))
-// #define MATHD_hline_above       (gchar(223))
-
-
-// inline mexpr_bracket_t mathd_brack_round = {
-//     .type = MATHD_BRACKET_ROUND,
-//     .tl  = gchar(231),
-//     .bl  = gchar(233),
-//     .tr  = gchar(232),
-//     .br  = gchar(234),
-//     .cl  = gchar(228),
-//     .cr  = gchar(229),
-//     .conl = gchar(228),
-//     .conr = gchar(229),
-//     .left = { gchar(197), gchar(198), gchar(199), gchar(200) },
-//     .right = { gchar(201), gchar(202), gchar(203), gchar(204) },
-// };
-
-// inline mexpr_bracket_t mathd_brack_square = {
-//     .type = MATHD_BRACKET_SQUARE,
-//     .tl  = gchar(235),
-//     .bl  = gchar(237),
-//     .tr  = gchar(236),
-//     .br  = gchar(238),
-//     .cl  = gchar(226),
-//     .cr  = gchar(227),
-//     .conl = gchar(226),
-//     .conr = gchar(227),
-//     .left = { gchar(205), gchar(206), gchar(207), gchar(208) },
-//     .right = { gchar(209), gchar(210), gchar(211), gchar(212) },
-// };
-
-// inline mexpr_bracket_t mathd_brack_curly = {
-//     .type = MATHD_BRACKET_CURLY,
-//     .tl  = gchar(239),
-//     .bl  = gchar(241),
-//     .tr  = gchar(240),
-//     .br  = gchar(242),
-//     .cl  = gchar(243),
-//     .cr  = gchar(244),
-//     .conl = gchar(224),
-//     .conr = gchar(224),
-//     .left = { gchar(213), gchar(214), gchar(215), gchar(216) },
-//     .right = { gchar(217), gchar(218), gchar(219), gchar(220) },
-// };
 
 inline void mexpr_draw(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb) {
     if (!m)
@@ -289,7 +223,7 @@ inline mexpr_p mexpr_empty(vc::ref_t<drawc::fontset_t> fs, float x, float y) {
 }
 
 inline mexpr_p mexpr_symbol(vc::ref_t<drawc::fontset_t> fs, char_t sym, bool is_char) {
-    auto a = char_t{ .font = sym.font, .code = fs->m_a_code };
+    auto a = char_t{ .size = sym.size, .code = fs->m_a_code };
     auto [a_min, a_max] = fs->char_get_bb(a);
     auto [s_min, s_max] = fs->char_get_bb(sym);
     float hmed = (a_max.y - a_min.y) / 2.;
@@ -307,8 +241,8 @@ inline mexpr_p mexpr_symbol(vc::ref_t<drawc::fontset_t> fs, char_t sym, bool is_
 }
 
 inline float get_font_mul(vc::ref_t<drawc::fontset_t> fs, char_t c) {
-    auto sz = fs->char_get_bb(c);
-    return sz.a_max.y - sz.a_min.y / 10.0f;
+    auto sz = fs->char_get_bb(char_t{ .size=c.size, .code=fs->m_a_code });
+    return (sz.a_max.y - sz.a_min.y) / 10.0f;
 }
 
 inline mexpr_p mexpr_bigop(vc::ref_t<drawc::fontset_t> fs,
@@ -504,7 +438,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<drawc::fontset_t> fs, mexpr_p expr, mexpr
         }
 
         float h = 0;
-        if (bracket.type == MATHD_BRACKET_SQUARE) {
+        if (bracket.type == MEXPR_BRACKET_SQUARE) {
             h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             auto lines_l = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
             auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
@@ -529,7 +463,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<drawc::fontset_t> fs, mexpr_p expr, mexpr
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
             calc_offsets(lines_l->line_strip, lines_r->line_strip);
         }
-        else if (bracket.type == MATHD_BRACKET_ROUND) {
+        else if (bracket.type == MEXPR_BRACKET_ROUND) {
             h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             auto lines_l = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
             auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
@@ -570,7 +504,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<drawc::fontset_t> fs, mexpr_p expr, mexpr
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
             calc_offsets(lines_l->line_strip, lines_r->line_strip);
         }
-        else if (bracket.type == MATHD_BRACKET_CURLY) {
+        else if (bracket.type == MEXPR_BRACKET_CURLY) {
             h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
             float h2 = h / 2.;
             auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
@@ -722,5 +656,82 @@ inline mexpr_p mexpr_merge_v(vc::ref_t<drawc::fontset_t> fs, mexpr_p u, mexpr_p 
 }
 
 } /* math_expr_composer */
+
+namespace virt_composer
+{
+
+inline std::unordered_map<std::string, math_expr_composer::mexpr_bracket_e> mexpr_bracket_from_str =
+{
+    {"MEXPR_BRACKET_ROUND", math_expr_composer::MEXPR_BRACKET_ROUND},
+    {"MEXPR_BRACKET_SQUARE", math_expr_composer::MEXPR_BRACKET_SQUARE},
+    {"MEXPR_BRACKET_CURLY", math_expr_composer::MEXPR_BRACKET_CURLY},
+};
+
+template <> inline math_expr_composer::mexpr_bracket_e
+get_enum_val<math_expr_composer::mexpr_bracket_e>(fkyaml::node &n) {
+    return get_enum_val(n, mexpr_bracket_from_str);
+}
+
+
+template <ssize_t index>
+inline math_expr_composer::mexpr_bracket_t
+luaw_param_t<math_expr_composer::mexpr_bracket_t, index>::luaw_single_param(lua_State *L) {
+    math_expr_composer::mexpr_bracket_t ret{};
+    if (lua_isnil(L, index))
+        return ret;
+    using char_t = char_draw_composer::char_t;
+
+    lua_getfield(L, index, "type");
+    ret.type = luaw_param_t<bm_t<math_expr_composer::mexpr_bracket_e>, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+
+    lua_getfield(L, index, "tl");
+    ret.tl = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+    
+    lua_getfield(L, index, "bl");
+    ret.bl = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+    
+    lua_getfield(L, index, "tr");
+    ret.tr = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+    
+    lua_getfield(L, index, "br");
+    ret.br = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+    
+    lua_getfield(L, index, "cl");
+    ret.cl = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+    
+    lua_getfield(L, index, "cr");
+    ret.cr = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+
+    lua_getfield(L, index, "conl");
+    ret.conl = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+
+    lua_getfield(L, index, "conr");
+    ret.conr = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+    
+    lua_getfield(L, index, "left");
+    auto left = luaw_param_t<std::vector<char_t>, -1>{}.luaw_single_param(L);
+    for (int i = 0; i < left.size() && i < 4; i++)
+        ret.left[i] = left[i];
+    lua_pop(L, 1);
+
+    lua_getfield(L, index, "right");
+    auto right = luaw_param_t<std::vector<char_t>, -1>{}.luaw_single_param(L);
+    for (int i = 0; i < right.size() && i < 4; i++)
+        ret.right[i] = right[i];
+    lua_pop(L, 1);
+
+    return ret;
+}
+
+} /* virt_composer */
 
 #endif
