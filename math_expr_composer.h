@@ -61,47 +61,51 @@ namespace mexpr = math_expr_composer;
 VIRT_COMPOSER_REGISTER_TYPE(MEXPR_TYPE_EXPR);
 
 enum mexpr_e : int {
-    MATHD_TYPE_INTERNAL,
-    MATHD_TYPE_LINE_STRIP,
-    MATHD_TYPE_EMPTY_BOX,
-    MATHD_TYPE_SYMBOL,
-    MATHD_TYPE_BIGOP,
-    MATHD_TYPE_FRAC,
-    MATHD_TYPE_SUPSUB,
-    MATHD_TYPE_BRACKET,
-    MATHD_TYPE_BINAR_OP,
-    MATHD_TYPE_UNAR_OP,
-    MATHD_TYPE_MERGE_VERTICAL,
-    MATHD_TYPE_MERGE_HORIZONTAL,
+    MEXPR_TYPE_INTERNAL,
+    MEXPR_TYPE_LINE_STRIP,
+    MEXPR_TYPE_EMPTY_BOX,
+    MEXPR_TYPE_SYMBOL,
 };
 
 using char_t = drawc::char_t;
 
-struct mexpr_bb_t {
-    ImVec2 tl = ImVec2(0, 0); /*!< Holds the minimums of the bounding box, so, the top-left */
-    ImVec2 br = ImVec2(0, 0); /*!< Holds the maximums of the bounding box, so, the bottom-right */
-};
-
 struct mexpr_t;
 using mexpr_p = vc::ref_t<mexpr_t>;
 
+/*! holds an object and it's position */
+struct anchor_t {
+    mexpr_p obj;
+    ImVec2  pos;
+};
+
+/*! How it works: If you where to draw this object as-is you would draw it at the baseline.
+ * So let's take the character 'g', it's bounding box is slightly bellow the baseline and also
+ * above the baseline. So assuming (0, 0) is on the baseline, the character would have it's
+ * bounding box cut by the baseline.
+ * 
+ * As such, top left(tl) and bottom right(br) give us the bounding box of the object. While point
+ * (0, 0) is the baseline for that object.
+ * 
+ * An object may have multiple subobjects, those having a position each.
+ */
 struct mexpr_t : public vc::object_t {
-    mexpr_e type;       /*!< The type that this object will hold */
-    uint32_t color = 0xff'eeeeee;
+    /*! The type that this object will hold -> dictates what/how it is drawn */
+    mexpr_e type = MEXPR_TYPE_INTERNAL;
 
-    char_t symb;        /*!< Optional symbol if this object is a leaf */
-
-    std::vector<ImVec2> line_strip; /*!< Optional, if type is MATHD_TYPE_LINE_STRIP */
-    float line_width = 1.0f;        /*!< Optional, if type is line */
+    ImVec2 tl;                      /*!< Top Left */
+    ImVec2 br;                      /*!< Bottom Right */
 
     /*! The subobjects of this object and their relative positions are stored in this */
-    std::vector<std::pair<mexpr_p, ImVec2>> subobjs;
+    std::vector<anchor_t> subobjs;
 
-    ImVec2 size;          /*!< The calculated bounding box of this element */
-    float voff = 0.0f;    /*!< Vertical offset of the object */
+    uint32_t color = 0xff'eeeeee;   /*!< Optional Color of the object  */
 
-    std::function<void(mexpr_p, ImVec2)> cbk;   /*!< This will be called on diverse actions */
-    std::shared_ptr<void> usr_ptr;              /*!< This is the user's pointer */
+    char_t symb;                    /*!< Optional symbol if this object is a leaf */
+    ImVec2 symb_off;                /*!< Optional position of the symbol, such that it is drawn on
+                                         it's baseline when drawn at (0, 0) */
+
+    float line_width = 1.0f;        /*!< Optional, if type is line */
+    std::vector<ImVec2> line_strip; /*!< Optional, if type is MATHD_TYPE_LINE_STRIP */
 
     static vc::object_type_e type_id_static() { return MEXPR_TYPE_EXPR; }
     virtual vc::object_type_e type_id() const override { return MEXPR_TYPE_EXPR; }
@@ -118,7 +122,7 @@ struct mexpr_t : public vc::object_t {
 };
 
 inline void mexpr_draw(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb);
-inline mexpr_p mexpr_empty(vc::ref_t<drawc::fontset_t> fs, float x, float y);
+inline mexpr_p mexpr_empty(vc::ref_t<drawc::fontset_t> fs, float x, float y, float above_bl);
 inline mexpr_p mexpr_symbol(vc::ref_t<drawc::fontset_t> fs, char_t sym, bool is_char);
 inline mexpr_p mexpr_bigop(vc::ref_t<drawc::fontset_t> fs, mexpr_p right, mexpr_p above,
         mexpr_p bellow, char_t bigop);
@@ -145,7 +149,7 @@ inline int register_meta(vc::virt_state_t *vs) {
                 vc::ref_t<drawc::fontset_t>, ImVec2, mexpr_p, bool>
         },
         { "mexpr_empty", vc::luaw_function_wrapper<mexpr_empty,
-                vc::ref_t<drawc::fontset_t>, float, float>
+                vc::ref_t<drawc::fontset_t>, float, float, float>
         },
         { "mexpr_symbol", vc::luaw_function_wrapper<mexpr_symbol,
                 vc::ref_t<drawc::fontset_t>, char_t, bool> 
@@ -183,60 +187,67 @@ inline int register_meta(vc::virt_state_t *vs) {
 }
 
 
-#define MATHD_DISTANCER         4
-#define MATHD_DISTANCER_BIGO    2
+#define MEXPR_DISTANCER         4
+#define MEXPR_DISTANCER_BIGO    0.5
 
 inline void mexpr_draw(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb) {
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
     if (!m)
         return ;
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    ImVec2 bb_tl = pos;
-    ImVec2 bb_br = pos + m->size;
+    ImVec2 bb_tl = pos + m->tl;
+    ImVec2 bb_br = pos + m->br;
     if (draw_bb) {
         draw_list->AddRect(bb_tl, bb_br, 0xff'ffff00);
+        draw_list->AddCircleFilled(pos, 3, 0xff'ff00ff);
+    }
 
-        auto voff_center = bb_tl + ImVec2(0, m->voff);
-        draw_list->AddLine(voff_center - ImVec2(m->voff/4., 0), voff_center + ImVec2(m->voff/4., 0),
-                0xff'ff00ff);
-    }
-    if (m->type == MATHD_TYPE_SYMBOL) {
-        auto off = ImVec2(0, -fs->char_get_bb(m->symb).a_min.y);
-        fs->char_draw(m->symb, pos + off, m->color, draw_bb, 0xff'ffff00);
-    }
-    else if (m->type == MATHD_TYPE_LINE_STRIP) {
-        for (int i = 1; i < m->line_strip.size(); i++)
-            draw_list->AddLine(pos + m->line_strip[i-1],
-                    pos + m->line_strip[i], m->color, m->line_width);
-    }
-    else if (m->type == MATHD_TYPE_EMPTY_BOX) {
-        draw_list->AddRectFilled(bb_tl, bb_br, m->color);
-    }
-    for (auto &[obj, obj_pos] : m->subobjs) {
-        mexpr_draw(fs, pos + obj_pos, obj, draw_bb);
+    switch (m->type) {
+        case MEXPR_TYPE_SYMBOL: {
+            fs->char_draw(m->symb, pos + m->symb_off, m->color, 0, 0);
+        } break;
+        case MEXPR_TYPE_LINE_STRIP: {
+            for (int i = 1; i < m->line_strip.size(); i++) {
+                draw_list->AddLine(pos + m->line_strip[i-1], pos + m->line_strip[i], m->color,
+                        m->line_width);
+            }
+        } break;
+        case MEXPR_TYPE_EMPTY_BOX: {
+        } break;
+        case MEXPR_TYPE_INTERNAL: {
+            for (auto &anch : m->subobjs) {
+                if (draw_bb) {
+                    draw_list->AddLine(pos, pos + anch.pos, 0xff'00ff00);
+                }
+                mexpr_draw(fs, pos + anch.pos, anch.obj, draw_bb);
+            }
+        } break;
     }
 }
 
-inline mexpr_p mexpr_empty(vc::ref_t<drawc::fontset_t> fs, float x, float y) {
-    auto ret = mexpr_t::create(MATHD_TYPE_EMPTY_BOX);
-    ret->size = ImVec2(x, y);
+inline mexpr_p mexpr_empty(vc::ref_t<drawc::fontset_t> fs, float x, float y, float above_bl) {
+    auto ret = mexpr_t::create(MEXPR_TYPE_EMPTY_BOX);
+    ret->tl = ImVec2(0, 0 - above_bl);
+    ret->br = ImVec2(x, y - above_bl);
     return ret;
 }
 
 inline mexpr_p mexpr_symbol(vc::ref_t<drawc::fontset_t> fs, char_t sym, bool is_char) {
-    auto a = char_t{ .size = sym.size, .code = fs->m_a_code };
-    auto [a_min, a_max] = fs->char_get_bb(a);
-    auto [s_min, s_max] = fs->char_get_bb(sym);
-    float hmed = (a_max.y - a_min.y) / 2.;
+    auto [tl, br] = fs->char_get_bb(sym);
 
-    auto ret = mexpr_t::create(MATHD_TYPE_SYMBOL);
+    auto ret = mexpr_t::create(MEXPR_TYPE_SYMBOL);
     ret->symb = sym;
-    ret->size = s_max - s_min;
-
-    /* If we have a character (in the sense: part of a name), it's anchor point is the middle of
-    the character 'a' above the baseline, else if it's a symbol, it's center is the anchor point
-    (for example for the integral sign) */
-    ret->voff = is_char ? a_min.y - s_min.y + hmed : (s_max.y - s_min.y) / 2.0f;
-
+    if (is_char) {
+        /* For characters in general we want them to stay on the same baseline as 'a',
+        more precisely the baseline passes through the middle of a */
+        auto [a_tl, a_br] = fs->char_get_bb(char_t{.size=sym.size, .code=fs->m_a_code});
+        ret->symb_off = ImVec2(0, -a_br.y + (a_br.y - a_tl.y) / 2.);
+    }
+    else {
+        /* For bigsum or integral sign we want it to be centered on the baseline */
+        ret->symb_off = ImVec2(0, -(tl.y + br.y) / 2.);
+    }
+    ret->tl = tl + ret->symb_off;
+    ret->br = br + ret->symb_off;
     return ret;
 }
 
@@ -245,36 +256,55 @@ inline float get_font_mul(vc::ref_t<drawc::fontset_t> fs, char_t c) {
     return (sz.a_max.y - sz.a_min.y) / 10.0f;
 }
 
+inline std::pair<ImVec2, ImVec2> calc_bb(const std::vector<anchor_t>& anchors) {
+    if (anchors.size() == 0)
+        return {ImVec2(0, 0), ImVec2(0, 0)};
+    auto tl = anchors[0].pos + anchors[0].obj->tl;
+    auto br = anchors[0].pos + anchors[0].obj->br;
+    for (auto &a : anchors) {
+        tl.x = std::min(tl.x, a.pos.x + a.obj->tl.x);
+        tl.y = std::min(tl.y, a.pos.y + a.obj->tl.y);
+        br.x = std::max(br.x, a.pos.x + a.obj->br.x);
+        br.y = std::max(br.y, a.pos.y + a.obj->br.y);
+    }
+    return {tl, br};
+}
+
+inline ImVec2 calc_sz(ImVec2 tl, ImVec2 br) {
+    return ImVec2(br.x - tl.x, br.y - tl.y);
+}
+
 inline mexpr_p mexpr_bigop(vc::ref_t<drawc::fontset_t> fs,
         mexpr_p right, mexpr_p above, mexpr_p bellow, char_t bigop)
 {
-    float distancer = MATHD_DISTANCER_BIGO * get_font_mul(fs, bigop);
-    auto ret = mexpr_t::create(MATHD_TYPE_BIGOP);
+    /* OBS: 1. a random distance is used to delimit above and bellow
+            2. above and bellow don't stay nicely on integral big op
+            3. the integral operator is to far from `right`, the operand */
+    if (!right)
+        throw vc::except_t("can't use mexpr_bigop without right");
+    if (!above)
+        above = mexpr_t::create(MEXPR_TYPE_EMPTY_BOX);
+    if (!bellow)
+        bellow = mexpr_t::create(MEXPR_TYPE_EMPTY_BOX);
+
+    float dst = MEXPR_DISTANCER_BIGO * get_font_mul(fs, bigop);
+    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
     auto op = mexpr_symbol(fs, bigop, false);
 
-    float aux_x = std::max(std::max(op->size.x, above->size.x), bellow->size.x) / 2.0f;
-    float aux_y = std::max(above->size.y + distancer + op->size.y / 2.0f, right->voff);
+    auto sz_above = calc_sz(above->tl, above->br);
+    auto sz_bellow = calc_sz(bellow->tl, bellow->br);
+    auto sz_op = calc_sz(op->tl, op->br);
 
-    float op_x = aux_x - op->size.x/2;
-    float above_x = aux_x - above->size.x/2.;
-    float bellow_x = aux_x - bellow->size.x/2.;
-
-    float op_y = aux_y - op->size.y/2.;
-
-    /* TODO: maybe see if it fits between the integrands and place the right side there */
-    float right_x = distancer + std::max(std::max(op_x + op->size.x, above_x + above->size.x),
-            bellow_x + bellow->size.x);
-    float right_y = op_y + op->voff - right->voff;
-
-    ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
-        {op,     ImVec2(op_x,     op_y)},
-        {above,  ImVec2(above_x,  op_y - distancer - above->size.y)},
-        {bellow, ImVec2(bellow_x, op_y + distancer + op->size.y)},
-        {right,  ImVec2(right_x,  right_y)},
+    ret->subobjs = std::vector<anchor_t> {
+        { .obj = op,     .pos = ImVec2(0, 0) },
+        { .obj = above,  .pos = ImVec2( -sz_above.x/2. + sz_op.x/2., op->tl.y - above->br.y - dst) },
+        { .obj = bellow, .pos = ImVec2(-sz_bellow.x/2. + sz_op.x/2., op->br.y - bellow->tl.y + dst) },
+        { .obj = right,  .pos = ImVec2(op->br.x, 0) },
     };
-    float h = std::max(op_y + distancer + op->size.y + bellow->size.y, right_y + right->size.y);
-    ret->size = ImVec2(right_x + right->size.x, h);
-    ret->voff = op_y + op->voff;
+
+    auto [tl, br] = calc_bb(ret->subobjs);
+    ret->tl = tl;
+    ret->br = br;
 
     return ret;
 }
@@ -282,58 +312,152 @@ inline mexpr_p mexpr_bigop(vc::ref_t<drawc::fontset_t> fs,
 inline mexpr_p mexpr_frac(vc::ref_t<drawc::fontset_t> fs,
         mexpr_p above, mexpr_p bellow, char_t divline)
 {
-    /* TODO: */
-    float distancer = MATHD_DISTANCER * get_font_mul(fs, divline);
-    auto ret = mexpr_t::create(MATHD_TYPE_FRAC);
-    auto dl = mexpr_symbol(fs, divline, false);
+    /* OBS: 1. divline is not actually used, only it's height
+            2. a random distance is used to calc the distance from the line and additional 
+               width of the fraction line */
+    if (!bellow || !above)
+        throw vc::except_t("can't use mexpr_frac without both ops");
 
-    float sz = std::max(bellow->size.x, above->size.x);
-    int cnt = std::ceil(sz / dl->size.x);
-    if (cnt % 2 == 0)
-        cnt++;
+    float dst = MEXPR_DISTANCER * get_font_mul(fs, divline);
+    auto sz_above = calc_sz(above->tl, above->br);
+    auto sz_bellow = calc_sz(bellow->tl, bellow->br);
+    float sz_frac_x = std::max(sz_above.x, sz_bellow.x) + 2*dst;
 
-    sz = (cnt / 2) * dl->size.x;
-    ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
-        {above,  ImVec2(sz/2. - above->size.x/2., -above->size.y - distancer)},
-        {bellow, ImVec2(sz/2. - bellow->size.x/2., bellow->size.y + distancer)}
+    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+
+    auto dl = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+    auto tmp_div = mexpr_symbol(fs, divline, false);
+    dl->tl = ImVec2(0, tmp_div->tl.y);
+    dl->br = ImVec2(sz_frac_x, tmp_div->br.y);
+    dl->line_strip.push_back(ImVec2(0, 0));
+    dl->line_strip.push_back(ImVec2(sz_frac_x, 0));
+    dl->line_width = (tmp_div->br.y - tmp_div->tl.y);
+
+    ret->subobjs = std::vector<anchor_t> {
+        { .obj = above,   .pos = ImVec2((sz_frac_x - sz_above.x)/2., -above->br.y - dst) },
+        { .obj = bellow,  .pos = ImVec2((sz_frac_x - sz_bellow.x)/2., -bellow->tl.y + dst) },
+        { .obj = dl,      .pos = ImVec2(0, 0) }
     };
 
-    for (int i = 0; i < cnt; i++) {
-        ret->subobjs.push_back({mexpr_symbol(fs, divline, false), ImVec2(i * dl->size.x, 0)});
-    }
+    auto [tl, br] = calc_bb(ret->subobjs);
+    ret->tl = tl;
+    ret->br = br;
 
-    ret->size = ImVec2(cnt * dl->size.x, 2*distancer + above->size.y + bellow->size.y);
-    ret->voff = /* TODO: */0;
     return ret;
 }
 
+/*       -#####
+          #   #
+          # E #
+         +#   #
+ #####-   #   #
+ #   #   =#####
+ #   #
++# B #
+ #   #
+ #   #
+ #####
+
+The idea is that we want to match the superscript's baseline (E+) with that of the base's top (B-)
+if possible.
+
+TODO: There are two posible problems that must be avoided:
+
+1. The exponent must be at least 2/5 of the base above the base's bottom
+2. The exponent must have at least 1/4 of it's height above the base's top
+
+mirrored for subscripts
+*/
 inline mexpr_p mexpr_supsub(vc::ref_t<drawc::fontset_t> fs,
         mexpr_p base, mexpr_p sup, mexpr_p sub)
 {
-    auto ret = mexpr_t::create(MATHD_TYPE_SUPSUB);
+    /* OBS: 1. the distance from the `exponent` is a random distance
+            2. the placement of sub/sup are chosen at random */
+    if (!base)
+        throw vc::except_t("can't use mexpr_supsub without a base");
 
-    float base_y = sup ? sup->size.y - base->size.y / 3. : 0;
-    if (sup && sup->size.y < base->size.y / 3.)
-        base_y = sup->size.y * 2./3.;
+    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+    auto sz_base = calc_sz(base->tl, base->br);
 
-    float sub_y = base_y + base->size.y / 3.;
-    if (sub && sub->size.y < base->size.y)
-        sub_y = base_y + base->size.y - sub->size.y / 3.;
+    ret->subobjs.push_back(anchor_t{ .obj = base, .pos = ImVec2(0, 0) });
 
-    ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
-        {sup,  ImVec2(base->size.x, 0)},
-        {base, ImVec2(0, base_y)},
-        {sub,  ImVec2(base->size.x, sub_y)},
-    };
+    if (sup) {
+        auto sz_sup = calc_sz(sup->tl, sup->br);
+        ret->subobjs.push_back(anchor_t{ .obj = sup, .pos = ImVec2(base->br.x, base->tl.y) });
+    }
 
-    ret->size = ImVec2(base->size.x + std::max(sup ? sup->size.x : 0, sub ? sub->size.x : 0),
-            sub ? sub->size.y + sub_y : base_y + base->size.y);
-    ret->voff = base->voff + base_y;
+    if (sub) {
+        auto sz_sub = calc_sz(sup->tl, sup->br);
+        ret->subobjs.push_back(anchor_t{ .obj = sub, .pos = ImVec2(base->br.x, base->br.y) });
+    }
+
+    auto [tl, br] = calc_bb(ret->subobjs);
+    ret->tl = tl;
+    ret->br = br;
+
     return ret;
 }
 
+inline mexpr_p mexpr_unarexpr(vc::ref_t<drawc::fontset_t> fs, char_t op, mexpr_p a) {
+    // float distancer = MEXPR_DISTANCER * get_font_mul(fs, op);
+    // auto ret = mexpr_t::create(MATHD_TYPE_BINAR_OP);
+    // auto sym_op = mexpr_symbol(fs, op, true);
+
+    // float aoff = a->voff - sym_op->voff;
+    // float hmax = std::max(aoff, 0.0f);
+    // ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
+    //     {sym_op, ImVec2(0,                         hmax - 0)},
+    //     {a,      ImVec2(sym_op->size.x + distancer, hmax - aoff)},
+    // };
+
+    // float h = std::max(hmax - aoff + a->size.y, hmax + sym_op->size.y);
+    // ret->size = ImVec2(a->size.x + sym_op->size.x + distancer, h);
+    // ret->voff = hmax + sym_op->voff;
+    // return ret;
+    return nullptr;
+}
+
+inline mexpr_p mexpr_binexpr(vc::ref_t<drawc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b) {
+    // float distancer = MEXPR_DISTANCER * get_font_mul(fs, op);
+    // auto ret = mexpr_t::create(MATHD_TYPE_BINAR_OP);
+    // auto sym_op = mexpr_symbol(fs, op, true);
+
+    // float aoff = a->voff - sym_op->voff;
+    // float boff = b->voff - sym_op->voff;
+    // float hmax = std::max(std::max(aoff, boff), 0.0f);
+    // ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
+    //     {a,      ImVec2(0,                                         hmax - aoff)},
+    //     {sym_op, ImVec2(a->size.x + distancer,                     hmax - 0)},
+    //     {b,      ImVec2(sym_op->size.x + a->size.x + 2.*distancer, hmax - boff)},
+    // };
+
+    // float h = std::max(std::max(hmax - aoff + a->size.y, hmax - boff + b->size.y),
+    //         hmax + sym_op->size.y);
+    // ret->size = ImVec2(a->size.x + b->size.x + sym_op->size.x + distancer*2., h);
+    // ret->voff = hmax + sym_op->voff;
+
+    // return ret;
+    return nullptr;
+}
+
+inline mexpr_p mexpr_merge_h(vc::ref_t<drawc::fontset_t> fs, mexpr_p l, mexpr_p r) {
+    // auto ret = mexpr_t::create(MATHD_TYPE_MERGE_HORIZONTAL);
+
+    // /* TODO: */
+    // return ret;
+    return nullptr;
+}
+
+inline mexpr_p mexpr_merge_v(vc::ref_t<drawc::fontset_t> fs, mexpr_p u, mexpr_p d) {
+    // auto ret = mexpr_t::create(MATHD_TYPE_MERGE_VERTICAL);
+
+    // /* TODO: */
+    // return ret;
+    return nullptr;
+}
+
 /* This is taken from ImGui and transformed to fit my needs */
-static void beziere_path_rec(std::vector<ImVec2>& path, ImVec2 P1, ImVec2 P2, ImVec2 P3, ImVec2 P4,
+inline void beziere_path_rec(std::vector<ImVec2>& path, ImVec2 P1, ImVec2 P2, ImVec2 P3, ImVec2 P4,
         int level = 0)
 {
     static const float tess_tol = 1.25f;
@@ -361,298 +485,245 @@ static void beziere_path_rec(std::vector<ImVec2>& path, ImVec2 P1, ImVec2 P2, Im
 }
 
 inline mexpr_p mexpr_bracket(vc::ref_t<drawc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket) {
-    auto sym_h = [&](char_t sym) {
-        return fs->char_get_bb(sym).a_max.y - fs->char_get_bb(sym).a_min.y;
-    };
+    // auto sym_h = [&](char_t sym) {
+    //     return fs->char_get_bb(sym).a_max.y - fs->char_get_bb(sym).a_min.y;
+    // };
 
-    float brack_h = 0;
-    float off_l = 0.0f, off_r = 0.0f;
-    float sz_l = 0.0f, sz_r = 0.0f;
-    auto calc_offsets = [&](const std::vector<ImVec2>& ls, const std::vector<ImVec2>& rs) {
-        for (auto &p : ls) {
-            brack_h = std::max(brack_h, p.y);
-            sz_l = std::max(sz_l, p.x);
-        }
-        for (auto &p : rs) {
-            brack_h = std::max(brack_h, p.y);
-            sz_r = std::max(sz_r, p.x);
-        }
+    // float brack_h = 0;
+    // float off_l = 0.0f, off_r = 0.0f;
+    // float sz_l = 0.0f, sz_r = 0.0f;
+    // auto calc_offsets = [&](const std::vector<ImVec2>& ls, const std::vector<ImVec2>& rs) {
+    //     for (auto &p : ls) {
+    //         brack_h = std::max(brack_h, p.y);
+    //         sz_l = std::max(sz_l, p.x);
+    //     }
+    //     for (auto &p : rs) {
+    //         brack_h = std::max(brack_h, p.y);
+    //         sz_r = std::max(sz_r, p.x);
+    //     }
 
-        off_l = 0;
-        off_r = sz_r;
+    //     off_l = 0;
+    //     off_r = sz_r;
 
-        float h1 = (brack_h - expr->size.y) / 2.;
-        float h2 = expr->size.y + h1;
-        for (auto &p : ls) {
-            if (p.y < h1 || p.y > h2)
-                continue;
-            off_l = std::max(off_l, p.x);
-        }
-        for (auto &p : rs) {
-            if (p.y < h1 || p.y > h2)
-                continue;
-            off_r = std::min(off_r, p.x);
-        }
+    //     float h1 = (brack_h - expr->size.y) / 2.;
+    //     float h2 = expr->size.y + h1;
+    //     for (auto &p : ls) {
+    //         if (p.y < h1 || p.y > h2)
+    //             continue;
+    //         off_l = std::max(off_l, p.x);
+    //     }
+    //     for (auto &p : rs) {
+    //         if (p.y < h1 || p.y > h2)
+    //             continue;
+    //         off_r = std::min(off_r, p.x);
+    //     }
 
-        off_r = -off_r;
-    };
+    //     off_r = -off_r;
+    // };
 
-    /* First we need to select the appropiate paranthesis dimension for the expression and construct
-    the paranthesis objects */
-    mexpr_p lb, rb;
-    if (sym_h(bracket.left[3]) > expr->size.y) {
-        lb = mexpr_symbol(fs, bracket.left[3], false);
-        rb = mexpr_symbol(fs, bracket.right[3], false);
-    }
-    else if (sym_h(bracket.left[2]) > expr->size.y) {
-        lb = mexpr_symbol(fs, bracket.left[2], false);
-        rb = mexpr_symbol(fs, bracket.right[2], false);
-    }
-    else if (sym_h(bracket.left[1]) > expr->size.y) {
-        lb = mexpr_symbol(fs, bracket.left[1], false);
-        rb = mexpr_symbol(fs, bracket.right[1], false);
-    }
-    else if (sym_h(bracket.left[0]) > expr->size.y) {
-        lb = mexpr_symbol(fs, bracket.left[0], false);
-        rb = mexpr_symbol(fs, bracket.right[0], false);
-    }
-    else {
-        float f = 1;
-        lb = mexpr_t::create(MATHD_TYPE_INTERNAL);
-        rb = mexpr_t::create(MATHD_TYPE_INTERNAL);
-        auto lb_tl = mexpr_symbol(fs, bracket.tl, false);
-        auto lb_bl = mexpr_symbol(fs, bracket.bl, false);
-        auto lb_cl = mexpr_symbol(fs, bracket.cl, false);
-        auto rb_tr = mexpr_symbol(fs, bracket.tr, false);
-        auto rb_br = mexpr_symbol(fs, bracket.br, false);
-        auto rb_cr = mexpr_symbol(fs, bracket.cr, false);
-        auto conl = mexpr_symbol(fs, bracket.conl, false);
-        auto conr = mexpr_symbol(fs, bracket.conr, false);
+    // /* First we need to select the appropiate paranthesis dimension for the expression and construct
+    // the paranthesis objects */
+    // mexpr_p lb, rb;
+    // if (sym_h(bracket.left[3]) > expr->size.y) {
+    //     lb = mexpr_symbol(fs, bracket.left[3], false);
+    //     rb = mexpr_symbol(fs, bracket.right[3], false);
+    // }
+    // else if (sym_h(bracket.left[2]) > expr->size.y) {
+    //     lb = mexpr_symbol(fs, bracket.left[2], false);
+    //     rb = mexpr_symbol(fs, bracket.right[2], false);
+    // }
+    // else if (sym_h(bracket.left[1]) > expr->size.y) {
+    //     lb = mexpr_symbol(fs, bracket.left[1], false);
+    //     rb = mexpr_symbol(fs, bracket.right[1], false);
+    // }
+    // else if (sym_h(bracket.left[0]) > expr->size.y) {
+    //     lb = mexpr_symbol(fs, bracket.left[0], false);
+    //     rb = mexpr_symbol(fs, bracket.right[0], false);
+    // }
+    // else {
+    //     float f = 1;
+    //     lb = mexpr_t::create(MATHD_TYPE_INTERNAL);
+    //     rb = mexpr_t::create(MATHD_TYPE_INTERNAL);
+    //     auto lb_tl = mexpr_symbol(fs, bracket.tl, false);
+    //     auto lb_bl = mexpr_symbol(fs, bracket.bl, false);
+    //     auto lb_cl = mexpr_symbol(fs, bracket.cl, false);
+    //     auto rb_tr = mexpr_symbol(fs, bracket.tr, false);
+    //     auto rb_br = mexpr_symbol(fs, bracket.br, false);
+    //     auto rb_cr = mexpr_symbol(fs, bracket.cr, false);
+    //     auto conl = mexpr_symbol(fs, bracket.conl, false);
+    //     auto conr = mexpr_symbol(fs, bracket.conr, false);
 
-        float sz = lb_tl->size.y + lb_cl->size.y + lb_bl->size.y;
-        int con_cnt = 0;
-        if (sz < expr->size.y) {
-            con_cnt = std::ceil((expr->size.y - sz) / (conl->size.y*f));
-            if (con_cnt % 2 == 1)
-                con_cnt++;
-        }
+    //     float sz = lb_tl->size.y + lb_cl->size.y + lb_bl->size.y;
+    //     int con_cnt = 0;
+    //     if (sz < expr->size.y) {
+    //         con_cnt = std::ceil((expr->size.y - sz) / (conl->size.y*f));
+    //         if (con_cnt % 2 == 1)
+    //             con_cnt++;
+    //     }
 
-        float h = 0;
-        if (bracket.type == MEXPR_BRACKET_SQUARE) {
-            h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
-            auto lines_l = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
-            auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
-            float minx = a_min.x;
-            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
-            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, 0));
-            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, h));
-            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, h));
-            lines_l->line_width = conl->size.x;
-            lines_l->color = 0xff'eeeeee;
-            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+    //     float h = 0;
+    //     if (bracket.type == MEXPR_BRACKET_SQUARE) {
+    //         h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+    //         auto lines_l = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
+    //         auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
+    //         float minx = a_min.x;
+    //         lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
+    //         lines_l->line_strip.push_back(ImVec2(a_min.x - minx, 0));
+    //         lines_l->line_strip.push_back(ImVec2(a_min.x - minx, h));
+    //         lines_l->line_strip.push_back(ImVec2(a_max.x - minx, h));
+    //         lines_l->line_width = conl->size.x;
+    //         lines_l->color = 0xff'eeeeee;
+    //         lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
 
-            auto lines_r = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
-            auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
-            minx = b_min.x;
-            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
-            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, 0));
-            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, h));
-            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, h));
-            lines_r->line_width = conl->size.x;
-            lines_r->color = 0xff'eeeeee;
-            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
-            calc_offsets(lines_l->line_strip, lines_r->line_strip);
-        }
-        else if (bracket.type == MEXPR_BRACKET_ROUND) {
-            h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
-            auto lines_l = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
-            auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
-            float minx = a_min.x;
-            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
-            beziere_path_rec(lines_l->line_strip,
-                ImVec2(a_max.x - minx, 0),
-                ImVec2((a_max.x + a_min.x) / 2. - minx, lb_tl->size.y / 8.),
-                ImVec2(a_min.x - minx, lb_tl->size.y / 8. * 3.),
-                ImVec2(a_min.x - minx, lb_tl->size.y));
-            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, lb_tl->size.y));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(a_min.x - minx, h - lb_bl->size.y),
-                    ImVec2(a_min.x - minx, h - lb_bl->size.y / 8. * 3.),
-                    ImVec2((a_min.x + a_max.x) / 2. - minx, h - lb_bl->size.y / 8.),
-                    ImVec2(a_max.x - minx, h));
-            lines_l->line_width = conl->size.x;
-            lines_l->color = 0xff'eeeeee;
-            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+    //         auto lines_r = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
+    //         auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
+    //         minx = b_min.x;
+    //         lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
+    //         lines_r->line_strip.push_back(ImVec2(b_max.x - minx, 0));
+    //         lines_r->line_strip.push_back(ImVec2(b_max.x - minx, h));
+    //         lines_r->line_strip.push_back(ImVec2(b_min.x - minx, h));
+    //         lines_r->line_width = conl->size.x;
+    //         lines_r->color = 0xff'eeeeee;
+    //         rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+    //         calc_offsets(lines_l->line_strip, lines_r->line_strip);
+    //     }
+    //     else if (bracket.type == MEXPR_BRACKET_ROUND) {
+    //         h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+    //         auto lines_l = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
+    //         auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
+    //         float minx = a_min.x;
+    //         lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
+    //         beziere_path_rec(lines_l->line_strip,
+    //             ImVec2(a_max.x - minx, 0),
+    //             ImVec2((a_max.x + a_min.x) / 2. - minx, lb_tl->size.y / 8.),
+    //             ImVec2(a_min.x - minx, lb_tl->size.y / 8. * 3.),
+    //             ImVec2(a_min.x - minx, lb_tl->size.y));
+    //         lines_l->line_strip.push_back(ImVec2(a_min.x - minx, lb_tl->size.y));
+    //         beziere_path_rec(lines_l->line_strip,
+    //                 ImVec2(a_min.x - minx, h - lb_bl->size.y),
+    //                 ImVec2(a_min.x - minx, h - lb_bl->size.y / 8. * 3.),
+    //                 ImVec2((a_min.x + a_max.x) / 2. - minx, h - lb_bl->size.y / 8.),
+    //                 ImVec2(a_max.x - minx, h));
+    //         lines_l->line_width = conl->size.x;
+    //         lines_l->color = 0xff'eeeeee;
+    //         lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
 
-            auto lines_r = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
-            auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
-            minx = b_min.x;
-            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
-            beziere_path_rec(lines_r->line_strip,
-                ImVec2(b_min.x - minx, 0),
-                ImVec2((b_min.x + b_max.x) / 2. - minx, rb_tr->size.y / 8.),
-                ImVec2(b_max.x - minx, rb_tr->size.y / 8. * 3.),
-                ImVec2(b_max.x - minx, rb_tr->size.y));
-            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, rb_tr->size.y));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(b_max.x - minx, h - rb_br->size.y),
-                    ImVec2(b_max.x - minx, h - rb_br->size.y / 8. * 3.),
-                    ImVec2((b_max.x + b_min.x) / 2. - minx, h - rb_br->size.y / 8.),
-                    ImVec2(b_min.x - minx, h));
-            lines_r->line_width = conr->size.x;
-            lines_r->color = 0xff'eeeeee;
-            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
-            calc_offsets(lines_l->line_strip, lines_r->line_strip);
-        }
-        else if (bracket.type == MEXPR_BRACKET_CURLY) {
-            h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
-            float h2 = h / 2.;
-            auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
-            auto [b_min, b_max] = fs->char_get_bb(bracket.cl);
-            auto [c_min, c_max] = fs->char_get_bb(bracket.bl);
+    //         auto lines_r = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
+    //         auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
+    //         minx = b_min.x;
+    //         lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
+    //         beziere_path_rec(lines_r->line_strip,
+    //             ImVec2(b_min.x - minx, 0),
+    //             ImVec2((b_min.x + b_max.x) / 2. - minx, rb_tr->size.y / 8.),
+    //             ImVec2(b_max.x - minx, rb_tr->size.y / 8. * 3.),
+    //             ImVec2(b_max.x - minx, rb_tr->size.y));
+    //         lines_r->line_strip.push_back(ImVec2(b_max.x - minx, rb_tr->size.y));
+    //         beziere_path_rec(lines_r->line_strip,
+    //                 ImVec2(b_max.x - minx, h - rb_br->size.y),
+    //                 ImVec2(b_max.x - minx, h - rb_br->size.y / 8. * 3.),
+    //                 ImVec2((b_max.x + b_min.x) / 2. - minx, h - rb_br->size.y / 8.),
+    //                 ImVec2(b_min.x - minx, h));
+    //         lines_r->line_width = conr->size.x;
+    //         lines_r->color = 0xff'eeeeee;
+    //         rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+    //         calc_offsets(lines_l->line_strip, lines_r->line_strip);
+    //     }
+    //     else if (bracket.type == MEXPR_BRACKET_CURLY) {
+    //         h = lb_tl->size.y + lb_bl->size.y + lb_cl->size.y + con_cnt * conl->size.y;
+    //         float h2 = h / 2.;
+    //         auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
+    //         auto [b_min, b_max] = fs->char_get_bb(bracket.cl);
+    //         auto [c_min, c_max] = fs->char_get_bb(bracket.bl);
 
-            float minx = std::min({a_min.x, b_min.x, c_min.x});
+    //         float minx = std::min({a_min.x, b_min.x, c_min.x});
 
-            auto lines_l = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
-            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(a_max.x - minx, 0),
-                    ImVec2(a_min.x * 0.75 + a_max.x * 0.25 - minx, 0),
-                    ImVec2(a_min.x - minx, lb_tl->size.y * 0.25),
-                    ImVec2(a_min.x - minx, lb_tl->size.y));
-            lines_l->line_strip.push_back(ImVec2(b_max.x - minx, h2 - lb_cl->size.y * 0.5));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(b_max.x - minx, h2 - lb_cl->size.y * 0.5),
-                    ImVec2(b_max.x - minx, h2 + lb_cl->size.y * (.75 * .5 - .5)),
-                    ImVec2(b_max.x * 0.75 + b_min.x * 0.25 - minx, h2),
-                    ImVec2(b_min.x - minx, h2));
-            lines_l->line_strip.push_back(ImVec2(b_min.x - minx, h2));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(b_min.x - minx, h2),
-                    ImVec2(b_min.x * .25 + b_max.x * .75 - minx, h2),
-                    ImVec2(b_max.x - minx, h2 + lb_cl->size.y * .75 * .5),
-                    ImVec2(b_max.x - minx, h2 + lb_cl->size.y * .5));
-            lines_l->line_strip.push_back(ImVec2(c_min.x - minx, h - lb_bl->size.y));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(c_min.x - minx, h - lb_bl->size.y),
-                    ImVec2(c_min.x - minx, h - lb_bl->size.y * .25),
-                    ImVec2(c_min.x * .75 + c_max.x * .25 - minx, h),
-                    ImVec2(c_max.x - minx, h));
-            lines_l->color = 0xff'eeeeee;
-            lines_l->line_width = conl->size.x;
-            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+    //         auto lines_l = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
+    //         lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
+    //         beziere_path_rec(lines_l->line_strip,
+    //                 ImVec2(a_max.x - minx, 0),
+    //                 ImVec2(a_min.x * 0.75 + a_max.x * 0.25 - minx, 0),
+    //                 ImVec2(a_min.x - minx, lb_tl->size.y * 0.25),
+    //                 ImVec2(a_min.x - minx, lb_tl->size.y));
+    //         lines_l->line_strip.push_back(ImVec2(b_max.x - minx, h2 - lb_cl->size.y * 0.5));
+    //         beziere_path_rec(lines_l->line_strip,
+    //                 ImVec2(b_max.x - minx, h2 - lb_cl->size.y * 0.5),
+    //                 ImVec2(b_max.x - minx, h2 + lb_cl->size.y * (.75 * .5 - .5)),
+    //                 ImVec2(b_max.x * 0.75 + b_min.x * 0.25 - minx, h2),
+    //                 ImVec2(b_min.x - minx, h2));
+    //         lines_l->line_strip.push_back(ImVec2(b_min.x - minx, h2));
+    //         beziere_path_rec(lines_l->line_strip,
+    //                 ImVec2(b_min.x - minx, h2),
+    //                 ImVec2(b_min.x * .25 + b_max.x * .75 - minx, h2),
+    //                 ImVec2(b_max.x - minx, h2 + lb_cl->size.y * .75 * .5),
+    //                 ImVec2(b_max.x - minx, h2 + lb_cl->size.y * .5));
+    //         lines_l->line_strip.push_back(ImVec2(c_min.x - minx, h - lb_bl->size.y));
+    //         beziere_path_rec(lines_l->line_strip,
+    //                 ImVec2(c_min.x - minx, h - lb_bl->size.y),
+    //                 ImVec2(c_min.x - minx, h - lb_bl->size.y * .25),
+    //                 ImVec2(c_min.x * .75 + c_max.x * .25 - minx, h),
+    //                 ImVec2(c_max.x - minx, h));
+    //         lines_l->color = 0xff'eeeeee;
+    //         lines_l->line_width = conl->size.x;
+    //         lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
 
-            auto [d_min, d_max] = fs->char_get_bb(bracket.tr);
-            auto [e_min, e_max] = fs->char_get_bb(bracket.cr);
-            auto [f_min, f_max] = fs->char_get_bb(bracket.br);
+    //         auto [d_min, d_max] = fs->char_get_bb(bracket.tr);
+    //         auto [e_min, e_max] = fs->char_get_bb(bracket.cr);
+    //         auto [f_min, f_max] = fs->char_get_bb(bracket.br);
 
-            minx = std::min({d_min.x, e_min.x, f_min.x});
+    //         minx = std::min({d_min.x, e_min.x, f_min.x});
 
-            auto lines_r = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
-            lines_r->line_strip.push_back(ImVec2(d_min.x - minx, 0));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(d_min.x - minx, 0),
-                    ImVec2(d_max.x * 0.75 + d_min.x * 0.25 - minx, 0),
-                    ImVec2(d_max.x - minx, rb_tr->size.y * 0.25),
-                    ImVec2(d_max.x - minx, rb_tr->size.y));
-            lines_r->line_strip.push_back(ImVec2(e_min.x - minx, h2 - rb_cr->size.y * 0.5));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(e_min.x - minx, h2 - rb_cr->size.y * 0.5),
-                    ImVec2(e_min.x - minx, h2 + rb_cr->size.y * (.75 * .5 - .5)),
-                    ImVec2(e_min.x * 0.75 + e_max.x * 0.25 - minx, h2),
-                    ImVec2(e_max.x - minx, h2));
-            lines_r->line_strip.push_back(ImVec2(e_max.x - minx, h2));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(e_max.x - minx, h2),
-                    ImVec2(e_max.x * .25 + e_min.x * .75 - minx, h2),
-                    ImVec2(e_min.x - minx, h2 + rb_cr->size.y * .75 * .5),
-                    ImVec2(e_min.x - minx, h2 + rb_cr->size.y * .5));
-            lines_r->line_strip.push_back(ImVec2(f_max.x - minx, h - rb_br->size.y));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(f_max.x - minx, h - rb_br->size.y),
-                    ImVec2(f_max.x - minx, h - rb_br->size.y * .25),
-                    ImVec2(f_max.x * .75 + f_min.x * .25 - minx, h),
-                    ImVec2(f_min.x - minx, h));
-            lines_r->color = 0xff'eeeeee;
-            lines_r->line_width = conr->size.x;
-            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
-            calc_offsets(lines_l->line_strip, lines_r->line_strip);
-        }
+    //         auto lines_r = mexpr_t::create(MATHD_TYPE_LINE_STRIP);
+    //         lines_r->line_strip.push_back(ImVec2(d_min.x - minx, 0));
+    //         beziere_path_rec(lines_r->line_strip,
+    //                 ImVec2(d_min.x - minx, 0),
+    //                 ImVec2(d_max.x * 0.75 + d_min.x * 0.25 - minx, 0),
+    //                 ImVec2(d_max.x - minx, rb_tr->size.y * 0.25),
+    //                 ImVec2(d_max.x - minx, rb_tr->size.y));
+    //         lines_r->line_strip.push_back(ImVec2(e_min.x - minx, h2 - rb_cr->size.y * 0.5));
+    //         beziere_path_rec(lines_r->line_strip,
+    //                 ImVec2(e_min.x - minx, h2 - rb_cr->size.y * 0.5),
+    //                 ImVec2(e_min.x - minx, h2 + rb_cr->size.y * (.75 * .5 - .5)),
+    //                 ImVec2(e_min.x * 0.75 + e_max.x * 0.25 - minx, h2),
+    //                 ImVec2(e_max.x - minx, h2));
+    //         lines_r->line_strip.push_back(ImVec2(e_max.x - minx, h2));
+    //         beziere_path_rec(lines_r->line_strip,
+    //                 ImVec2(e_max.x - minx, h2),
+    //                 ImVec2(e_max.x * .25 + e_min.x * .75 - minx, h2),
+    //                 ImVec2(e_min.x - minx, h2 + rb_cr->size.y * .75 * .5),
+    //                 ImVec2(e_min.x - minx, h2 + rb_cr->size.y * .5));
+    //         lines_r->line_strip.push_back(ImVec2(f_max.x - minx, h - rb_br->size.y));
+    //         beziere_path_rec(lines_r->line_strip,
+    //                 ImVec2(f_max.x - minx, h - rb_br->size.y),
+    //                 ImVec2(f_max.x - minx, h - rb_br->size.y * .25),
+    //                 ImVec2(f_max.x * .75 + f_min.x * .25 - minx, h),
+    //                 ImVec2(f_min.x - minx, h));
+    //         lines_r->color = 0xff'eeeeee;
+    //         lines_r->line_width = conr->size.x;
+    //         rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+    //         calc_offsets(lines_l->line_strip, lines_r->line_strip);
+    //     }
 
-        // lb->size = ImVec2(std::max({lb_tl->size.x, conl->size.x, lb_cl->size.x, lb_bl->size.x}), h);
-        // rb->size = ImVec2(std::max({rb_tr->size.x, conr->size.x, rb_cr->size.x, rb_br->size.x}), h);
-    }
+    //     // lb->size = ImVec2(std::max({lb_tl->size.x, conl->size.x, lb_cl->size.x, lb_bl->size.x}), h);
+    //     // rb->size = ImVec2(std::max({rb_tr->size.x, conr->size.x, rb_cr->size.x, rb_br->size.x}), h);
+    // }
 
-    float distancer = MATHD_DISTANCER * 2 * get_font_mul(fs, bracket.left[0]);
-    auto ret = mexpr_t::create(MATHD_TYPE_UNAR_OP);
+    // float distancer = MEXPR_DISTANCER * 2 * get_font_mul(fs, bracket.left[0]);
+    // auto ret = mexpr_t::create(MATHD_TYPE_UNAR_OP);
 
-    /* afterwards we construct the final object */
-    float h = (lb->size.y + brack_h - expr->size.y) / 2.;
-    ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
-        {lb,   ImVec2(0, 0)},
-        {expr, ImVec2(off_l + lb->size.x + distancer, h)},
-        {rb,   ImVec2(off_l + off_r + lb->size.x + expr->size.x + 2*distancer, 0)},
-    };    
+    // /* afterwards we construct the final object */
+    // float h = (lb->size.y + brack_h - expr->size.y) / 2.;
+    // ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
+    //     {lb,   ImVec2(0, 0)},
+    //     {expr, ImVec2(off_l + lb->size.x + distancer, h)},
+    //     {rb,   ImVec2(off_l + off_r + lb->size.x + expr->size.x + 2*distancer, 0)},
+    // };    
 
-    ret->size = ImVec2(expr->size.x + 2*distancer + off_l + off_r + sz_r +
-            lb->size.x + rb->size.x, lb->size.y + brack_h);
-    ret->voff = expr->voff + h;
+    // ret->size = ImVec2(expr->size.x + 2*distancer + off_l + off_r + sz_r +
+    //         lb->size.x + rb->size.x, lb->size.y + brack_h);
+    // ret->voff = expr->voff + h;
 
-    return ret;
-}
-
-inline mexpr_p mexpr_unarexpr(vc::ref_t<drawc::fontset_t> fs, char_t op, mexpr_p a) {
-    float distancer = MATHD_DISTANCER * get_font_mul(fs, op);
-    auto ret = mexpr_t::create(MATHD_TYPE_BINAR_OP);
-    auto sym_op = mexpr_symbol(fs, op, true);
-
-    float aoff = a->voff - sym_op->voff;
-    float hmax = std::max(aoff, 0.0f);
-    ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
-        {sym_op, ImVec2(0,                         hmax - 0)},
-        {a,      ImVec2(sym_op->size.x + distancer, hmax - aoff)},
-    };
-
-    float h = std::max(hmax - aoff + a->size.y, hmax + sym_op->size.y);
-    ret->size = ImVec2(a->size.x + sym_op->size.x + distancer, h);
-    ret->voff = hmax + sym_op->voff;
-    return ret;
-}
-
-inline mexpr_p mexpr_binexpr(vc::ref_t<drawc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b) {
-    float distancer = MATHD_DISTANCER * get_font_mul(fs, op);
-    auto ret = mexpr_t::create(MATHD_TYPE_BINAR_OP);
-    auto sym_op = mexpr_symbol(fs, op, true);
-
-    float aoff = a->voff - sym_op->voff;
-    float boff = b->voff - sym_op->voff;
-    float hmax = std::max(std::max(aoff, boff), 0.0f);
-    ret->subobjs = std::vector<std::pair<mexpr_p, ImVec2>> {
-        {a,      ImVec2(0,                                         hmax - aoff)},
-        {sym_op, ImVec2(a->size.x + distancer,                     hmax - 0)},
-        {b,      ImVec2(sym_op->size.x + a->size.x + 2.*distancer, hmax - boff)},
-    };
-
-    float h = std::max(std::max(hmax - aoff + a->size.y, hmax - boff + b->size.y),
-            hmax + sym_op->size.y);
-    ret->size = ImVec2(a->size.x + b->size.x + sym_op->size.x + distancer*2., h);
-    ret->voff = hmax + sym_op->voff;
-
-    return ret;
-}
-
-inline mexpr_p mexpr_merge_h(vc::ref_t<drawc::fontset_t> fs, mexpr_p l, mexpr_p r) {
-    auto ret = mexpr_t::create(MATHD_TYPE_MERGE_HORIZONTAL);
-
-    /* TODO: */
-    return ret;
-}
-
-inline mexpr_p mexpr_merge_v(vc::ref_t<drawc::fontset_t> fs, mexpr_p u, mexpr_p d) {
-    auto ret = mexpr_t::create(MATHD_TYPE_MERGE_VERTICAL);
-
-    /* TODO: */
-    return ret;
+    // return ret;
+    return nullptr;
 }
 
 } /* math_expr_composer */
