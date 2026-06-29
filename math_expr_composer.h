@@ -198,6 +198,12 @@ struct draw_info_t {
     float edge;
 };
 
+/* TODO: figure out selection, ie, how to select objects, stuff and how to select those objects
+in the wrapped things:
+
+OBS: potential solution, draw coliders twice, one colider on the edge and one after the edge,
+as such, we get the boest of both worlds */
+
 inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
         draw_info_t *di);
 
@@ -221,7 +227,18 @@ inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m
     ImVec2 bb_br = pos + m->br;
     ImVec2 offpos = pos;
 
-    while (m->type != MEXPR_TYPE_INTERNAL && (bb_tl.x > di->edge || bb_br.x > di->edge)) {
+    bool draw_twice = false;
+    ImVec2 bb_tl2;
+    ImVec2 bb_br2;
+    ImVec2 offpos2;
+
+    while (bb_tl.x > di->edge || bb_br.x > di->edge) {
+        if (bb_tl.x <= di->edge && bb_br.x > di->edge) {
+            bb_tl2 = bb_tl;
+            bb_br2 = bb_br;
+            offpos2 = offpos;
+            draw_twice = true;
+        }
         auto adj = ImVec2(-(di->edge-di->startx), di->skipy);
         bb_tl += adj;
         bb_br += adj;
@@ -231,6 +248,10 @@ inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m
     if (draw_bb) {
         draw_list->AddRect(bb_tl, bb_br, 0xff'ffff00);
         draw_list->AddCircleFilled(offpos, 3, 0xff'ff00ff);
+        if (draw_twice) {
+            draw_list->AddRect(bb_tl2, bb_br2, 0xff'ffff00);
+            draw_list->AddCircleFilled(offpos2, 3, 0xff'ff00ff);
+        }
     }
 
     switch (m->type) {
@@ -244,13 +265,19 @@ inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m
             }
         } break;
         case MEXPR_TYPE_EMPTY_BOX: {
-            if (draw_bb)
+            if (draw_bb) {
                 draw_list->AddRectFilled(bb_tl, bb_br, 0xff'aaaaaa, 15);
+                if (draw_twice)
+                    draw_list->AddRectFilled(bb_tl2, bb_br2, 0xff'aaaaaa, 15);
+            }
         } break;
         case MEXPR_TYPE_INTERNAL: {
             for (auto &anch : m->subobjs) {
-                if (draw_bb)
+                if (draw_bb) {
                     draw_list->AddLine(offpos, offpos + anch.pos, 0xff'00ff00);
+                    if (draw_twice)
+                        draw_list->AddLine(offpos2, offpos2 + anch.pos, 0xff'00ff00);
+                }
                 mexpr_draw_rec(fs, pos + anch.pos, anch.obj, draw_bb, di);
             }
         } break;
@@ -358,6 +385,8 @@ inline mexpr_p mexpr_frac(vc::ref_t<drawc::fontset_t> fs,
     auto tmp_div = mexpr_symbol(fs, divline, false);
     dl->tl = ImVec2(0, tmp_div->tl.y);
     dl->br = ImVec2(sz_frac_x, tmp_div->br.y);
+    /* TODO: to enable spliting fractions we need to make the fractions line from multiple smaller
+    lines in multiple different objects */
     dl->line_strip.push_back(ImVec2(0, 0));
     dl->line_strip.push_back(ImVec2(sz_frac_x, 0));
     dl->line_width = (tmp_div->br.y - tmp_div->tl.y);
