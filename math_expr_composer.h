@@ -192,24 +192,54 @@ inline int register_meta(vc::virt_state_t *vs) {
 #define MEXPR_DISTANCER         4
 #define MEXPR_DISTANCER_BIGO    0.5
 
+struct draw_info_t {
+    float startx;
+    float skipy;
+    float edge;
+};
+
+inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
+        draw_info_t *di);
+
 inline void mexpr_draw(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb) {
+    auto *io = &ImGui::GetIO();
+    draw_info_t di {
+        .startx = pos.x,
+        .skipy = m->br.y - m->tl.y,
+        .edge = io->DisplaySize.x,
+    };
+    mexpr_draw_rec(fs, pos, m, draw_bb, &di);
+}
+
+inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
+        draw_info_t *di)
+{
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     if (!m)
         return ;
     ImVec2 bb_tl = pos + m->tl;
     ImVec2 bb_br = pos + m->br;
+    ImVec2 offpos = pos;
+
+    while (m->type != MEXPR_TYPE_INTERNAL && (bb_tl.x > di->edge || bb_br.x > di->edge)) {
+        auto adj = ImVec2(-(di->edge-di->startx), di->skipy);
+        bb_tl += adj;
+        bb_br += adj;
+        offpos += adj;
+    }
+
     if (draw_bb) {
         draw_list->AddRect(bb_tl, bb_br, 0xff'ffff00);
-        draw_list->AddCircleFilled(pos, 3, 0xff'ff00ff);
+        draw_list->AddCircleFilled(offpos, 3, 0xff'ff00ff);
     }
 
     switch (m->type) {
         case MEXPR_TYPE_SYMBOL: {
-            fs->char_draw(m->symb, pos + m->symb_off, m->color, 0, 0);
+            fs->char_draw(m->symb, offpos + m->symb_off, m->color, 0, 0);
         } break;
         case MEXPR_TYPE_LINE_STRIP: {
             for (int i = 1; i < m->line_strip.size(); i++) {
-                draw_list->AddLine(pos + m->line_strip[i-1], pos + m->line_strip[i], m->color,
+                draw_list->AddLine(offpos + m->line_strip[i-1], offpos + m->line_strip[i], m->color,
                         m->line_width);
             }
         } break;
@@ -220,8 +250,8 @@ inline void mexpr_draw(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bo
         case MEXPR_TYPE_INTERNAL: {
             for (auto &anch : m->subobjs) {
                 if (draw_bb)
-                    draw_list->AddLine(pos, pos + anch.pos, 0xff'00ff00);
-                mexpr_draw(fs, pos + anch.pos, anch.obj, draw_bb);
+                    draw_list->AddLine(offpos, offpos + anch.pos, 0xff'00ff00);
+                mexpr_draw_rec(fs, pos + anch.pos, anch.obj, draw_bb, di);
             }
         } break;
     }
