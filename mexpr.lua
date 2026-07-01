@@ -3,18 +3,19 @@
 
 local vc = require("virt_composer")
 local char = require("char")
+local ast = require("ast")
 
 -- Create the mexpr module table
 local mexpr = {}
 
 -- Helper function to determine if a node needs parentheses based on parent context
 -- Returns true if the child node needs wrapping in parentheses when it's a child of parent_type
-local function needs_parentheses(child_type, parent_type, precedence, ast_module)
+local function needs_parentheses(child_type, parent_type, precedence)
     if parent_type == nil then
         return false
     end
     -- If parent is CELL, it already provides parentheses, so don't wrap
-    if parent_type == ast_module.CELL then
+    if parent_type == ast.CELL then
         return false
     end
     
@@ -26,8 +27,9 @@ local function needs_parentheses(child_type, parent_type, precedence, ast_module
 end
 
 -- Helper function to wrap a mexpr in parentheses if needed based on precedence
-local function wrap_mexpr_if_needed(fontset, mexpr_node, node_type, parent_type, sz, precedence, char_module, ast_module)
-    if needs_parentheses(node_type, parent_type, precedence, ast_module) then
+local function wrap_mexpr_if_needed(fontset, mexpr_node, node_type, parent_type,
+        sz, precedence, char_module)
+    if needs_parentheses(node_type, parent_type, precedence) then
         return vc.mexpr_bracket(fontset, mexpr_node, char_module.round_bracket(sz))
     else
         return mexpr_node
@@ -87,11 +89,13 @@ local function create_number_mexpr(fontset, number_str, size, char_module)
         local digit_char = number_str:sub(i, i)
         if digit_char == "-" then
             -- Minus sign - create symbol for minus
-            table.insert(digits, create_symbol_mexpr(fontset, char_module.minus(size)))
+            table.insert(digits,
+                create_symbol_mexpr(fontset, char_module.minus(size)))
         else
             -- Digit
-            local char_code = tonumber(digit_char) + 15  -- '0' is 15, '1' is 16, etc.
-            table.insert(digits, create_symbol_mexpr(fontset, {size=size, code=char_code}))
+            local char_code = tonumber(digit_char) + 15
+            table.insert(digits,
+                create_symbol_mexpr(fontset, {size=size, code=char_code}))
         end
     end
     
@@ -109,14 +113,13 @@ end
 
 -- Main to_mexpr function: converts AST node to mexpr tree
 -- Parameters:
---   ast_module - the ast module (to avoid circular dependency)
 --   fontset - the fontset for creating mexpr symbols
 --   ns - the namespace containing the AST nodes
 --   node - the AST node to convert
 --   parent_type - the type of the parent node (for determining if parentheses are needed)
 --   sz - the base font size to use
-function mexpr.to_mexpr(ast_module, fontset, ns, node, parent_type, sz)
-    local precedence = ast_module.precedence
+function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
+    local precedence = ast.precedence
     sz = sz or DEFAULT_SIZE
     
     if type(node) == "number" then
@@ -149,7 +152,7 @@ function mexpr.to_mexpr(ast_module, fontset, ns, node, parent_type, sz)
     elseif type(node) == "table" and node.type then
         local node_type = node.type
         
-        if node_type == ast_module.NUM then
+        if node_type == ast.NUM then
             -- (N, m, n, sign) - rational number
             local m = node[1]
             local n = node[2]
@@ -175,107 +178,149 @@ function mexpr.to_mexpr(ast_module, fontset, ns, node, parent_type, sz)
                 return vc.mexpr_frac(fontset, numerator_mexpr, denominator_mexpr, char.hline_basic(sz))
             end
             
-        elseif node_type == ast_module.VAR then
+        elseif node_type == ast.VAR then
             -- (#, name) - named variable
             local var_name = node[1]
             -- Create a symbol for the variable name
             local char_info = find_char_info(var_name, sz, char)
             return create_symbol_mexpr(fontset, char_info)
             
-        elseif node_type == ast_module.VREF then
+        elseif node_type == ast.VREF then
             -- (&, ref_id) - variable reference
             local ref_node = ns.by_id[node[1]]
             if ref_node then
-                return wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, ref_node, parent_type, sz), ref_node.type, parent_type, sz, precedence, char, ast_module)
+                return wrap_mexpr_if_needed(fontset,
+                        mexpr.to_mexpr(fontset, ns, ref_node, parent_type, sz),
+                        ref_node.type, parent_type, sz, precedence, char)
             else
                 -- Reference not found, return empty mexpr
                 return vc.mexpr_empty(fontset, 10, 10, 0)
             end
             
-        elseif node_type == ast_module.CELL then
+        elseif node_type == ast.CELL then
             -- (_, a1) - parentheses
             local child = node[1]
-            local child_mexpr = mexpr.to_mexpr(ast_module, fontset, ns, child, node_type, sz)
+            local child_mexpr = mexpr.to_mexpr(fontset, ns, child, node_type, sz)
             -- Wrap in brackets (parentheses)
             return vc.mexpr_bracket(fontset, child_mexpr, char.round_bracket(sz))
             
-        elseif node_type == ast_module.EQ then
+        elseif node_type == ast.EQ then
             -- (=, a1, a2) - equality
-            local left = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
-            local right = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+            local left = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
+            local right = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                    node[2].type, node_type, sz, precedence, char)
             return vc.mexpr_binexpr(fontset, left, char.equal(sz), right)
             
-        elseif node_type == ast_module.INEQ_LESS then
+        elseif node_type == ast.INEQ_LESS then
             -- (<, a1, a2) - less than
-            local left = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
-            local right = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+            local left = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
+            local right = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                    node[2].type, node_type, sz, precedence, char)
             return vc.mexpr_binexpr(fontset, left, char.less(sz), right)
             
-        elseif node_type == ast_module.INEQ_LEQ then
+        elseif node_type == ast.INEQ_LEQ then
             -- (<=, a1, a2) - less than or equal
-            local left = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
-            local right = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+            local left = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
+            local right = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                    node[2].type, node_type, sz, precedence, char)
             return vc.mexpr_binexpr(fontset, left, char.leq(sz), right)
             
-        elseif node_type == ast_module.INEQ_GREATER then
+        elseif node_type == ast.INEQ_GREATER then
             -- (> , a1, a2) - greater than
-            local left = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
-            local right = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+            local left = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
+            local right = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                    node[2].type, node_type, sz, precedence, char)
             return vc.mexpr_binexpr(fontset, left, char.greater(sz), right)
             
-        elseif node_type == ast_module.INEQ_GEQ then
+        elseif node_type == ast.INEQ_GEQ then
             -- (>=, a1, a2) - greater than or equal
-            local left = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
-            local right = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+            local left = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
+            local right = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                    node[2].type, node_type, sz, precedence, char)
             return vc.mexpr_binexpr(fontset, left, char.geq(sz), right)
             
-        elseif node_type == ast_module.INEQ_NEQ then
+        elseif node_type == ast.INEQ_NEQ then
             -- (!=, a1, a2) - not equal
-            local left = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
-            local right = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+            local left = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
+            local right = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                    node[2].type, node_type, sz, precedence, char)
             return vc.mexpr_binexpr(fontset, left, char.neq(sz), right)
             
-        elseif node_type == ast_module.ADD then
+        elseif node_type == ast.ADD then
             -- (+, a1, a2, ...) - addition
             if #node < 2 then
                 return vc.mexpr_empty(fontset, 10, 10, 0)
             end
             -- For multiple operands, we chain them with binexpr
-            local result = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
+            local result = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
             for i = 2, #node do
-                local next_operand = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[i], node_type, sz), node[i].type, node_type, sz, precedence, char, ast_module)
+                local next_operand = wrap_mexpr_if_needed(fontset,
+                        mexpr.to_mexpr(fontset, ns, node[i], node_type, sz),
+                        node[i].type, node_type, sz, precedence, char)
                 result = vc.mexpr_binexpr(fontset, result, char.plus(sz), next_operand)
             end
             return result
             
-        elseif node_type == ast_module.MUL then
+        elseif node_type == ast.MUL then
             -- (*, a1, a2, ...) - multiplication
             if #node < 2 then
                 return vc.mexpr_empty(fontset, 10, 10, 0)
             end
-            local result = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
+            local result = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
             for i = 2, #node do
-                local next_operand = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[i], node_type, sz), node[i].type, node_type, sz, precedence, char, ast_module)
+                local next_operand = wrap_mexpr_if_needed(fontset,
+                        mexpr.to_mexpr(fontset, ns, node[i], node_type, sz),
+                        node[i].type, node_type, sz, precedence, char)
                 result = vc.mexpr_binexpr(fontset, result, char.times(sz), next_operand)
             end
             return result
             
-        elseif node_type == ast_module.DIV then
+        elseif node_type == ast.DIV then
             -- (/, a1, a2) - division (as fraction)
-            local numerator = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
-            local denominator = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+            local numerator = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
+            local denominator = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                    node[2].type, node_type, sz, precedence, char)
             return vc.mexpr_frac(fontset, numerator, denominator, char.hline_basic(sz))
             
-        elseif node_type == ast_module.EXP then
+        elseif node_type == ast.EXP then
             -- (^, base, exponent) - exponentiation
-            local base = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[1], node_type, sz), node[1].type, node_type, sz, precedence, char, ast_module)
-            local exponent = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz - 2), node[2].type, node_type, sz - 2, precedence, char, ast_module) -- Smaller size for exponent
-            return vc.mexpr_supsub(fontset, base, exponent, nil) -- superscript only
+            local base = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[1], node_type, sz),
+                    node[1].type, node_type, sz, precedence, char)
+            local exponent = wrap_mexpr_if_needed(fontset,
+                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz - 2),
+                    node[2].type, node_type, sz - 2, precedence, char)
+            return vc.mexpr_supsub(fontset, base, exponent, nil)
             
-        elseif node_type == ast_module.CALL then
+        elseif node_type == ast.CALL then
             -- (@, f, a1, a2, ...) - function call
             -- For now, we'll handle this as a simple concatenation
-            -- TODO: This could be improved to handle special functions like sum, integral, etc.
+            -- TODO: improve to handle special functions like sum, integral, etc.
             local fn_name = node[1]
             local fn_symbol = nil
             
@@ -284,33 +329,62 @@ function mexpr.to_mexpr(ast_module, fontset, ns, node, parent_type, sz)
                 -- Summation - need to handle bounds and expression
                 if #node >= 3 then
                     -- Assume format: sum(variable, start, end, expression)
-                    local var = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz - 5), node[2].type, node_type, sz - 5, precedence, char, ast_module)
-                    local start = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[3], node_type, sz - 5), node[3].type, node_type, sz - 5, precedence, char, ast_module)
-                    local stop = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[4], node_type, sz - 5), node[4].type, node_type, sz - 5, precedence, char, ast_module)
-                    local expr = #node > 4 and wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[5], node_type, sz), node[5].type, node_type, sz, precedence, char, ast_module) or 
-                                 wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
-                    return vc.mexpr_bigop(fontset, expr, var, stop, char.bigsum(math.max(sz-5, 1)))
+                    local var = wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[2], node_type, sz - 5),
+                            node[2].type, node_type, sz - 5, precedence, char)
+                    local start = wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[3], node_type, sz - 5),
+                            node[3].type, node_type, sz - 5, precedence, char)
+                    local stop = wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[4], node_type, sz - 5),
+                            node[4].type, node_type, sz - 5, precedence, char)
+                    local expr = #node > 4 and
+                            wrap_mexpr_if_needed(fontset,
+                                    mexpr.to_mexpr(fontset, ns, node[5], node_type, sz),
+                                    node[5].type, node_type, sz, precedence, char)
+                            or
+                            wrap_mexpr_if_needed(fontset,
+                                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                                    node[2].type, node_type, sz, precedence, char)
+                    return vc.mexpr_bigop(fontset, expr, var, stop,
+                        char.bigsum(math.max(sz-5, 1)))
                 else
                     -- Simple sum without bounds
-                    local expr = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+                    local expr = wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                            node[2].type, node_type, sz, precedence, char)
                     return vc.mexpr_bigop(fontset, expr, nil, nil, char.bigsum(math.max(sz-5, 1)))
                 end
             elseif fn_name == "int" or fn_name == "\\int" then
                 -- Integral
                 if #node >= 3 then
-                    local var = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz - 5), node[2].type, node_type, sz - 5, precedence, char, ast_module)
-                    local start = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[3], node_type, sz - 5), node[3].type, node_type, sz - 5, precedence, char, ast_module)
-                    local stop = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[4], node_type, sz - 5), node[4].type, node_type, sz - 5, precedence, char, ast_module)
-                    local expr = #node > 4 and wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[5], node_type, sz), node[5].type, node_type, sz, precedence, char, ast_module) or 
-                                 wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+                    local var = wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[2], node_type, sz - 5),
+                            node[2].type, node_type, sz - 5, precedence, char)
+                    local start = wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[3], node_type, sz - 5),
+                            node[3].type, node_type, sz - 5, precedence, char)
+                    local stop = wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[4], node_type, sz - 5),
+                            node[4].type, node_type, sz - 5, precedence, char)
+                    local expr = #node > 4 and
+                            wrap_mexpr_if_needed(fontset,
+                                    mexpr.to_mexpr(fontset, ns, node[5], node_type, sz),
+                                    node[5].type, node_type, sz, precedence, char)
+                            or
+                            wrap_mexpr_if_needed(fontset,
+                                    mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                                    node[2].type, node_type, sz, precedence, char)
                     return vc.mexpr_bigop(fontset, expr, var, stop, char.integral(math.max(sz-5, 1)))
                 else
                     -- Simple integral without bounds
-                    local expr = wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[2], node_type, sz), node[2].type, node_type, sz, precedence, char, ast_module)
+                    local expr = wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[2], node_type, sz),
+                            node[2].type, node_type, sz, precedence, char)
                     return vc.mexpr_bigop(fontset, expr, nil, nil, char.integral(math.max(sz-5, 1)))
                 end
             else
-                -- Regular function call - just concatenate function name with arguments
+                -- Regular function call - concatenate function name with arguments
                 local parts = {}
                 -- Find function name character
                 local fn_char = find_char_info(fn_name, sz, char)
@@ -323,7 +397,10 @@ function mexpr.to_mexpr(ast_module, fontset, ns, node, parent_type, sz)
                 
                 -- Add arguments
                 for i = 2, #node do
-                    table.insert(parts, wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[i], node_type, sz), node[i].type, node_type, sz, precedence, char, ast_module))
+                    table.insert(parts,
+                        wrap_mexpr_if_needed(fontset,
+                            mexpr.to_mexpr(fontset, ns, node[i], node_type, sz),
+                            node[i].type, node_type, sz, precedence, char))
                 end
                 
                 -- Merge all parts horizontally
@@ -340,12 +417,14 @@ function mexpr.to_mexpr(ast_module, fontset, ns, node, parent_type, sz)
                 end
             end
             
-        elseif node_type == ast_module.VEC then
+        elseif node_type == ast.VEC then
             -- (V, a1, a2, ...) - vector
             -- Create a vertical arrangement of elements
             local elements = {}
             for i = 1, #node do
-                table.insert(elements, wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[i], node_type, sz), node[i].type, node_type, sz, precedence, char, ast_module))
+                table.insert(elements, wrap_mexpr_if_needed(fontset,
+                        mexpr.to_mexpr(fontset, ns, node[i], node_type, sz),
+                        node[i].type, node_type, sz, precedence, char))
             end
             
             if #elements == 0 then
@@ -361,14 +440,16 @@ function mexpr.to_mexpr(ast_module, fontset, ns, node, parent_type, sz)
                 return vc.mexpr_bracket(fontset, result, char.round_bracket(sz))
             end
             
-        elseif node_type == ast_module.MAT then
+        elseif node_type == ast.MAT then
             -- (M, rows, cols, a1, a2, ...) - matrix
-            -- For simplicity, we'll flatten it to a vertical arrangement for now
+            -- For simplicity, flatten to a vertical arrangement for now
             local rows = node[1]
             local cols = node[2]
             local elements = {}
             for i = 3, #node do
-                table.insert(elements, wrap_mexpr_if_needed(fontset, mexpr.to_mexpr(ast_module, fontset, ns, node[i], node_type, sz), node[i].type, node_type, sz, precedence, char, ast_module))
+                table.insert(elements, wrap_mexpr_if_needed(fontset,
+                        mexpr.to_mexpr(fontset, ns, node[i], node_type, sz),
+                        node[i].type, node_type, sz, precedence, char))
             end
             
             if #elements == 0 then
@@ -403,10 +484,12 @@ function mexpr.to_mexpr(ast_module, fontset, ns, node, parent_type, sz)
                 else
                     local result = matrix_rows[1]
                     for i = 2, #matrix_rows do
-                        result = vc.mexpr_merge_v(fontset, result, matrix_rows[i])
+                        result = vc.mexpr_merge_v(fontset, result,
+                            matrix_rows[i])
                     end
                     -- Wrap in brackets
-                    return vc.mexpr_bracket(fontset, result, char.round_bracket(sz))
+                    return vc.mexpr_bracket(fontset, result,
+                        char.round_bracket(sz))
                 end
             end
         else

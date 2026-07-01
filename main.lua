@@ -40,7 +40,7 @@ function test_draw()
         )
     )
 
-    local mexpr_root = mexpr.to_mexpr(ast, fontset, ns, aIab_ac_bcI, nil, 10)
+    local mexpr_root = mexpr.to_mexpr(fontset, ns, aIab_ac_bcI, nil, 10)
     if mexpr_root then
         vc.mexpr_draw(fontset, {x=100, y=500}, mexpr_root, 0)
     else

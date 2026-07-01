@@ -1,7 +1,7 @@
 --[[ 
   This file contains the ast node representation of all math elements inside the program
   This is the base that will be used later for serialization, deserialization and drawing
-diverse mathematical expressions.
+  diverse mathematical expressions.
   
  ]]
 --[[ OBS: function names can't have spaces ]]
@@ -64,13 +64,14 @@ function ast.new(ns, type)
     return ret
 end
 
---[[ Create a copy of an ast, populating a namespace with the right references (namespace presumed
-empty at the root of the copy call)
+--[[ Create a copy of an ast, populating a namespace with the right references
+(namespace presumed empty at the root of the copy call)
 
 * ns - the old namespace
 * node - the node to duplicate
 * new_ns - the new namespace in which to create the new tree
-* keep_vars - this dictates if the vars inside the expression reference the same vars as before
+* keep_vars - this dictates if the vars inside the expression reference the
+             same vars as before
 ]]
 function ast.copy(ns, node, new_ns, keep_vars)
     local ret = { type = node.type }
@@ -81,9 +82,10 @@ function ast.copy(ns, node, new_ns, keep_vars)
                 if keep_vars then
                     ast.ns_insert_object(new_ns, node[i][1], ns.by_id[node[i][1]])
                 else
-                    error("TODO: I didn't need it until now, but I must find a way to create the " ..
-                            "new vars inside the new namespace, or figure out a different soultion " ..
-                            "like to specify what are the new vars in the new namespace")
+                    error("TODO: I didn't need it until now, but I must find a way to " ..
+                            "create the new vars inside the new namespace, or figure out a " ..
+                            "different solution like to specify what are the new vars " ..
+                            "in the new namespace")
                 end
             end
             ret[i] = ast.copy(ns, node[i], new_ns, keep_vars)
@@ -220,7 +222,7 @@ function ast.new_var(ns, name)
     return ret
 end
 
--- Vector: (V, a1, a2, a3, ...)
+-- Vector: (V, a1, a2, ...)
 function ast.new_vec(ns, ...)
     local ret = ast.new(ns, ast.VEC)
     for i, expr in ipairs({...}) do
@@ -272,7 +274,7 @@ end
 -- Serialization/Deserialization
 -- #################################################################################################
 
--- Serialization: AST node → string
+-- Serialization: AST node -> string
 local type_to_symbol = {
     [ast.EQ] = "=",
     [ast.INEQ_LESS] = "<",
@@ -304,14 +306,14 @@ function ast.to_string(ns, node)
         for i = 1, #node do
             table.insert(parts, ", " .. ast.to_string(ns, node[i]))
         end
-        return table.concat(parts) .. " :" .. tostring(node.id) .. ")"
+        return table.concat(parts) .. ":" .. tostring(node.id) .. ")"
     else
         error("Cannot serialize: " .. type(node))
     end
 end
 
 
--- Deserialization: string → AST node
+-- Deserialization: string -> AST node
 local symbol_to_type = {
     ["="] = ast.EQ,
     ["<"] = ast.INEQ_LESS,
@@ -529,27 +531,33 @@ function ast.to_latex(ns, node, parent_type)
         
         if node.type == ast.EQ then
             -- (=, a1, a2) -> a1 = a2
-            result = ast.to_latex(ns, node[1], node.type) .. " = " .. ast.to_latex(ns, node[2], node.type)
+            result = ast.to_latex(ns, node[1], node.type) .. " = " ..
+                     ast.to_latex(ns, node[2], node.type)
             
         elseif node.type == ast.INEQ_LESS then
             -- (<, a1, a2) -> a1 < a2
-            result = ast.to_latex(ns, node[1], node.type) .. " < " .. ast.to_latex(ns, node[2], node.type)
+            result = ast.to_latex(ns, node[1], node.type) .. " < " ..
+                     ast.to_latex(ns, node[2], node.type)
             
         elseif node.type == ast.INEQ_LEQ then
             -- (<=, a1, a2) -> a1 \leq a2
-            result = ast.to_latex(ns, node[1], node.type) .. " \\leq " .. ast.to_latex(ns, node[2], node.type)
+            result = ast.to_latex(ns, node[1], node.type) .. " \\leq " ..
+                     ast.to_latex(ns, node[2], node.type)
             
         elseif node.type == ast.INEQ_NEQ then
             -- (!=, a1, a2) -> a1 \neq a2
-            result = ast.to_latex(ns, node[1], node.type) .. " \\neq " .. ast.to_latex(ns, node[2], node.type)
+            result = ast.to_latex(ns, node[1], node.type) .. " \\neq " ..
+                     ast.to_latex(ns, node[2], node.type)
             
         elseif node.type == ast.INEQ_GREATER then
             -- (> , a1, a2) -> a1 > a2
-            result = ast.to_latex(ns, node[1], node.type) .. " > " .. ast.to_latex(ns, node[2], node.type)
+            result = ast.to_latex(ns, node[1], node.type) .. " > " ..
+                     ast.to_latex(ns, node[2], node.type)
             
         elseif node.type == ast.INEQ_GEQ then
             -- (>=, a1, a2) -> a1 \geq a2
-            result = ast.to_latex(ns, node[1], node.type) .. " \\geq " .. ast.to_latex(ns, node[2], node.type)
+            result = ast.to_latex(ns, node[1], node.type) .. " \\geq " ..
+                     ast.to_latex(ns, node[2], node.type)
             
         elseif node.type == ast.NUM then
             -- (N, m, n, sign) -> rational number m/n with sign
@@ -592,7 +600,9 @@ function ast.to_latex(ns, node, parent_type)
             
         elseif node.type == ast.VEC then
             -- (V, a1, a2, ...) -> row vector
-            result = "\\begin{pmatrix}" .. join_latex(ns, node, "& ", nil, nil, node.type) .. "\\end{pmatrix"
+            result = "\\begin{pmatrix}" ..
+                     join_latex(ns, node, "& ", nil, nil, node.type) ..
+                     "\\end{pmatrix"
             
         elseif node.type == ast.MAT then
             -- (M, rows, cols, a1, a2, ...) -> matrix
@@ -616,7 +626,9 @@ function ast.to_latex(ns, node, parent_type)
                 end
                 table.insert(matrix_parts, table.concat(row_elements, "& "))
             end
-            result = "\\begin{pmatrix}" .. table.concat(matrix_parts, "\\\\") .. "\\end{pmatrix}"
+            result = "\\begin{pmatrix}" ..
+                     table.concat(matrix_parts, "\\\\") ..
+                     "\\end{pmatrix}"
             
         elseif node.type == ast.CELL then
             -- (_, a1) -> parentheses
@@ -624,11 +636,13 @@ function ast.to_latex(ns, node, parent_type)
             
         elseif node.type == ast.DIV then
             -- (/, a1, a2) -> fraction
-            result = "\\frac{" .. ast.to_latex(ns, node[1], node.type) .. "}{" .. ast.to_latex(ns, node[2], node.type) .. "}"
+            result = "\\frac{" .. ast.to_latex(ns, node[1], node.type) ..
+                     "}{" .. ast.to_latex(ns, node[2], node.type) .. "}"
             
         elseif node.type == ast.EXP then
             -- (^, base, exponent) -> base^exponent
-            result = ast.to_latex(ns, node[1], node.type) .. "^{ " .. ast.to_latex(ns, node[2], node.type) .. " }"
+            result = ast.to_latex(ns, node[1], node.type) ..
+                     "^{ " .. ast.to_latex(ns, node[2], node.type) .. " }"
             
         elseif node.type == ast.ADD then
             -- (+, a1, a2, ...) -> a1 + a2 + ...
@@ -637,7 +651,6 @@ function ast.to_latex(ns, node, parent_type)
         elseif node.type == ast.MUL then
             -- (*, a1, a2, ...) -> a1 a2 ... (implicit multiplication)
             result = join_latex(ns, node, " ", nil, nil, node.type)
-            
         else
             -- Default: (symbol, arg1, arg2, ...)
             local op = symbol or type_to_symbol[node.type] or "?"
