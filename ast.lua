@@ -1,4 +1,4 @@
---[[
+--[[ 
   This file contains the ast node representation of all math elements inside the program
   This is the base that will be used later for serialization, deserialization and drawing
 diverse mathematical expressions.
@@ -51,7 +51,7 @@ function ast.new_ns()
 end
 
 function ast.ns_insert_object(ns, id, obj)
-    ns.by_id[id] = ret
+    ns.by_id[id] = obj
     if ns.last_id <= id then
         ns.last_id = id + 1
     end
@@ -453,7 +453,7 @@ end
 -- #################################################################################################
 
 -- Precedence levels for operators (higher number = higher precedence)
-local precedence = {
+ast.precedence = {
     [ast.NUM] = 100,
     [ast.VAR] = 100,
     [ast.VREF] = 100,
@@ -472,6 +472,7 @@ local precedence = {
     [ast.INEQ_GREATER] = 10,
     [ast.INEQ_GEQ] = 10,
 }
+local precedence = ast.precedence
 
 -- Helper: wrap LaTeX string in parentheses if needed based on precedence
 local function maybe_wrap(ns, node, latex_str, parent_type)
@@ -656,5 +657,6 @@ function ast.to_latex(ns, node, parent_type)
         error("Cannot generate LaTeX: " .. type(node))
     end
 end
+
 
 return ast

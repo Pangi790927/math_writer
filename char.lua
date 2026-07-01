@@ -82,6 +82,13 @@ function capi.bigsum(fontsz)      return {size=fontsz, code=192} end
 function capi.hline_basic(fontsz) return {size=fontsz, code=221} end
 function capi.hline_long(fontsz)  return {size=fontsz, code=222} end
 function capi.hline_above(fontsz) return {size=fontsz, code=223} end
+function capi.less(fontsz)        return {size=fontsz, code=245} end  -- <
+function capi.greater(fontsz)     return {size=fontsz, code=246} end  -- >
+function capi.leq(fontsz)         return {size=fontsz, code=186} end  -- \le
+function capi.geq(fontsz)         return {size=fontsz, code=187} end  -- \ge
+function capi.neq(fontsz)         return {size=fontsz, code=27} end   -- = (fallback for !=)
+function capi.times(fontsz)       return {size=fontsz, code=182} end  -- \times
+function capi.divide(fontsz)      return {size=fontsz, code=183} end  -- \div
 
 function capi.round_bracket(fontsz)
     return {

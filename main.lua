@@ -1,6 +1,7 @@
 local vc = require("virt_composer")
 local char = require("char")
 local ast = require("ast")
+local mexpr = require("mexpr")
 
 local fontset = nil
 
@@ -24,7 +25,9 @@ function test_draw()
             ast.new_num(ns, -10, 1, 1)
         )
     )
-    -- print(ast.to_string(ns, node), ast.to_latex(ns, node))
+    -- print(ast.to_latex(ns, node))
+
+    
     local b = ast.new_var(ns, "b")
     local c = ast.new_var(ns, "c")
     local bc = ast.new_mul(ns, ast.new_vref(ns, b), ast.new_vref(ns, c))
@@ -36,6 +39,14 @@ function test_draw()
             bc
         )
     )
+
+    local mexpr_root = mexpr.to_mexpr(ast, fontset, ns, aIab_ac_bcI, nil, 10)
+    if mexpr_root then
+        vc.mexpr_draw(fontset, {x=100, y=500}, mexpr_root, 0)
+    else
+        print("FAIL")
+    end
+    -- print(ast.to_latex(ns, aIab_ac_bcI))
     -- print(ast.to_string(ns, aIab_ac_bcI), ast.to_latex(ns, aIab_ac_bcI))
 
     -- transforms.initial_traverse(aIab_ac_bcI)
@@ -113,7 +124,8 @@ function test_draw()
     local bin6 = vc.mexpr_binexpr(fontset, bin3, char.plus(sz), bin4)
     local bin7 = vc.mexpr_binexpr(fontset, bin6, char.plus(sz), bin5)
     local bin8 = vc.mexpr_binexpr(fontset, bin7, char.plus(sz), bin7)
-    vc.mexpr_draw(fontset, {x=100, y=300}, bin8, 0)
+    -- vc.mexpr_draw(fontset, {x=100, y=300}, bin8, 0)
+
 
     -- fontset:char_draw(char.square_bracket(sz-2).left[1], {x=100, y=100}, 0xffffffff, 1, 0xffff00ff)
 end
