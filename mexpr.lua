@@ -79,13 +79,11 @@ local function create_number_mexpr(fontset, number_str, size)
         local digit_char = number_str:sub(i, i)
         if digit_char == "-" then
             -- Minus sign - create symbol for minus
-            table.insert(digits,
-                create_symbol_mexpr(fontset, char.minus(size)))
+            table.insert(digits, create_symbol_mexpr(fontset, char.minus(size)))
         else
             -- Digit
             local char_code = tonumber(digit_char) + 15
-            table.insert(digits,
-                create_symbol_mexpr(fontset, {size=size, code=char_code}))
+            table.insert(digits, create_symbol_mexpr(fontset, {size=size, code=char_code}))
         end
     end
     
@@ -198,8 +196,7 @@ function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
         elseif node_type == ast.CELL then
             -- (_, a1) - parentheses
             local child = node[1]
-            local child_mexpr =
-                mexpr.to_mexpr(fontset, ns, child, node_type, sz)
+            local child_mexpr = mexpr.to_mexpr(fontset, ns, child, node_type, sz)
             -- Wrap in brackets (parentheses)
             return vc.mexpr_bracket(fontset, child_mexpr, char.round_bracket(sz))
             
