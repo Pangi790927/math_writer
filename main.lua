@@ -127,5 +127,6 @@ function test_draw()
     -- vc.mexpr_draw(fontset, {x=100, y=300}, bin8, 0)
 
 
-    -- fontset:char_draw(char.square_bracket(sz-2).left[1], {x=100, y=100}, 0xffffffff, 1, 0xffff00ff)
+    -- fontset:char_draw(char.square_bracket(sz-2).left[1], {x=100, y=100},
+    --     0xffffffff, 1, 0xffff00ff)
 end

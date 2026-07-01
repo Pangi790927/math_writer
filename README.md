@@ -1,5 +1,46 @@
 # Math Writer - Interactive Math Expression Editor
 
+> **IMPORTANT FOR BOT**: You MUST read and follow this README carefully. If anything is unclear, ASK QUESTIONS before making changes. The guidelines here are mandatory for maintaining code quality and consistency.
+
+## Code Style Guidelines
+
+### What not to touch!!!!!!!!
+
+**Do NOT, under ANY circumstances, touch the git structure**
+- no git add, no git commit, no git push, etc., nothing that would touch the git internal structure
+is allowed. git reset is ok, as it modifies the local files, not what is saved inside git
+
+**Do NOT, under ANY circumstances, touch the .cpp/.h/makefile files**
+- not allowed for the bot, those files are human-write-only, no touchy
+
+### Global Modules
+**Do NOT pass modules as function parameters** when they can be loaded as locals at file scope example:
+- `ast` - Already loaded as `local ast = require("ast")` in files that need it
+
+**Rationale**: Passing modules as parameters bloats function signatures and makes the code harder to read. Instead, require modules at the top of the file and use them directly.
+
+**Action**: Refactor functions to remove module parameters from signatures where the module is already available in scope.
+
+### Function Signatures
+- **Keep function signatures small** - avoid many parameters
+- **Use local module references** instead of passing modules as parameters
+- **Break long parameter lists** across multiple lines with proper indentation
+
+### Maximum Line Width
+- **Maximum line width**: 105 characters
+- **Status**: `ast.lua` and `mexpr.lua` have been reformatted to comply
+
+### Line Wrapping Convention
+When a line exceeds 110 characters, break it with continuation lines indented by **2 additional levels** (8 spaces) from the start of the previous line.
+
+**Example:**
+```lua
+-- If a line starts at 4 spaces (1 level):
+local result = some_long_function_call(arg1, arg2, arg3) ..
+        -- continuation at 12 spaces (3 levels: original 1 + 2)
+        another_long_function(arg4, arg5)
+```
+
 ## Project Overview
 
 **Math Writer** is an interactive mathematical expression editor that allows users to create, manipulate, and visualize mathematical formulas. The project combines C++ for the UI and rendering backend with Lua for mathematical expression AST (Abstract Syntax Tree) manipulation and drawing logic.
@@ -373,22 +414,6 @@ Based on TODO.md and code comments:
 6. Implement the node structure for virt_objects controllable from Lua
 7. Add LaTeX export/import
 8. Implement the copac experiment (tree structure)
-
-## Code Style Guidelines
-
-- **Maximum line width**: 100 characters
-- **Status**: `ast.lua` and `mexpr.lua` have been reformatted to comply with the 100-character limit
-
-### Line Wrapping Convention
-When a line exceeds 100 characters, it should be broken with continuation lines indented by **2 additional levels** (8 spaces) from the start of the previous line.
-
-**Example:**
-```lua
--- If a line starts at 4 spaces (1 level):
-local result = some_long_function_call(arg1, arg2, arg3) ..
-        -- continuation at 12 spaces (3 levels: original 1 + 2)
-        another_long_function(arg4, arg5)
-```
 
 ## License
 
