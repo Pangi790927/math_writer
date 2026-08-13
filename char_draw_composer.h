@@ -93,13 +93,16 @@ struct fontset_t : public vc::object_t {
     std::map<int, font_loc_t> code_to_font_loc;
     std::vector<std::vector<std::shared_ptr<ImFont>>> fonts;
 
+    fontset_t(vc::object_t::Private priv) : vc::object_t(priv) {}
+    virtual ~fontset_t() {}
+
     static vc::object_type_e type_id_static() { return DRAWC_TYPE_FONTSET; }
     virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_FONTSET; }
 
     static vc::ref_t<fontset_t> create(const std::vector<std::string>& font_paths,
             const std::vector<float>& font_sizes, int a_code)
     {
-        auto ret = std::make_shared<fontset_t>();
+        auto ret = std::make_shared<fontset_t>(vc::object_t::Private{type_id_static()});
         ret->font_paths = font_paths;
         ret->font_sizes = font_sizes;
         ret->m_a_code = a_code;
@@ -113,7 +116,7 @@ struct fontset_t : public vc::object_t {
         return std::format("drawc::fontset_t[{}]", (void *)this);
     }
 
-    virtual vc::ret_t init() override {
+    vc::ret_t init() {
         ImGuiIO& io = ImGui::GetIO();
         fonts = std::vector<std::vector<std::shared_ptr<ImFont>>>(font_sizes.size());
 
@@ -125,7 +128,7 @@ struct fontset_t : public vc::object_t {
                         font_paths[font_id].c_str(), font_sizes[sz_id]);
                 if (!font) {
                     fonts = std::vector<std::vector<std::shared_ptr<ImFont>>>();
-                    DBG("Failed to load font: %s of font size: %d",
+                    DBG("Failed to load font: %s of font size: %f",
                             font_paths[font_id].c_str(), font_sizes[sz_id]);
                     return vc::VC_ERROR_GENERIC;
                 }
@@ -136,11 +139,6 @@ struct fontset_t : public vc::object_t {
             }
         }
 
-        return vc::VC_ERROR_OK;
-    }
-
-    virtual vc::ret_t uninit() override {
-        fonts = std::vector<std::vector<std::shared_ptr<ImFont>>>();
         return vc::VC_ERROR_OK;
     }
 

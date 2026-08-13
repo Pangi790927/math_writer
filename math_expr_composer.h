@@ -107,11 +107,14 @@ struct mexpr_t : public vc::object_t {
     float line_width = 1.0f;        /*!< Optional, if type is line */
     std::vector<ImVec2> line_strip; /*!< Optional, if type is MATHD_TYPE_LINE_STRIP */
 
+    mexpr_t(vc::object_t::Private priv) : vc::object_t(priv) {}
+    virtual ~mexpr_t() {}
+
     static vc::object_type_e type_id_static() { return MEXPR_TYPE_EXPR; }
     virtual vc::object_type_e type_id() const override { return MEXPR_TYPE_EXPR; }
 
     static vc::ref_t<mexpr_t> create(mexpr_e type) {
-        auto ret = std::make_shared<mexpr_t>();
+        auto ret = std::make_shared<mexpr_t>(vc::object_t::Private{type_id_static()});
         ret->type = type;
         return ret;
     }

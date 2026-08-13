@@ -1,7 +1,7 @@
 CXX       := g++
 CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
 # CXX_FLAGS += -Wl,--verbose
-LIBS      := -lpthread -ldl -lglfw -lGL
+LIBS      := -lpthread -ldl -lglfw -lGL -lbacktrace
 
 IMGUI     := ../imgui/
 IMPLOT    := ../implot/
@@ -20,7 +20,7 @@ IMPLOT_SRC += ${IMPLOT}/implot_items.cpp
 BACKEND_SRC := ${IMGUI}/backends/imgui_impl_glfw.cpp
 BACKEND_SRC += ${IMGUI}/backends/imgui_impl_opengl3.cpp
 
-INCLCUDES := -I${UTILS} -I${UTILS}/ap -I${UTILS}/co -I${UTILS}/generic -I.
+INCLCUDES := -I${UTILS} -I${UTILS}/ap -I${UTILS}/co -I${UTILS}/generic
 INCLCUDES += -I${IMGUI} -I${IMGUI}/backends/ -I${IMPLOT}
 
 # This is a header-only project 
@@ -37,6 +37,7 @@ ${OBJS}:%.o:%.cpp
 
 clean:
 	rm -f *.o
+	rm -f ${OBJS}
 	rm -f *.obj
 	rm -f *.exe
 	rm -f *.ilk
