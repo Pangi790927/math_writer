@@ -7,6 +7,7 @@
 /* composer plugins: */
 #include "char_draw_composer.h"
 #include "math_expr_composer.h"
+#include "input_composer.h"
 #include "virt_composer_end.h"
 
 #include "debug.h"
@@ -70,8 +71,9 @@
  */
 
 namespace vc = virt_composer;
-namespace drawc = char_draw_composer;
+namespace charc = char_draw_composer;
 namespace mexpr = math_expr_composer;
+namespace inc = input_composer;
 
 int main(int argc, char const *argv[])
 {
@@ -88,8 +90,9 @@ int main(int argc, char const *argv[])
 
     auto vs = vc::create_state();
     ASSERT_FN(CHK_PTR(vs));
-    ASSERT_FN(drawc::register_meta(vs.get()));
+    ASSERT_FN(charc::register_meta(vs.get()));
     ASSERT_FN(mexpr::register_meta(vs.get()));
+    ASSERT_FN(inc::register_meta(vs.get()));
     ASSERT_FN(vc::parse_config(vs.get(), "math_writer.yaml"));
 
     imgui_prepare_render();

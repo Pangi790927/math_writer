@@ -55,7 +55,7 @@ struct luaw_param_t<math_expr_composer::mexpr_bracket_t, index> {
 namespace math_expr_composer {
 
 namespace vc = virt_composer;
-namespace drawc = char_draw_composer;
+namespace charc = char_draw_composer;
 namespace mexpr = math_expr_composer;
 
 VIRT_COMPOSER_REGISTER_TYPE(MEXPR_TYPE_EXPR);
@@ -67,7 +67,7 @@ enum mexpr_e : int {
     MEXPR_TYPE_SYMBOL,
 };
 
-using char_t = drawc::char_t;
+using char_t = charc::char_t;
 
 struct mexpr_t;
 using mexpr_p = vc::ref_t<mexpr_t>;
@@ -126,19 +126,19 @@ struct mexpr_t : public vc::object_t {
 
 /* TODO: instead of fontset_t, create a context_t that will be used in all the drawing functions.
 This context should have the fontset as well as required distancers and sizes */
-inline void mexpr_draw(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb);
-inline mexpr_p mexpr_empty(vc::ref_t<drawc::fontset_t> fs, float x, float y, float above_bl);
-inline mexpr_p mexpr_symbol(vc::ref_t<drawc::fontset_t> fs, char_t sym, bool is_char);
-inline mexpr_p mexpr_bigop(vc::ref_t<drawc::fontset_t> fs, mexpr_p right, mexpr_p above,
+inline void mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb);
+inline mexpr_p mexpr_empty(vc::ref_t<charc::fontset_t> fs, float x, float y, float above_bl);
+inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_char);
+inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs, mexpr_p right, mexpr_p above,
         mexpr_p bellow, char_t bigop);
-inline mexpr_p mexpr_frac(vc::ref_t<drawc::fontset_t> fs, mexpr_p above, mexpr_p bellow,
+inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs, mexpr_p above, mexpr_p bellow,
         char_t divline);
-inline mexpr_p mexpr_supsub(vc::ref_t<drawc::fontset_t> fs, mexpr_p base, mexpr_p sup, mexpr_p sub);
-inline mexpr_p mexpr_bracket(vc::ref_t<drawc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket);
-inline mexpr_p mexpr_unarexpr(vc::ref_t<drawc::fontset_t> fs, char_t op, mexpr_p b);
-inline mexpr_p mexpr_binexpr(vc::ref_t<drawc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b);
-inline mexpr_p mexpr_merge_h(vc::ref_t<drawc::fontset_t> fs, mexpr_p l, mexpr_p r);
-inline mexpr_p mexpr_merge_v(vc::ref_t<drawc::fontset_t> fs, mexpr_p u, mexpr_p d);
+inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs, mexpr_p base, mexpr_p sup, mexpr_p sub);
+inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket);
+inline mexpr_p mexpr_unarexpr(vc::ref_t<charc::fontset_t> fs, char_t op, mexpr_p b);
+inline mexpr_p mexpr_binexpr(vc::ref_t<charc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b);
+inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, mexpr_p l, mexpr_p r);
+inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, mexpr_p u, mexpr_p d);
 
 /* TODO: matrix stuff */
 
@@ -151,37 +151,37 @@ inline int register_meta(vc::virt_state_t *vs) {
 
     std::vector<luaL_Reg> mexpr_tab_funcs = {
         { "mexpr_draw", vc::luaw_function_wrapper<mexpr_draw,
-                vc::ref_t<drawc::fontset_t>, ImVec2, mexpr_p, bool>
+                vc::ref_t<charc::fontset_t>, ImVec2, mexpr_p, bool>
         },
         { "mexpr_empty", vc::luaw_function_wrapper<mexpr_empty,
-                vc::ref_t<drawc::fontset_t>, float, float, float>
+                vc::ref_t<charc::fontset_t>, float, float, float>
         },
         { "mexpr_symbol", vc::luaw_function_wrapper<mexpr_symbol,
-                vc::ref_t<drawc::fontset_t>, char_t, bool> 
+                vc::ref_t<charc::fontset_t>, char_t, bool> 
         },
         { "mexpr_bigop", vc::luaw_function_wrapper<mexpr_bigop,
-                vc::ref_t<drawc::fontset_t>, mexpr_p, mexpr_p, mexpr_p, char_t>
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, mexpr_p, char_t>
         },
         { "mexpr_frac", vc::luaw_function_wrapper<mexpr_frac,
-                vc::ref_t<drawc::fontset_t>, mexpr_p, mexpr_p, char_t>
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, char_t>
         },
         { "mexpr_supsub", vc::luaw_function_wrapper<mexpr_supsub,
-                vc::ref_t<drawc::fontset_t>, mexpr_p, mexpr_p, mexpr_p>
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, mexpr_p>
         },
         { "mexpr_bracket", vc::luaw_function_wrapper<mexpr_bracket,
-                vc::ref_t<drawc::fontset_t>, mexpr_p, mexpr_bracket_t>
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_bracket_t>
         },
         { "mexpr_unarexpr", vc::luaw_function_wrapper<mexpr_unarexpr,
-                vc::ref_t<drawc::fontset_t>, char_t, mexpr_p>
+                vc::ref_t<charc::fontset_t>, char_t, mexpr_p>
         },
         { "mexpr_binexpr", vc::luaw_function_wrapper<mexpr_binexpr,
-                vc::ref_t<drawc::fontset_t>, mexpr_p, char_t, mexpr_p>
+                vc::ref_t<charc::fontset_t>, mexpr_p, char_t, mexpr_p>
         },
         { "mexpr_merge_h", vc::luaw_function_wrapper<mexpr_merge_h,
-                vc::ref_t<drawc::fontset_t>, mexpr_p, mexpr_p>
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p>
         },
         { "mexpr_merge_v", vc::luaw_function_wrapper<mexpr_merge_v,
-                vc::ref_t<drawc::fontset_t>, mexpr_p, mexpr_p>
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p>
         },
     };
 
@@ -207,10 +207,10 @@ in the wrapped things:
 OBS: potential solution, draw coliders twice, one colider on the edge and one after the edge,
 as such, we get the boest of both worlds */
 
-inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
+inline void mexpr_draw_rec(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
         draw_info_t *di);
 
-inline void mexpr_draw(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb) {
+inline void mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb) {
     auto *io = &ImGui::GetIO();
     draw_info_t di {
         .startx = pos.x,
@@ -220,7 +220,7 @@ inline void mexpr_draw(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bo
     mexpr_draw_rec(fs, pos, m, draw_bb, &di);
 }
 
-inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
+inline void mexpr_draw_rec(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
         draw_info_t *di)
 {
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -287,14 +287,14 @@ inline void mexpr_draw_rec(vc::ref_t<drawc::fontset_t> fs, ImVec2 pos, mexpr_p m
     }
 }
 
-inline mexpr_p mexpr_empty(vc::ref_t<drawc::fontset_t> fs, float x, float y, float above_bl) {
+inline mexpr_p mexpr_empty(vc::ref_t<charc::fontset_t> fs, float x, float y, float above_bl) {
     auto ret = mexpr_t::create(MEXPR_TYPE_EMPTY_BOX);
     ret->tl = ImVec2(0, 0 - above_bl);
     ret->br = ImVec2(x, y - above_bl);
     return ret;
 }
 
-inline mexpr_p mexpr_symbol(vc::ref_t<drawc::fontset_t> fs, char_t sym, bool is_char) {
+inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_char) {
     auto [tl, br] = fs->char_get_bb(sym);
 
     auto ret = mexpr_t::create(MEXPR_TYPE_SYMBOL);
@@ -314,7 +314,7 @@ inline mexpr_p mexpr_symbol(vc::ref_t<drawc::fontset_t> fs, char_t sym, bool is_
     return ret;
 }
 
-inline float get_font_mul(vc::ref_t<drawc::fontset_t> fs, char_t c) {
+inline float get_font_mul(vc::ref_t<charc::fontset_t> fs, char_t c) {
     auto sz = fs->char_get_bb(char_t{ .size=c.size, .code=fs->m_a_code });
     return (sz.a_max.y - sz.a_min.y) / 10.0f;
 }
@@ -336,7 +336,7 @@ inline std::pair<ImVec2, ImVec2> calc_bb(const std::vector<anchor_t>& anchors) {
 inline ImVec2 calc_sz(ImVec2 tl, ImVec2 br) { return ImVec2(br.x - tl.x, br.y - tl.y); }
 inline ImVec2 calc_sz(mexpr_p m)            { return calc_sz(m->tl, m->br); }
 
-inline mexpr_p mexpr_bigop(vc::ref_t<drawc::fontset_t> fs,
+inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs,
         mexpr_p right, mexpr_p above, mexpr_p bellow, char_t bigop)
 {
     /* OBS: 1. a random distance is used to delimit above and bellow
@@ -368,7 +368,7 @@ inline mexpr_p mexpr_bigop(vc::ref_t<drawc::fontset_t> fs,
     return ret;
 }
 
-inline mexpr_p mexpr_frac(vc::ref_t<drawc::fontset_t> fs,
+inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs,
         mexpr_p above, mexpr_p bellow, char_t divline)
 {
     /* OBS: 1. divline is not actually used, only it's height
@@ -422,7 +422,7 @@ if possible.
 The exponent must be at least 2/5 of the base above the base's bottom.
 Mirrored for subscripts.
 */
-inline mexpr_p mexpr_supsub(vc::ref_t<drawc::fontset_t> fs,
+inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs,
         mexpr_p base, mexpr_p sup, mexpr_p sub)
 {
     /* OBS: 1. the y placement of sub/sup are chosen at random */
@@ -459,7 +459,7 @@ inline mexpr_p mexpr_supsub(vc::ref_t<drawc::fontset_t> fs,
     return ret;
 }
 
-inline mexpr_p mexpr_unarexpr(vc::ref_t<drawc::fontset_t> fs, char_t op, mexpr_p a) {
+inline mexpr_p mexpr_unarexpr(vc::ref_t<charc::fontset_t> fs, char_t op, mexpr_p a) {
     float dst = MEXPR_DISTANCER / 2. * get_font_mul(fs, op);
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
     auto op_sym = mexpr_symbol(fs, op, true);
@@ -473,7 +473,7 @@ inline mexpr_p mexpr_unarexpr(vc::ref_t<drawc::fontset_t> fs, char_t op, mexpr_p
     return ret;
 }
 
-inline mexpr_p mexpr_binexpr(vc::ref_t<drawc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b) {
+inline mexpr_p mexpr_binexpr(vc::ref_t<charc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b) {
     float dst = MEXPR_DISTANCER * get_font_mul(fs, op);
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
 
@@ -491,7 +491,7 @@ inline mexpr_p mexpr_binexpr(vc::ref_t<drawc::fontset_t> fs, mexpr_p a, char_t o
     return ret;
 }
 
-inline mexpr_p mexpr_merge_h(vc::ref_t<drawc::fontset_t> fs, mexpr_p l, mexpr_p r) {
+inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, mexpr_p l, mexpr_p r) {
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
 
     ret->subobjs = std::vector<anchor_t> {
@@ -506,7 +506,7 @@ inline mexpr_p mexpr_merge_h(vc::ref_t<drawc::fontset_t> fs, mexpr_p l, mexpr_p 
 /* TODO: of interest about this one is the fact that to build a matrix, column vector or as such from
 it we may want to either balance out the elements or create a new function accepting a vector. This
 problem doesn't seem to appear inside the hmerge */
-inline mexpr_p mexpr_merge_v(vc::ref_t<drawc::fontset_t> fs, mexpr_p u, mexpr_p d) {
+inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, mexpr_p u, mexpr_p d) {
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
 
     ret->subobjs = std::vector<anchor_t> {
@@ -546,7 +546,7 @@ inline void beziere_path_rec(std::vector<ImVec2>& path, ImVec2 P1, ImVec2 P2, Im
     }
 }
 
-inline mexpr_p mexpr_bracket(vc::ref_t<drawc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket) {
+inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket) {
     auto sym_h = [&](char_t sym) {
         return fs->char_get_bb(sym).a_max.y - fs->char_get_bb(sym).a_min.y;
     };

@@ -53,7 +53,7 @@ function capi.load_font_set()
     paths[capi.FONT_MATH_EX] = "fonts/cmex10.ttf"
 
     local ret = vc.create_object(nil, {
-        m_type = "drawc::fontset_t",
+        m_type = "charc::fontset_t",
         m_a_code = 61,
         m_font_sizes = {
             360.0,  288.0,  216.0,  180.0,  --[[  1,  2,  3,  4]]

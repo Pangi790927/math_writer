@@ -58,11 +58,11 @@ namespace char_draw_composer
 {
 
 namespace vc = virt_composer;
-namespace drawc = char_draw_composer;
+namespace charc = char_draw_composer;
 
-VIRT_COMPOSER_REGISTER_TYPE(DRAWC_TYPE_SUBFONT);
-VIRT_COMPOSER_REGISTER_TYPE(DRAWC_TYPE_FONT);
-VIRT_COMPOSER_REGISTER_TYPE(DRAWC_TYPE_FONTSET);
+VIRT_COMPOSER_REGISTER_TYPE(CHARC_TYPE_SUBFONT);
+VIRT_COMPOSER_REGISTER_TYPE(CHARC_TYPE_FONT);
+VIRT_COMPOSER_REGISTER_TYPE(CHARC_TYPE_FONTSET);
 
 struct char_bb_t {
     ImVec2 a_min;
@@ -96,8 +96,8 @@ struct fontset_t : public vc::object_t {
     fontset_t(vc::object_t::Private priv) : vc::object_t(priv) {}
     virtual ~fontset_t() {}
 
-    static vc::object_type_e type_id_static() { return DRAWC_TYPE_FONTSET; }
-    virtual vc::object_type_e type_id() const override { return DRAWC_TYPE_FONTSET; }
+    static vc::object_type_e type_id_static() { return CHARC_TYPE_FONTSET; }
+    virtual vc::object_type_e type_id() const override { return CHARC_TYPE_FONTSET; }
 
     static vc::ref_t<fontset_t> create(const std::vector<std::string>& font_paths,
             const std::vector<float>& font_sizes, int a_code)
@@ -113,7 +113,7 @@ struct fontset_t : public vc::object_t {
 
     inline virtual std::string to_string() const override {
         /* TODO: maybe describe more? */
-        return std::format("drawc::fontset_t[{}]", (void *)this);
+        return std::format("charc::fontset_t[{}]", (void *)this);
     }
 
     vc::ret_t init() {
@@ -214,7 +214,7 @@ inline int register_meta(vc::virt_state_t *vs) {
     VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, char_draw, char_t, ImVec2, uint32_t, bool, uint32_t);
 
     int ret = add_named_builder_callback(vs,
-        "drawc::fontset_t",
+        "charc::fontset_t",
         [](vc::virt_state_t *vs, const std::string& node_name, fkyaml::node& node)
             -> co::task<vc::ref_t<vc::object_t>>
         {
