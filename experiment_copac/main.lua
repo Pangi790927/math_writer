@@ -112,11 +112,14 @@ function test_work()
     aIab_ac_bcI:push_child(vref(a))
     aIab_ac_bcI:push_child(ab_ac_bc)
 
+    print("-----------------!!!!!-----------------")
+    print(aIab_ac_bcI)
+
     -- Transform Name:
     -- Drag Term out
     -- ===============
     -- 
-    -- Example: having a(ab+ac+bc) and bc. I want to drag ac out to get: a(ab+ac)+abc  
+    -- Example: having a(ab+ac) +abc and bc. I want to drag ac out to get: a(ab+ac)+abc  
     -- 
     -- So the steps necesary are:
     -- 1. First we need to specify the source experssion, in our case bc and an destination
@@ -197,8 +200,8 @@ end
 
 function main() 
     print("Hello from Lua!")
-    -- test_stuff()
-    test_work()
+    test_stuff()
+    -- test_work()
 
     -- print(vc.c:generate_latex())
     -- print(vc.d:generate_latex())

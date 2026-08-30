@@ -7,6 +7,7 @@
  * 
  */
 
+#include "time_utils.h"
 #include "debug.h"
 #include "content.h"
 #include "chars.h"

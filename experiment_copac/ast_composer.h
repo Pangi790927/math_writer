@@ -210,7 +210,7 @@ struct ast_node_t : public vc::object_t {
     }
 
     void insert_child(int i, vc::ref_t<ast_node_t> to_insert) {
-        if (i < 0 || i >= m_childs.size())
+        if (i < 0 || i > m_childs.size())
             throw except_t(AST_ERROR_GENERIC,
                     std::format("insert: Invalid index: {} size: {}", i, m_childs.size()));
         m_childs.insert(m_childs.begin() + i, to_insert);
@@ -373,7 +373,7 @@ struct ast_integer_t : public ast_node_t {
     static vc::ref_t<ast_integer_t> create(int64_t value) {
         auto ret = vc::ref_t<ast_integer_t>::create_obj_ref(std::make_unique<ast_integer_t>(), {});
         ret->m_self = ret._base;
-        ret->m_op = AST_NODE_VAR;
+        ret->m_op = AST_NODE_INT;
         ret->m_value = value;
         return ret;
     }
