@@ -1,12 +1,6 @@
 #define NOMINMAX
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-#ifdef _WIN32
-# ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-# endif
-# include <windows.h>
-#endif
 #include <cstdlib>
 #include <cstdio>
 
@@ -87,31 +81,10 @@ namespace imgc = imgui_composer;
 
 int main(int argc, char const *argv[])
 {
-    /* DEBUG-ONLY, opt-in (see VC_WINDOW_START_HIDDEN's own comment in imgui_helpers.h): also
-     * hides the console window (this is a console-subsystem build, so one always gets allocated)
-     * for the same "keep it off the developer's screen during automated driving" reason. Doesn't
-     * affect stdout/DBG file logging or output redirection - only the window's visibility. */
-#ifdef _WIN32
-    if (getenv("VC_WINDOW_START_HIDDEN")) {
-        HWND console = GetConsoleWindow();
-        if (console)
-            ShowWindow(console, SW_HIDE);
-    }
-#endif
+    debug_input_pipe::hide_console();
 
     imgui_init();
-
-    /* DEBUG-ONLY, opt-in: the window was created hidden (VC_WINDOW_START_HIDDEN, above) - move it
-     * to MATH_WRITER_DEV_WINDOW_POS ("X,Y") if given, then reveal it. This is the only place the
-     * window becomes visible in that mode, so there's no flash at the default position first. */
-    if (getenv("VC_WINDOW_START_HIDDEN")) {
-        if (const char *pos = getenv("MATH_WRITER_DEV_WINDOW_POS")) {
-            int x = 0, y = 0;
-            if (sscanf(pos, "%d,%d", &x, &y) == 2)
-                glfwSetWindowPos(imgui_window, x, y);
-        }
-        glfwShowWindow(imgui_window);
-    }
+    debug_input_pipe::reveal_window();
 
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 

@@ -21,10 +21,12 @@ enum mexpr_bracket_e : int {
     MEXPR_BRACKET_CURLY,
 };
 
-/* Forward-declared with a fixed underlying type so the get_enum_val<mexpr_e> specialization below
-can name it before its full definition (further down, alongside mexpr_t) - same reason
-mexpr_bracket_e's own enum is defined up here rather than where mexpr_bracket_t uses it. */
-enum mexpr_e : int;
+enum mexpr_e : int {
+    MEXPR_TYPE_INTERNAL,
+    MEXPR_TYPE_LINE_STRIP,
+    MEXPR_TYPE_EMPTY_BOX,
+    MEXPR_TYPE_SYMBOL,
+};
 
 struct mexpr_bracket_t {
     mexpr_bracket_e type;
@@ -40,6 +42,15 @@ struct mexpr_bracket_t {
     char_draw_composer::char_t right[4];    /* smaller brackets right part */
 };
 
+/*! Just the (tl, br) bounding box already stored on any mexpr_t, exposed to Lua - lets a script
+measure a built expression (or a subtree of one) without drawing it, e.g. to size a container to
+fit it, or to work out where a sub-part landed relative to the whole. */
+struct mexpr_bb_t {
+    ImVec2 tl;
+    ImVec2 br;
+};
+
+
 } /* math_expr_composer */
 
 namespace virt_composer {
@@ -47,19 +58,30 @@ namespace virt_composer {
 extern inline std::unordered_map<std::string, math_expr_composer::mexpr_bracket_e>
         mexpr_bracket_from_str;
 
+extern inline std::unordered_map<std::string, math_expr_composer::mexpr_e>
+        mexpr_e_from_str;
+
 template <> inline math_expr_composer::mexpr_bracket_e
 get_enum_val<math_expr_composer::mexpr_bracket_e>(fkyaml::node &n);
+
+template <> inline math_expr_composer::mexpr_e
+get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n);
 
 template <ssize_t index>
 struct luaw_param_t<math_expr_composer::mexpr_bracket_t, index> {
     math_expr_composer::mexpr_bracket_t luaw_single_param(lua_State *L);
 };
 
-extern inline std::unordered_map<std::string, math_expr_composer::mexpr_e>
-        mexpr_e_from_str;
+template <>
+struct luaw_returner_t<math_expr_composer::mexpr_bb_t> {
+    void luaw_ret_push(lua_State *L, const math_expr_composer::mexpr_bb_t& bb);
+};
 
-template <> inline math_expr_composer::mexpr_e
-get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n);
+template <>
+struct luaw_returner_t<char_draw_composer::char_t> {
+    void luaw_ret_push(lua_State *L, const char_draw_composer::char_t& c);
+};
+
 
 } /* virt_composer */
 
@@ -70,13 +92,6 @@ namespace charc = char_draw_composer;
 namespace mexpr = math_expr_composer;
 
 VIRT_COMPOSER_REGISTER_TYPE(MEXPR_TYPE_EXPR);
-
-enum mexpr_e : int {
-    MEXPR_TYPE_INTERNAL,
-    MEXPR_TYPE_LINE_STRIP,
-    MEXPR_TYPE_EMPTY_BOX,
-    MEXPR_TYPE_SYMBOL,
-};
 
 using char_t = charc::char_t;
 
@@ -175,45 +190,7 @@ struct mexpr_t : public vc::object_t {
     }
 };
 
-/*! Just the (tl, br) bounding box already stored on any mexpr_t, exposed to Lua - lets a script
-measure a built expression (or a subtree of one) without drawing it, e.g. to size a container to
-fit it, or to work out where a sub-part landed relative to the whole. */
-struct mexpr_bb_t {
-    ImVec2 tl;
-    ImVec2 br;
-};
-
 } /* math_expr_composer */
-
-namespace virt_composer {
-
-template <>
-struct luaw_returner_t<math_expr_composer::mexpr_bb_t> {
-    void luaw_ret_push(lua_State *L, const math_expr_composer::mexpr_bb_t& bb) {
-        lua_createtable(L, 0, 2);
-        luaw_returner_t<ImVec2>{}.luaw_ret_push(L, bb.tl);
-        lua_setfield(L, -2, "tl");
-        luaw_returner_t<ImVec2>{}.luaw_ret_push(L, bb.br);
-        lua_setfield(L, -2, "br");
-    }
-};
-
-/*! char_draw_composer.h only ever needed char_t going Lua->C++ (as a function parameter, via its
-own luaw_param_t) - this is the missing C++->Lua direction, needed for mexpr_t::get_symb()'s return
-value. Lives here rather than in char_draw_composer.h since this is the first place that needs it;
-pushed as a plain {size=, code=} table, the same shape luaw_param_t<char_t,...> reads back in. */
-template <>
-struct luaw_returner_t<char_draw_composer::char_t> {
-    void luaw_ret_push(lua_State *L, const char_draw_composer::char_t& c) {
-        lua_createtable(L, 0, 2);
-        lua_pushinteger(L, c.size);
-        lua_setfield(L, -2, "size");
-        lua_pushinteger(L, c.code);
-        lua_setfield(L, -2, "code");
-    }
-};
-
-} /* virt_composer */
 
 namespace math_expr_composer {
 
@@ -998,6 +975,27 @@ luaw_param_t<math_expr_composer::mexpr_bracket_t, index>::luaw_single_param(lua_
 
     return ret;
 }
+
+inline void luaw_returner_t<math_expr_composer::mexpr_bb_t>::luaw_ret_push(lua_State *L,
+        const math_expr_composer::mexpr_bb_t& bb)
+{
+    lua_createtable(L, 0, 2);
+    luaw_returner_t<ImVec2>{}.luaw_ret_push(L, bb.tl);
+    lua_setfield(L, -2, "tl");
+    luaw_returner_t<ImVec2>{}.luaw_ret_push(L, bb.br);
+    lua_setfield(L, -2, "br");
+}
+
+inline void luaw_returner_t<char_draw_composer::char_t>::luaw_ret_push(lua_State *L,
+        const char_draw_composer::char_t& c)
+{
+    lua_createtable(L, 0, 2);
+    lua_pushinteger(L, c.size);
+    lua_setfield(L, -2, "size");
+    lua_pushinteger(L, c.code);
+    lua_setfield(L, -2, "code");
+}
+
 
 } /* virt_composer */
 

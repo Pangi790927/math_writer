@@ -33,6 +33,24 @@ void pump();
  * context teardown. */
 void uninit();
 
+/*! DEBUG-ONLY, opt-in via VC_WINDOW_START_HIDDEN. Hides the console window (this is a
+ * console-subsystem build, so one always gets allocated) - same "keep it off the developer's
+ * screen during automated driving" reason this whole module exists for. No-op unless the env var
+ * is set (and a no-op on non-Windows, where there's no console window to hide).
+ *
+ * Call once, as early as possible in main() - before imgui_init(), so nothing has a chance to
+ * flash on screen first. */
+void hide_console();
+
+/*! DEBUG-ONLY, opt-in via VC_WINDOW_START_HIDDEN (see imgui_helpers.h's own comment on that env
+ * var - it's what makes imgui_init() create the window hidden in the first place). Moves the
+ * window to MATH_WRITER_DEV_WINDOW_POS ("X,Y") if given, then reveals it. This is the only place
+ * the window becomes visible in that mode, so there's no flash at the default position first.
+ * No-op unless VC_WINDOW_START_HIDDEN is set.
+ *
+ * Call once, right after imgui_init(). */
+void reveal_window();
+
 } /* namespace debug_input_pipe */
 
 #endif

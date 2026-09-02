@@ -18,6 +18,7 @@
 # endif
 # include <winsock2.h>
 # include <ws2tcpip.h>
+# include <windows.h> /* hide_console(): HWND/GetConsoleWindow/ShowWindow */
 # pragma comment(lib, "ws2_32.lib")
 using socket_t = SOCKET;
 static const socket_t INVALID_SOCK = INVALID_SOCKET;
@@ -40,6 +41,9 @@ table the Lua bindings already use). */
 #include "char_draw_composer.h"
 #include "imgui_composer.h"
 #include "debug.h"
+
+/* reveal_window(): the imgui_window global, glfwSetWindowPos/glfwShowWindow. */
+#include "imgui_helpers.h"
 
 namespace debug_input_pipe {
 
@@ -280,6 +284,27 @@ void uninit() {
 #ifdef _WIN32
     WSACleanup();
 #endif
+}
+
+void hide_console() {
+#ifdef _WIN32
+    if (getenv("VC_WINDOW_START_HIDDEN")) {
+        HWND console = GetConsoleWindow();
+        if (console)
+            ShowWindow(console, SW_HIDE);
+    }
+#endif
+}
+
+void reveal_window() {
+    if (getenv("VC_WINDOW_START_HIDDEN")) {
+        if (const char *pos = getenv("MATH_WRITER_DEV_WINDOW_POS")) {
+            int x = 0, y = 0;
+            if (sscanf(pos, "%d,%d", &x, &y) == 2)
+                glfwSetWindowPos(imgui_window, x, y);
+        }
+        glfwShowWindow(imgui_window);
+    }
 }
 
 } /* namespace debug_input_pipe */
