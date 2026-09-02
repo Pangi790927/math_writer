@@ -1,4 +1,0 @@
-script:
-  m_type: vc::lua_script_t
-  m_source: |
-    function call_sum(fb) return fb:sum_flags({"A", "B", 2}) end
