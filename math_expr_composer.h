@@ -155,15 +155,6 @@ struct mexpr_t : public vc::object_t {
         return std::format("mexpr::mexpr_t[{}] type: {}", (void *)this, (int)type);
     }
 
-    /*! `tl`/`br` are already readable via the existing `vc.mexpr_get_bb(m)` free function - no
-    separate member needed for those. `symb`/`symb_off` have no such existing accessor, and - being
-    plain structs, not one of VC_REGISTER_MEMBER_OBJECT's supported member types (string/bool/int/
-    float/vector/tuple/pair/enum/ref_t) - can't be registered as members directly either, so these
-    two small getters go through VC_REGISTER_MEMBER_FUNCTION instead, which uses the same general
-    param/return conversion vc.mexpr_get_bb's ImVec2 return already relies on. */
-    char_t get_symb() const { return symb; }
-    ImVec2 get_symb_off() const { return symb_off; }
-
     /*! `subobjs.size()` - how many children this node has (0 for a leaf: SYMBOL/EMPTY_BOX/
     LINE_STRIP). */
     int anchor_len() const { return (int)subobjs.size(); }
@@ -229,8 +220,8 @@ inline int register_meta(vc::virt_state_t *vs) {
     VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, color);
     VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, line_width);
     VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, u);
-    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, get_symb);
-    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, get_symb_off);
+    VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, symb);
+    VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, symb_off);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_len);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_at, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_len);
