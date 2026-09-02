@@ -21,6 +21,11 @@ enum mexpr_bracket_e : int {
     MEXPR_BRACKET_CURLY,
 };
 
+/* Forward-declared with a fixed underlying type so the get_enum_val<mexpr_e> specialization below
+can name it before its full definition (further down, alongside mexpr_t) - same reason
+mexpr_bracket_e's own enum is defined up here rather than where mexpr_bracket_t uses it. */
+enum mexpr_e : int;
+
 struct mexpr_bracket_t {
     mexpr_bracket_e type;
     char_draw_composer::char_t tl;          /* top left */
@@ -49,6 +54,12 @@ template <ssize_t index>
 struct luaw_param_t<math_expr_composer::mexpr_bracket_t, index> {
     math_expr_composer::mexpr_bracket_t luaw_single_param(lua_State *L);
 };
+
+extern inline std::unordered_map<std::string, math_expr_composer::mexpr_e>
+        mexpr_e_from_str;
+
+template <> inline math_expr_composer::mexpr_e
+get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n);
 
 } /* virt_composer */
 
@@ -107,6 +118,12 @@ struct mexpr_t : public vc::object_t {
     float line_width = 1.0f;        /*!< Optional, if type is line */
     std::vector<ImVec2> line_strip; /*!< Optional, if type is MATHD_TYPE_LINE_STRIP */
 
+    /*! Free slot for Lua to stash arbitrary data on this node (e.g. a back-reference to whichever
+    row item this leaf corresponds to) - virt_composer/math_expr_composer never read or write this
+    themselves, purely a courtesy hook. Needs lua_object_t's own capture()/push() to actually put a
+    value in, not a bare assignment - see vc::lua_object_t's doc comment. */
+    vc::ref_t<vc::lua_object_t> u;
+
     mexpr_t(vc::object_t::Private priv) : vc::object_t(priv) {}
     virtual ~mexpr_t() {}
 
@@ -122,7 +139,89 @@ struct mexpr_t : public vc::object_t {
     inline virtual std::string to_string() const override {
         return std::format("mexpr::mexpr_t[{}] type: {}", (void *)this, (int)type);
     }
+
+    /*! `tl`/`br` are already readable via the existing `vc.mexpr_get_bb(m)` free function - no
+    separate member needed for those. `symb`/`symb_off` have no such existing accessor, and - being
+    plain structs, not one of VC_REGISTER_MEMBER_OBJECT's supported member types (string/bool/int/
+    float/vector/tuple/pair/enum/ref_t) - can't be registered as members directly either, so these
+    two small getters go through VC_REGISTER_MEMBER_FUNCTION instead, which uses the same general
+    param/return conversion vc.mexpr_get_bb's ImVec2 return already relies on. */
+    char_t get_symb() const { return symb; }
+    ImVec2 get_symb_off() const { return symb_off; }
+
+    /*! `subobjs.size()` - how many children this node has (0 for a leaf: SYMBOL/EMPTY_BOX/
+    LINE_STRIP). */
+    int anchor_len() const { return (int)subobjs.size(); }
+
+    /*! One child and its position, 1-indexed (matches Lua array convention, not subobjs' own
+    0-indexed std::vector storage) - the same (obj, pos) pair mexpr_draw_rec adds to its running
+    `pos` while recursing, so replaying this from Lua reproduces the exact same placement.
+    Lua-side: comes back as a single 2-element table {obj, pos}, not two return values - that's
+    how virt_composer's generic std::tuple returner (luaw_returner_t<std::tuple<...>>) works. */
+    std::tuple<mexpr_p, ImVec2> anchor_at(int i) const {
+        if (i < 1 || i > (int)subobjs.size())
+            throw vc::except_t(std::format("mexpr anchor_at: index {} out of range (1..{})",
+                    i, subobjs.size()));
+        return {subobjs[i-1].obj, subobjs[i-1].pos};
+    }
+
+    int line_strip_len() const { return (int)line_strip.size(); }
+
+    ImVec2 line_strip_at(int i) const {
+        if (i < 1 || i > (int)line_strip.size())
+            throw vc::except_t(std::format("mexpr line_strip_at: index {} out of range (1..{})",
+                    i, line_strip.size()));
+        return line_strip[i-1];
+    }
 };
+
+/*! Just the (tl, br) bounding box already stored on any mexpr_t, exposed to Lua - lets a script
+measure a built expression (or a subtree of one) without drawing it, e.g. to size a container to
+fit it, or to work out where a sub-part landed relative to the whole. */
+struct mexpr_bb_t {
+    ImVec2 tl;
+    ImVec2 br;
+};
+
+} /* math_expr_composer */
+
+namespace virt_composer {
+
+template <>
+struct luaw_returner_t<math_expr_composer::mexpr_bb_t> {
+    void luaw_ret_push(lua_State *L, const math_expr_composer::mexpr_bb_t& bb) {
+        lua_createtable(L, 0, 2);
+        luaw_returner_t<ImVec2>{}.luaw_ret_push(L, bb.tl);
+        lua_setfield(L, -2, "tl");
+        luaw_returner_t<ImVec2>{}.luaw_ret_push(L, bb.br);
+        lua_setfield(L, -2, "br");
+    }
+};
+
+/*! char_draw_composer.h only ever needed char_t going Lua->C++ (as a function parameter, via its
+own luaw_param_t) - this is the missing C++->Lua direction, needed for mexpr_t::get_symb()'s return
+value. Lives here rather than in char_draw_composer.h since this is the first place that needs it;
+pushed as a plain {size=, code=} table, the same shape luaw_param_t<char_t,...> reads back in. */
+template <>
+struct luaw_returner_t<char_draw_composer::char_t> {
+    void luaw_ret_push(lua_State *L, const char_draw_composer::char_t& c) {
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, c.size);
+        lua_setfield(L, -2, "size");
+        lua_pushinteger(L, c.code);
+        lua_setfield(L, -2, "code");
+    }
+};
+
+} /* virt_composer */
+
+namespace math_expr_composer {
+
+inline mexpr_bb_t mexpr_get_bb(mexpr_p m) {
+    if (!m)
+        return mexpr_bb_t{};
+    return mexpr_bb_t{m->tl, m->br};
+}
 
 /* TODO: instead of fontset_t, create a context_t that will be used in all the drawing functions.
 This context should have the fontset as well as required distancers and sizes */
@@ -148,6 +247,17 @@ inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, mexpr_p u, mexpr_p 
 
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
+
+    VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, type);
+    VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, color);
+    VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, line_width);
+    VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, u);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, get_symb);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, get_symb_off);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_len);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_at, int);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_len);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_at, int);
 
     std::vector<luaL_Reg> mexpr_tab_funcs = {
         { "mexpr_draw", vc::luaw_function_wrapper<mexpr_draw,
@@ -183,9 +293,12 @@ inline int register_meta(vc::virt_state_t *vs) {
         { "mexpr_merge_v", vc::luaw_function_wrapper<mexpr_merge_v,
                 vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p>
         },
+        { "mexpr_get_bb", vc::luaw_function_wrapper<mexpr_get_bb, mexpr_p>
+        },
     };
 
     vc::add_lua_flag_mapping(vs, vc::mexpr_bracket_from_str);
+    vc::add_lua_flag_mapping(vs, vc::mexpr_e_from_str);
 
     ASSERT_FN(add_lua_tab_funcs(vs, mexpr_tab_funcs));
     return vc::VC_ERROR_OK;
@@ -811,6 +924,19 @@ inline std::unordered_map<std::string, math_expr_composer::mexpr_bracket_e> mexp
 template <> inline math_expr_composer::mexpr_bracket_e
 get_enum_val<math_expr_composer::mexpr_bracket_e>(fkyaml::node &n) {
     return get_enum_val(n, mexpr_bracket_from_str);
+}
+
+inline std::unordered_map<std::string, math_expr_composer::mexpr_e> mexpr_e_from_str =
+{
+    {"MEXPR_TYPE_INTERNAL", math_expr_composer::MEXPR_TYPE_INTERNAL},
+    {"MEXPR_TYPE_LINE_STRIP", math_expr_composer::MEXPR_TYPE_LINE_STRIP},
+    {"MEXPR_TYPE_EMPTY_BOX", math_expr_composer::MEXPR_TYPE_EMPTY_BOX},
+    {"MEXPR_TYPE_SYMBOL", math_expr_composer::MEXPR_TYPE_SYMBOL},
+};
+
+template <> inline math_expr_composer::mexpr_e
+get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n) {
+    return get_enum_val(n, mexpr_e_from_str);
 }
 
 

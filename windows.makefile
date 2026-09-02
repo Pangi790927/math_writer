@@ -2,6 +2,7 @@ ISYM      := /I
 CSYM      := /c
 CXX       := cl
 CXX_FLAGS := /EHs /await:strict /std:c++20 /Zi /MD /Zc:preprocessor
+CXX_FLAGS += /DVIRT_COMPOSER_ENABLE_LUA_IO=1
 LIBS	  := /link gdi32.lib glfw3.lib opengl32.lib
 
 IMGUI     := ../imgui/
@@ -29,6 +30,7 @@ INCLCUDES += /I./old/
 DEPS      := $(wildcard ./*.h)
 SRCS      += ${IMGUI_SRC} ${BACKEND_SRC} ${IMPLOT_SRC}
 SRCS      += ${UTILS}/virt_composer.cpp
+SRCS      += debug_input_pipe.cpp
 OBJS      := $(SRCS:.cpp=.obj)
 
 all: ${OBJS} $(DEPS)

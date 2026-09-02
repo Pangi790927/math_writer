@@ -1,16 +1,26 @@
 #define NOMINMAX
 #define IMGUI_DEFINE_MATH_OPERATORS
 
+#ifdef _WIN32
+# ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+# endif
+# include <windows.h>
+#endif
+#include <cstdlib>
+#include <cstdio>
+
 #include "imgui_helpers.h"
 #include "imgui_internal.h"
 
 /* composer plugins: */
 #include "char_draw_composer.h"
 #include "math_expr_composer.h"
-#include "input_composer.h"
+#include "imgui_composer.h"
 #include "virt_composer_end.h"
 
 #include "debug.h"
+#include "debug_input_pipe.h"
 
 /*! TODO: rework this:
  * 
@@ -73,11 +83,36 @@
 namespace vc = virt_composer;
 namespace charc = char_draw_composer;
 namespace mexpr = math_expr_composer;
-namespace inc = input_composer;
+namespace imgc = imgui_composer;
 
 int main(int argc, char const *argv[])
 {
+    /* DEBUG-ONLY, opt-in (see VC_WINDOW_START_HIDDEN's own comment in imgui_helpers.h): also
+     * hides the console window (this is a console-subsystem build, so one always gets allocated)
+     * for the same "keep it off the developer's screen during automated driving" reason. Doesn't
+     * affect stdout/DBG file logging or output redirection - only the window's visibility. */
+#ifdef _WIN32
+    if (getenv("VC_WINDOW_START_HIDDEN")) {
+        HWND console = GetConsoleWindow();
+        if (console)
+            ShowWindow(console, SW_HIDE);
+    }
+#endif
+
     imgui_init();
+
+    /* DEBUG-ONLY, opt-in: the window was created hidden (VC_WINDOW_START_HIDDEN, above) - move it
+     * to MATH_WRITER_DEV_WINDOW_POS ("X,Y") if given, then reveal it. This is the only place the
+     * window becomes visible in that mode, so there's no flash at the default position first. */
+    if (getenv("VC_WINDOW_START_HIDDEN")) {
+        if (const char *pos = getenv("MATH_WRITER_DEV_WINDOW_POS")) {
+            int x = 0, y = 0;
+            if (sscanf(pos, "%d,%d", &x, &y) == 2)
+                glfwSetWindowPos(imgui_window, x, y);
+        }
+        glfwShowWindow(imgui_window);
+    }
+
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     ImGuiIO& io = ImGui::GetIO();
@@ -92,15 +127,19 @@ int main(int argc, char const *argv[])
     ASSERT_FN(CHK_PTR(vs));
     ASSERT_FN(charc::register_meta(vs.get()));
     ASSERT_FN(mexpr::register_meta(vs.get()));
-    ASSERT_FN(inc::register_meta(vs.get()));
+    ASSERT_FN(imgc::register_meta(vs.get()));
     ASSERT_FN(vc::parse_config(vs.get(), "math_writer.yaml"));
 
     imgui_prepare_render();
     imgui_render(clear_color);
-        
+
     auto [ret, err] = vc::call_lua<int>(vs.get(), "test_init");
     ASSERT_FN(ret);
     ASSERT_FN(err);
+
+    /* DEBUG-ONLY: lets an external controller drive keyboard/mouse via a local socket instead of
+     * the real OS input devices - see debug_input_pipe.h. */
+    debug_input_pipe::init();
 
     while (!glfwWindowShouldClose(imgui_window)) {
         glfwPollEvents();
@@ -109,6 +148,7 @@ int main(int argc, char const *argv[])
             continue ;
         }
 
+        debug_input_pipe::pump();
         imgui_prepare_render();
 
         auto main_flags = 
@@ -124,14 +164,24 @@ int main(int argc, char const *argv[])
         ASSERT_FN(ret);
         ASSERT_FN(err);
 
-        bool true_val = true;
-        ImGui::ShowMetricsWindow(&true_val);
+        // bool true_val = true;
+        // ImGui::ShowMetricsWindow(&true_val);
 
         ImGui::End();
 
         /* Add imgui stuff here */
         imgui_render(clear_color);
     }
+
+    /* Mirrors the test_init() call above, at the other end of the app's lifetime - lets
+     * math_writer.lua save state (content.lua's serialize()) before the window actually goes
+     * away. `vs` is still valid here (its own destruction happens later, when the enclosing
+     * shared_ptr goes out of scope at the end of main()). */
+    auto [shutdown_ret, shutdown_err] = vc::call_lua<int>(vs.get(), "test_shutdown");
+    ASSERT_FN(shutdown_ret);
+    ASSERT_FN(shutdown_err);
+
+    debug_input_pipe::uninit();
     imgui_uninit();
     return 0;
 }

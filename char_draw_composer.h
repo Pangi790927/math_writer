@@ -75,6 +75,25 @@ struct char_sz_t {
     ImVec2 tr;
 };
 
+} /* char_draw_composer */
+
+namespace virt_composer {
+
+/*! Return-direction (C++ -> Lua) counterparts of the param-direction specializations above:
+ * pushed as a plain {x=, y=} table / {adv=, bl={x=,y=}, tr={x=,y=}} table respectively. */
+template <>
+struct luaw_returner_t<ImVec2> {
+    void luaw_ret_push(lua_State *L, ImVec2 v);
+};
+
+template <>
+struct luaw_returner_t<char_draw_composer::char_sz_t> {
+    void luaw_ret_push(lua_State *L, const char_draw_composer::char_sz_t& sz);
+};
+
+} /* virt_composer */
+
+namespace char_draw_composer {
 
 struct fontset_t : public vc::object_t {
     struct font_loc_t {
@@ -212,6 +231,7 @@ inline int register_meta(vc::virt_state_t *vs) {
 
     VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, register_code, uint32_t, uint32_t, uint32_t);
     VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, char_draw, char_t, ImVec2, uint32_t, bool, uint32_t);
+    VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, char_get_sz, char_t);
 
     int ret = add_named_builder_callback(vs,
         "charc::fontset_t",
@@ -268,6 +288,26 @@ luaw_param_t<char_draw_composer::char_t, index>::luaw_single_param(lua_State *L)
     ret.size = lua_tonumber(L, -1);
     lua_pop(L, 1);
     return ret;
+}
+
+inline void luaw_returner_t<ImVec2>::luaw_ret_push(lua_State *L, ImVec2 v) {
+    lua_createtable(L, 0, 2);
+    lua_pushnumber(L, v.x);
+    lua_setfield(L, -2, "x");
+    lua_pushnumber(L, v.y);
+    lua_setfield(L, -2, "y");
+}
+
+inline void luaw_returner_t<char_draw_composer::char_sz_t>::luaw_ret_push(
+        lua_State *L, const char_draw_composer::char_sz_t& sz)
+{
+    lua_createtable(L, 0, 3);
+    lua_pushnumber(L, sz.adv);
+    lua_setfield(L, -2, "adv");
+    luaw_returner_t<ImVec2>{}.luaw_ret_push(L, sz.bl);
+    lua_setfield(L, -2, "bl");
+    luaw_returner_t<ImVec2>{}.luaw_ret_push(L, sz.tr);
+    lua_setfield(L, -2, "tr");
 }
 
 }; /* virt_composer */

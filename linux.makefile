@@ -1,5 +1,6 @@
 CXX       := g++
 CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
+CXX_FLAGS += -DVIRT_COMPOSER_ENABLE_LUA_IO=1
 # CXX_FLAGS += -Wl,--verbose
 LIBS      := -lpthread -ldl -lglfw -lGL -lbacktrace
 
@@ -27,6 +28,7 @@ INCLCUDES += -I${IMGUI} -I${IMGUI}/backends/ -I${IMPLOT}
 DEPS      := $(wildcard ./*.h)
 SRCS      += ${IMGUI_SRC} ${BACKEND_SRC} ${IMPLOT_SRC}
 SRCS      += ${UTILS}/virt_composer.cpp
+SRCS      += debug_input_pipe.cpp
 OBJS      := $(SRCS:.cpp=.o)
 
 all: ${OBJS} $(DEPS)

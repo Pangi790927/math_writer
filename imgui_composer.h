@@ -1,5 +1,5 @@
-#ifndef INPUT_COMPOSER_H
-#define INPUT_COMPOSER_H
+#ifndef IMGUI_COMPOSER_H
+#define IMGUI_COMPOSER_H
 
 #include "virt_composer.h"
 #include "imgui_impl_glfw.h"
@@ -16,21 +16,90 @@ template <> inline ImGuiMouseButton_ get_enum_val<ImGuiMouseButton_>(fkyaml::nod
 
 } /* namespace virt_composer */
 
-namespace input_composer {
+namespace imgui_composer {
 
 namespace vc = virt_composer;
-namespace inc = input_composer;
+namespace imgc = imgui_composer;
 
 inline std::vector<uint32_t> input_queue_chars() {
     auto &io = ImGui::GetIO();
     return std::vector<uint32_t>(io.InputQueueCharacters.begin(), io.InputQueueCharacters.end());
 }
 
-/* TODO: mouse buttons pressed, down, released */
-/* TODO: mouse position */
-/* TODO: GetMouseDragDelta */
-/* TODO: IsMouseHoveringRect */
-/* TODO: (GetClipboardText/SetClipboardText) */
+inline ImVec2 get_display_size() {
+    return ImGui::GetIO().DisplaySize;
+}
+
+/*! This frame's vertical mouse wheel delta (positive = away from the user, the usual "scroll up"
+ * direction) - not previously exposed; debug_input_pipe.cpp could already inject a wheel event
+ * (AddMouseWheelEvent), but nothing could read the resulting io.MouseWheel back out from Lua. */
+inline float get_mouse_wheel() {
+    return ImGui::GetIO().MouseWheel;
+}
+
+/*! Returns the current window's draw list, or nullptr if this window's items are being skipped
+ * (mirrors the guard char_draw_composer::fontset_t::char_draw already uses). All ImGui_Add*
+ * drawing functions below go through this. */
+inline ImDrawList *draw_list() {
+    ImGuiWindow *window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return nullptr;
+    return ImGui::GetWindowDrawList();
+}
+
+inline void add_line(ImVec2 p1, ImVec2 p2, uint32_t col, float thickness) {
+    if (auto *dl = draw_list())
+        dl->AddLine(p1, p2, col, thickness);
+}
+
+inline void add_rect(ImVec2 p_min, ImVec2 p_max, uint32_t col, float rounding, float thickness) {
+    if (auto *dl = draw_list())
+        dl->AddRect(p_min, p_max, col, rounding, 0, thickness);
+}
+
+inline void add_rect_filled(ImVec2 p_min, ImVec2 p_max, uint32_t col, float rounding) {
+    if (auto *dl = draw_list())
+        dl->AddRectFilled(p_min, p_max, col, rounding, 0);
+}
+
+inline void add_circle(ImVec2 center, float radius, uint32_t col, float thickness) {
+    if (auto *dl = draw_list())
+        dl->AddCircle(center, radius, col, 0, thickness);
+}
+
+inline void add_circle_filled(ImVec2 center, float radius, uint32_t col) {
+    if (auto *dl = draw_list())
+        dl->AddCircleFilled(center, radius, col, 0);
+}
+
+inline void add_triangle(ImVec2 p1, ImVec2 p2, ImVec2 p3, uint32_t col, float thickness) {
+    if (auto *dl = draw_list())
+        dl->AddTriangle(p1, p2, p3, col, thickness);
+}
+
+inline void add_triangle_filled(ImVec2 p1, ImVec2 p2, ImVec2 p3, uint32_t col) {
+    if (auto *dl = draw_list())
+        dl->AddTriangleFilled(p1, p2, p3, col);
+}
+
+/*! Not requested, but the same shape as triangle/rect and just as cheap to expose - a 4-point
+ * poly. Straightforward to drop if unwanted. */
+inline void add_quad(ImVec2 p1, ImVec2 p2, ImVec2 p3, ImVec2 p4, uint32_t col, float thickness) {
+    if (auto *dl = draw_list())
+        dl->AddQuad(p1, p2, p3, p4, col, thickness);
+}
+
+inline void add_quad_filled(ImVec2 p1, ImVec2 p2, ImVec2 p3, ImVec2 p4, uint32_t col) {
+    if (auto *dl = draw_list())
+        dl->AddQuadFilled(p1, p2, p3, p4, col);
+}
+
+/*! Also not requested: raw ImGui-font text (not the char.lua glyph catalog / fontset_t). Handy
+ * for quick debug/UI labels without going through char_draw. Straightforward to drop if unwanted. */
+inline void add_text(ImVec2 pos, uint32_t col, const char *text) {
+    if (auto *dl = draw_list())
+        dl->AddText(pos, col, text);
+}
 
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
@@ -56,24 +125,94 @@ inline int register_meta(vc::virt_state_t *vs) {
         {"ImGui_input_queue_chars", vc::luaw_function_wrapper<
                /* FN:    */ input_queue_chars
         >},
+
+        /* Mouse -------------------------------------------------------------------------------- */
+        /* NOTE: IsMouseDown/Clicked/Released/DoubleClicked are overloaded once
+         * imgui_internal.h is visible (owner-aware variants) - disambiguate to the public,
+         * non-owner-aware overload, same as ImGui_IsKeyDown/Pressed/Released above. */
+        {"ImGui_IsMouseDown", vc::luaw_function_wrapper<
+               /* FN:    */ static_cast<bool(*)(ImGuiMouseButton)>(ImGui::IsMouseDown),
+               /* PARAMS:*/ vc::bm_t<ImGuiMouseButton_>
+        >},
+        {"ImGui_IsMouseClicked", vc::luaw_function_wrapper<
+               /* FN:    */ static_cast<bool(*)(ImGuiMouseButton, bool)>(ImGui::IsMouseClicked),
+               /* PARAMS:*/ vc::bm_t<ImGuiMouseButton_>,
+                            bool
+        >},
+        {"ImGui_IsMouseReleased", vc::luaw_function_wrapper<
+               /* FN:    */ static_cast<bool(*)(ImGuiMouseButton)>(ImGui::IsMouseReleased),
+               /* PARAMS:*/ vc::bm_t<ImGuiMouseButton_>
+        >},
+        {"ImGui_IsMouseDoubleClicked", vc::luaw_function_wrapper<
+               /* FN:    */ static_cast<bool(*)(ImGuiMouseButton)>(ImGui::IsMouseDoubleClicked),
+               /* PARAMS:*/ vc::bm_t<ImGuiMouseButton_>
+        >},
+        {"ImGui_IsMouseReleasedWithDelay", vc::luaw_function_wrapper<
+               ImGui::IsMouseReleasedWithDelay, vc::bm_t<ImGuiMouseButton_>, float
+        >},
+        {"ImGui_GetMouseClickedCount", vc::luaw_function_wrapper<
+               ImGui::GetMouseClickedCount, vc::bm_t<ImGuiMouseButton_>
+        >},
+        {"ImGui_IsMouseHoveringRect", vc::luaw_function_wrapper<
+               ImGui::IsMouseHoveringRect, ImVec2, ImVec2, bool
+        >},
+        {"ImGui_GetMousePos", vc::luaw_function_wrapper<
+               ImGui::GetMousePos
+        >},
+        {"ImGui_GetDisplaySize", vc::luaw_function_wrapper<
+               get_display_size
+        >},
+        {"ImGui_GetMouseWheel", vc::luaw_function_wrapper<
+               get_mouse_wheel
+        >},
+        {"ImGui_IsMouseDragging", vc::luaw_function_wrapper<
+               ImGui::IsMouseDragging, vc::bm_t<ImGuiMouseButton_>, float
+        >},
+        {"ImGui_GetMouseDragDelta", vc::luaw_function_wrapper<
+               ImGui::GetMouseDragDelta, vc::bm_t<ImGuiMouseButton_>, float
+        >},
+        {"ImGui_ResetMouseDragDelta", vc::luaw_function_wrapper<
+               ImGui::ResetMouseDragDelta, vc::bm_t<ImGuiMouseButton_>
+        >},
+        {"ImGui_GetClipboardText", vc::luaw_function_wrapper<
+               ImGui::GetClipboardText
+        >},
+        {"ImGui_SetClipboardText", vc::luaw_function_wrapper<
+               ImGui::SetClipboardText, const char *
+        >},
+
+        /* Drawing (operate on the current window's draw list) ---------------------------------- */
+        {"ImGui_AddLine", vc::luaw_function_wrapper<
+               add_line, ImVec2, ImVec2, uint32_t, float
+        >},
+        {"ImGui_AddRect", vc::luaw_function_wrapper<
+               add_rect, ImVec2, ImVec2, uint32_t, float, float
+        >},
+        {"ImGui_AddRectFilled", vc::luaw_function_wrapper<
+               add_rect_filled, ImVec2, ImVec2, uint32_t, float
+        >},
+        {"ImGui_AddCircle", vc::luaw_function_wrapper<
+               add_circle, ImVec2, float, uint32_t, float
+        >},
+        {"ImGui_AddCircleFilled", vc::luaw_function_wrapper<
+               add_circle_filled, ImVec2, float, uint32_t
+        >},
+        {"ImGui_AddTriangle", vc::luaw_function_wrapper<
+               add_triangle, ImVec2, ImVec2, ImVec2, uint32_t, float
+        >},
+        {"ImGui_AddTriangleFilled", vc::luaw_function_wrapper<
+               add_triangle_filled, ImVec2, ImVec2, ImVec2, uint32_t
+        >},
+        {"ImGui_AddQuad", vc::luaw_function_wrapper<
+               add_quad, ImVec2, ImVec2, ImVec2, ImVec2, uint32_t, float
+        >},
+        {"ImGui_AddQuadFilled", vc::luaw_function_wrapper<
+               add_quad_filled, ImVec2, ImVec2, ImVec2, ImVec2, uint32_t
+        >},
+        {"ImGui_AddText", vc::luaw_function_wrapper<
+               add_text, ImVec2, uint32_t, const char *
+        >},
     };
-
-    // IsMouseDown(ImGuiMouseButton button);                               // is mouse butt
-    // IsMouseClicked(ImGuiMouseButton button, bool repeat = false);       // did mouse but
-    // IsMouseReleased(ImGuiMouseButton button);                           // did mouse but
-    // IsMouseDoubleClicked(ImGuiMouseButton button);                      // did mouse but
-    // IsMouseReleasedWithDelay(ImGuiMouseButton button, float delay=-1.f);// delayed mouse
-    // GetMouseClickedCount(ImGuiMouseButton button);                      // return the nu
-    // IsMouseHoveringRect(const ImVec2& r_min, const ImVec2& r_max, bool clip = true);// i
-
-    // GetMousePos();
-
-    // IsMouseDragging(ImGuiMouseButton button, float lock_threshold = -1.0f
-    // GetMouseDragDelta(ImGuiMouseButton button = 0, float lock_threshold =
-    // ResetMouseDragDelta(ImGuiMouseButton button = 0);                   /
-
-    // IMGUI_API const char*   GetClipboardText();
-    // IMGUI_API void          SetClipboardText(const char* text);
 
     ASSERT_FN(add_lua_tab_funcs(vs, imgui_tab_funcs));
 
@@ -83,7 +222,7 @@ inline int register_meta(vc::virt_state_t *vs) {
     return vc::VC_ERROR_OK;
 }
 
-} /* namespace input_composer */
+} /* namespace imgui_composer */
 
 namespace virt_composer {
 

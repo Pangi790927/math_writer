@@ -43,13 +43,9 @@ end
 
 -- Helper function to find character info by ASCII code or description
 local function find_char_info(target, sz)
-    for _, c in ipairs(char.chars or {}) do
-        if c.acod == target and c.ncod then
-            return {size=sz, code=c.ncod}
-        end
-        if c.desc == target and c.ncod then
-            return {size=sz, code=c.ncod}
-        end
+    local entry = char.find_by_ascii(target) or char.find_by_desc(target)
+    if entry then
+        return {size=sz, code=entry.ncod}
     end
     -- Default to a placeholder if not found
     return {size=sz, code=61}

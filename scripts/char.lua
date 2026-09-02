@@ -419,4 +419,88 @@ capi.chars = {
     {acod=' ',  fcod=0x20, fnum=capi.FONT_NORMAL , ncod=247, desc=" " },
 }
 
+-- #################################################################################################
+-- Indexed lookups (built once here instead of the linear scans mexpr.lua used to do per glyph
+-- per frame)
+-- #################################################################################################
+
+local by_ascii = {}
+local by_desc = {}
+local by_ncod = {}
+for _, c in ipairs(capi.chars) do
+    if c.acod ~= '\0' and by_ascii[c.acod] == nil then
+        by_ascii[c.acod] = c
+    end
+    if c.desc and by_desc[c.desc] == nil then
+        by_desc[c.desc] = c
+    end
+    by_ncod[c.ncod] = c
+end
+
+--[[ Returns the capi.chars entry for an ascii character (a 1-length string), or nil.
+When a character appears more than once in capi.chars (a few do), the first entry in the table
+wins - same as the old linear-scan behavior this replaces. ]]
+function capi.find_by_ascii(ascii_char)
+    return by_ascii[ascii_char]
+end
+
+--[[ Returns the capi.chars entry whose `desc` matches exactly (e.g. "\\alpha"), or nil. ]]
+function capi.find_by_desc(desc)
+    return by_desc[desc]
+end
+
+--[[ Returns the capi.chars entry for a given ncod (glyph catalog code), or nil. ]]
+function capi.find_by_ncod(ncod)
+    return by_ncod[ncod]
+end
+
+-- #################################################################################################
+-- Alt-key Greek input: Alt+letter -> lowercase greek, Alt+Shift+letter -> uppercase greek where
+-- it exists as a distinct glyph (else the caller falls back to the plain/uppercase Latin letter,
+-- matching old/comments.h's own fallback behavior).
+-- #################################################################################################
+
+--[[ The common "greek keyboard" mnemonic mapping (not old/comments.h's own table, which was
+fairly arbitrary - e.g. it mapped alt+n to eta). 'o', 'q', 'v' are intentionally unmapped: no
+natural greek association (omicron is visually identical to 'o' and isn't in the glyph catalog). ]]
+capi.greek_alt = {
+    a="\\alpha",   b="\\beta", g="\\gamma",  d="\\delta", e="\\epsilon", z="\\zeta",
+    h="\\eta",     j="\\theta", i="\\iota",  k="\\kappa", l="\\lambda",  m="\\mu",
+    n="\\nu",      x="\\xi",   p="\\pi",     r="\\rho",   s="\\sigma",   t="\\tau",
+    u="\\upsilon", f="\\phi",  c="\\chi",    y="\\psi",   w="\\omega",
+}
+
+--[[ Only these have a distinct capital glyph in capi.chars - the rest look identical to their
+Latin counterpart and were never catalogued separately. 'q' isn't a capital Greek letter at all -
+'q' has no Greek association (see greek_alt's own comment), so Alt+Shift+Q was otherwise wasted
+falling back to plain 'Q' - the integral sign lives here instead, freeing that keystroke up. ]]
+capi.greek_alt_shift = {
+    g="\\Gamma", d="\\Delta", h="\\Theta", l="\\Lambda", x="\\Xi",   p="\\Pi",
+    s="\\Sigma", u="\\Upsilon", f="\\Phi", y="\\Psi",    w="\\Omega",
+    q="\\int",
+}
+
+--[[ How many size-table steps BIGGER (negative - the table runs biggest-to-smallest, see
+mformula.lua's own SUB_SIZE_DELTA comment) a glyph should render at than whatever size it's typed
+into, keyed by desc. Only "\\int" uses this so far - a big operator inserted at plain text size
+reads as a thin, undersized squiggle instead of the display-style integral sign it's supposed to
+be (compare main.lua's demo, which draws it via char.integral(sz-5) for exactly this reason) -
+not a general per-glyph size feature, just this one shortcut's own fix. ]]
+capi.size_delta_by_desc = {
+    ["\\int"] = -5,
+}
+
+--[[ ImGuiKey name -> lowercase letter, used to poll Alt+letter Greek shortcuts directly (Alt
+combinations don't reliably produce char events, so this can't go through
+vc.ImGui_input_queue_chars() the way plain typing does). Shared by editor.lua (plain text) and
+mformula.lua (inside a formula) so both read Alt+letter the same way. ]]
+capi.greek_keys = {
+    ImGuiKey_A="a", ImGuiKey_B="b", ImGuiKey_C="c", ImGuiKey_D="d", ImGuiKey_E="e",
+    ImGuiKey_F="f", ImGuiKey_G="g", ImGuiKey_H="h", ImGuiKey_I="i", ImGuiKey_J="j",
+    ImGuiKey_K="k", ImGuiKey_L="l", ImGuiKey_M="m", ImGuiKey_N="n", ImGuiKey_O="o",
+    ImGuiKey_P="p", ImGuiKey_Q="q", ImGuiKey_R="r", ImGuiKey_S="s", ImGuiKey_T="t",
+    ImGuiKey_U="u", ImGuiKey_V="v", ImGuiKey_W="w", ImGuiKey_X="x", ImGuiKey_Y="y",
+    ImGuiKey_Z="z",
+}
+
 return capi

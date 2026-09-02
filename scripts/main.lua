@@ -4,20 +4,65 @@ local vc = require("virt_composer")
 local char = require("char")
 local ast = require("ast")
 local mexpr = require("mexpr")
+local editor = require("editor")
+local content = require("content")
 
 local fontset = nil
+local content_state = nil
+
+local SAVE_PATH = "math_writer.save"
+
+--[[ Whole-file read via Lua's own io library (enabled per-project in the makefiles -
+VIRT_COMPOSER_ENABLE_LUA_IO - rather than a custom C++ binding, since io.* already does exactly
+this). Returns nil, not an error, when the file doesn't exist yet - the very first run, or one
+after the save was deleted. ]]
+local function read_file(path)
+    local f = io.open(path, "rb")
+    if not f then
+        return nil
+    end
+    local text = f:read("*a")
+    f:close()
+    return text
+end
+
+local function write_file(path, text)
+    local f = io.open(path, "wb")
+    if not f then
+        return
+    end
+    f:write(text)
+    f:close()
+end
 
 function test_init()
     fontset = char.load_font_set()
+    local saved = read_file(SAVE_PATH)
+    -- content.new()'s own single-empty-box default is exactly the right fallback when there's
+    -- nothing to load yet - not a special case.
+    content_state = saved and content.deserialize(saved) or content.new()
 end
 
---[[ TODO: Add imports into code ]]
+function test_draw()
+    content.handle_input(content_state, fontset, {x=20, y=30})
+    content.draw(content_state, fontset, {x=20, y=30})
+end
+
+--[[ Called once, after the main loop exits but before the window actually closes (see main.cpp) -
+writes every box's content back out in the same $$LaTeX$$ format Ctrl+C already uses, so the file
+this produces is exactly what "select all, copy" across every box would have given you. ]]
+function test_shutdown()
+    write_file(SAVE_PATH, content.serialize(content_state))
+end
+
 --[[ TODO: Add the ast into this and make functions that will let us draw the ast ]]
 --[[ TODO: Figure out where this drawing will stay in conjunction with the drawing spaces ]]
 
+-- Kept as a reference for the mexpr_* API, not called by default anymore - see editor.lua for
+-- the live, typeable canvas.
 local increment = 1
 local i = 0
-function test_draw()
+local function demo_draw()
     local ns = ast.new_ns()
     local a = ast.new_var(ns, "a")
     local node = ast.new_eq(ns,
