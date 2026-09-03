@@ -6,10 +6,13 @@ this file is about how to work in it. These rules are specific to this repo and 
 
 ## Editing rules
 
-- **`.cpp` / `.h` / makefiles: suggest, don't edit.** Explain how something should be done; the
-  human implements it themselves. Once it's written, review it for bugs/inconsistencies. This
-  matches the standard working style already in place — restated here so the repo is
+- **`.cpp` / `.h` / makefiles: suggest, don't edit — by default.** Explain how something should be
+  done; the human implements it themselves. Once it's written, review it for bugs/inconsistencies.
+  This matches the standard working style already in place — restated here so the repo is
   self-contained for any session reading it.
+  **Per-instance override:** if explicitly told, for that specific change, to add/write it
+  directly ("add it", "make the change", etc.), do so. This is a one-off override, not a standing
+  permission — it doesn't carry over to the next change; the default reverts right after.
 - **`.lua` files are Claude's domain.** You may write and edit these directly — but ask first
   before making a change, don't just do it unprompted. This is the one carve-out from the rule
   above.

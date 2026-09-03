@@ -92,6 +92,8 @@ namespace charc = char_draw_composer;
 namespace mexpr = math_expr_composer;
 
 VIRT_COMPOSER_REGISTER_TYPE(MEXPR_TYPE_EXPR);
+VIRT_COMPOSER_REGISTER_TYPE(MEXPR_TYPE_WREF);
+VIRT_COMPOSER_REGISTER_TYPE(MEXPR_TYPE_RREF);
 
 using char_t = charc::char_t;
 
@@ -103,6 +105,142 @@ struct anchor_t {
     mexpr_p obj;
     ImVec2  pos;
 };
+
+/*! std::vector<T>, plus a small bounds-checked, 1-indexed convenience API on top. Leading
+underscore on every added method so none of them ever collide with/hide std::vector<T>'s own
+same-shaped members (e.g. `_insert(i, val)` sits right alongside the inherited iterator-based
+`insert()`, no `using` declarations needed to keep both reachable).
+
+Deliberately NOT a vc::object_t - this type is never itself registered with or passed to Lua. The
+owning object_t picks and chooses what to forward (see mexpr_t's anchor_* wrappers below), so only
+exactly what's meant to be Lua-reachable ever is - everything else (push_back, resize, operator[],
+begin()/end(), ...) stays available for plain C++ use, with zero Lua footprint. */
+template <typename T>
+struct lua_vector_t : public std::vector<T> {
+    using std::vector<T>::vector;   // inherit std::vector<T>'s own constructors too
+    using std::vector<T>::operator=; // ...and its assignment operators - NOT inherited by default
+    // (unlike constructors): every derived class implicitly declares its own operator=, which
+    // hides the base ones unless pulled back in here - without this, `subobjs = some_std_vector`
+    // (several mexpr_* factories below do exactly that) fails to compile.
+
+    int _len() const { return (int)this->size(); }
+    bool _is_empty() const { return this->empty(); }
+
+    /*! 1-indexed, bounds-checked read. */
+    T _at(int i) const {
+        if (i < 1 || i > _len())
+            throw vc::except_t(std::format("lua_vector _at: index {} out of range (1..{})",
+                    i, _len()));
+        return (*this)[i - 1];
+    }
+
+    /*! Overwrites the element already at `i` (1-indexed) - i must already be occupied. */
+    void _set(int i, T val) {
+        if (i < 1 || i > _len())
+            throw vc::except_t(std::format("lua_vector _set: index {} out of range (1..{})",
+                    i, _len()));
+        (*this)[i - 1] = std::move(val);
+    }
+
+    /*! Inserts `val` right after position `i` (1-indexed); i=0 inserts before everything. Valid
+    range for i is [0, _len()] - same position insert(begin()+i, val) would use, just int instead of
+    an iterator. */
+    void _insert(int i, T val) {
+        if (i < 0 || i > _len())
+            throw vc::except_t(std::format("lua_vector _insert: index {} out of range (0..{})",
+                    i, _len()));
+        this->insert(this->begin() + i, std::move(val));
+    }
+
+    /*! Erases every element from `i` to `j` inclusive (both 1-indexed). _erase(i, i) removes just
+    one. */
+    void _erase(int i, int j) {
+        if (i < 1 || j < i || j > _len())
+            throw vc::except_t(std::format("lua_vector _erase: range {}..{} out of range (1..{})",
+                    i, j, _len()));
+        this->erase(this->begin() + (i - 1), this->begin() + j);
+    }
+
+    /*! Replaces the inclusive range i..j (1-indexed) with `vals` in one call - _erase(i,j) then
+    insert `vals` at that spot, atomically. j == i-1 means "erase nothing, just insert before i". */
+    void _replace(int i, int j, std::vector<T> vals) {
+        if (i < 1 || i > _len() + 1 || j < i - 1 || j > _len())
+            throw vc::except_t(std::format(
+                    "lua_vector _replace: range {}..{} out of range (1..{})", i, j, _len()));
+        this->erase(this->begin() + (i - 1), this->begin() + j);
+        this->insert(this->begin() + (i - 1), vals.begin(), vals.end());
+    }
+};
+
+/*! wref_t<T> - a weak, Lua-creatable reference to a T (T must derive from vc::object_t). Doesn't
+keep the target alive - get_obj() returns an empty ref_t<T> if the target's already gone, instead of
+a dangling access. One instantiation = one virt_composer object type - VIRT_COMPOSER_REGISTER_TYPE
+hands out ids per named type, not per template instantiation, so each concrete T needs its own
+type_id_static() specialization (see the mexpr_t one right below both templates). */
+template <typename T>
+struct wref_t : public vc::object_t {
+    std::weak_ptr<T> o;
+
+    wref_t(vc::object_t::Private priv) : vc::object_t(priv) {}
+    virtual ~wref_t() {}
+
+    static vc::object_type_e type_id_static(); // specialized per T
+    virtual vc::object_type_e type_id() const override { return type_id_static(); }
+
+    static vc::ref_t<wref_t<T>> create(vc::ref_t<T> target) {
+        auto ret = std::make_shared<wref_t<T>>(vc::object_t::Private{type_id_static()});
+        ret->o = target;
+        return ret;
+    }
+
+    vc::ref_t<T> get_obj() const { return o.lock(); }
+
+    inline virtual std::string to_string() const override {
+        return std::format("wref[{}]: alive={}", (void *)this, !o.expired());
+    }
+};
+
+template <>
+inline vc::object_type_e wref_t<mexpr_t>::type_id_static() { return MEXPR_TYPE_WREF; }
+
+/*! rref_t<T> - the raw-pointer counterpart to wref_t<T>: no weak_ptr control-block overhead, but
+correspondingly no safety - get_obj() is only valid while the target is still guaranteed alive by
+something else (e.g. still reachable from the tree root). Past that it's a plain dangling-pointer
+read, same risk a bare T* always carries - prefer wref_t<T> unless that overhead is shown to
+matter. */
+template <typename T>
+struct rref_t : public vc::object_t {
+    T *o = nullptr;
+
+    rref_t(vc::object_t::Private priv) : vc::object_t(priv) {}
+    virtual ~rref_t() {}
+
+    static vc::object_type_e type_id_static(); // specialized per T
+    virtual vc::object_type_e type_id() const override { return type_id_static(); }
+
+    static vc::ref_t<rref_t<T>> create(vc::ref_t<T> target) {
+        auto ret = std::make_shared<rref_t<T>>(vc::object_t::Private{type_id_static()});
+        ret->o = target.get();
+        return ret;
+    }
+
+    /*! Upgrades the raw pointer back to a real ref_t<T> via object_t::to_related<T>() (itself
+    shared_from_this()-based) - throws if `o` is null, or if the object it points to is no longer
+    owned by any shared_ptr anywhere. Does NOT detect "freed and the memory reused" - still a plain
+    dangling read in that case, same as any bare T*. */
+    vc::ref_t<T> get_obj() const {
+        if (!o)
+            throw vc::except_t("rref_t::get_obj: target is null");
+        return o->template to_related<T>();
+    }
+
+    inline virtual std::string to_string() const override {
+        return std::format("rref[{}]: o={}", (void *)this, (void *)o);
+    }
+};
+
+template <>
+inline vc::object_type_e rref_t<mexpr_t>::type_id_static() { return MEXPR_TYPE_RREF; }
 
 /*! How it works: If you where to draw this object as-is you would draw it at the baseline.
  * So let's take the character 'g', it's bounding box is slightly bellow the baseline and also
@@ -121,8 +259,11 @@ struct mexpr_t : public vc::object_t {
     ImVec2 tl;                      /*!< Top Left */
     ImVec2 br;                      /*!< Bottom Right */
 
-    /*! The subobjects of this object and their relative positions are stored in this */
-    std::vector<anchor_t> subobjs;
+    /*! The subobjects of this object and their relative positions are stored in this - a
+    lua_vector_t (not a plain std::vector) so anchor_set()/anchor_insert()/anchor_erase() below can
+    mutate it directly, in place, instead of a caller rebuilding the whole node to change one
+    child. */
+    lua_vector_t<anchor_t> subobjs;
 
     uint32_t color = 0xff'eeeeee;   /*!< Optional Color of the object  */
 
@@ -131,7 +272,7 @@ struct mexpr_t : public vc::object_t {
                                          it's baseline when drawn at (0, 0) */
 
     float line_width = 1.0f;        /*!< Optional, if type is line */
-    std::vector<ImVec2> line_strip; /*!< Optional, if type is MATHD_TYPE_LINE_STRIP */
+    lua_vector_t<ImVec2> line_strip; /*!< Optional, if type is MATHD_TYPE_LINE_STRIP */
 
     /*! Free slot for Lua to stash arbitrary data on this node (e.g. a back-reference to whichever
     row item this leaf corresponds to) - virt_composer/math_expr_composer never read or write this
@@ -148,6 +289,7 @@ struct mexpr_t : public vc::object_t {
     static vc::ref_t<mexpr_t> create(mexpr_e type) {
         auto ret = std::make_shared<mexpr_t>(vc::object_t::Private{type_id_static()});
         ret->type = type;
+        ret->u = vc::lua_object_t::create(); // always a valid receiver for u:capture()/u:push()
         return ret;
     }
 
@@ -155,30 +297,21 @@ struct mexpr_t : public vc::object_t {
         return std::format("mexpr::mexpr_t[{}] type: {}", (void *)this, (int)type);
     }
 
-    /*! `subobjs.size()` - how many children this node has (0 for a leaf: SYMBOL/EMPTY_BOX/
-    LINE_STRIP). */
-    int anchor_len() const { return (int)subobjs.size(); }
-
-    /*! One child and its position, 1-indexed (matches Lua array convention, not subobjs' own
-    0-indexed std::vector storage) - the same (obj, pos) pair mexpr_draw_rec adds to its running
-    `pos` while recursing, so replaying this from Lua reproduces the exact same placement.
-    Lua-side: comes back as a single 2-element table {obj, pos}, not two return values - that's
-    how virt_composer's generic std::tuple returner (luaw_returner_t<std::tuple<...>>) works. */
     std::tuple<mexpr_p, ImVec2> anchor_at(int i) const {
-        if (i < 1 || i > (int)subobjs.size())
-            throw vc::except_t(std::format("mexpr anchor_at: index {} out of range (1..{})",
-                    i, subobjs.size()));
-        return {subobjs[i-1].obj, subobjs[i-1].pos};
+        auto a = subobjs._at(i); // bounds-checked, throws vc::except_t itself on a bad index
+        return {a.obj, a.pos};
     }
 
-    int line_strip_len() const { return (int)line_strip.size(); }
+    int anchor_len() const { return subobjs._len(); }
+    void anchor_set(int i, mexpr_p obj, ImVec2 pos) { subobjs._set(i, anchor_t{obj, pos}); }
+    void anchor_insert(int i, mexpr_p obj, ImVec2 pos) { subobjs._insert(i, anchor_t{obj, pos}); }
+    void anchor_erase(int i, int j) { subobjs._erase(i, j); }
 
-    ImVec2 line_strip_at(int i) const {
-        if (i < 1 || i > (int)line_strip.size())
-            throw vc::except_t(std::format("mexpr line_strip_at: index {} out of range (1..{})",
-                    i, line_strip.size()));
-        return line_strip[i-1];
-    }
+    int line_strip_len() const { return line_strip._len(); }
+    ImVec2 line_strip_at(int i) const { return line_strip._at(i); }
+    void line_strip_set(int i, ImVec2 p) { line_strip._set(i, p); }
+    void line_strip_insert(int i, ImVec2 p) { line_strip._insert(i, p); }
+    void line_strip_erase(int i, int j) { line_strip._erase(i, j); }
 };
 
 } /* math_expr_composer */
@@ -224,10 +357,23 @@ inline int register_meta(vc::virt_state_t *vs) {
     VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, symb_off);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_len);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_at, int);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_set, int, mexpr_p, ImVec2);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_insert, int, mexpr_p, ImVec2);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_erase, int, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_len);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_at, int);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_set, int, ImVec2);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_insert, int, ImVec2);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_erase, int, int);
+
+    VC_REGISTER_MEMBER_FUNCTION(vs, wref_t<mexpr_t>, get_obj);
+    VC_REGISTER_MEMBER_FUNCTION(vs, rref_t<mexpr_t>, get_obj);
 
     std::vector<luaL_Reg> mexpr_tab_funcs = {
+        { "wref_mexpr", vc::luaw_function_wrapper<wref_t<mexpr_t>::create, mexpr_p>
+        },
+        { "rref_mexpr", vc::luaw_function_wrapper<rref_t<mexpr_t>::create, mexpr_p>
+        },
         { "mexpr_draw", vc::luaw_function_wrapper<mexpr_draw,
                 vc::ref_t<charc::fontset_t>, ImVec2, mexpr_p, bool>
         },
