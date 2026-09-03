@@ -89,7 +89,7 @@ local function create_number_mexpr(fontset, number_str, size)
     else
         local result = digits[1]
         for i = 2, #digits do
-            result = vc.mexpr_merge_h(fontset, result, digits[i])
+            result = vc.mexpr_merge_h(fontset, {result, digits[i]})
         end
         return result
     end
@@ -139,7 +139,7 @@ function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
             -- Merge all symbols horizontally
             local result = symbols[1]
             for i = 2, #symbols do
-                result = vc.mexpr_merge_h(fontset, result, symbols[i])
+                result = vc.mexpr_merge_h(fontset, {result, symbols[i]})
             end
             return result
         end
@@ -335,7 +335,7 @@ function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
                 else
                     local result = parts[1]
                     for i = 2, #parts do
-                        result = vc.mexpr_merge_h(fontset, result, parts[i])
+                        result = vc.mexpr_merge_h(fontset, {result, parts[i]})
                     end
                     return result
                 end
@@ -356,7 +356,7 @@ function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
             else
                 local result = elements[1]
                 for i = 2, #elements do
-                    result = vc.mexpr_merge_v(fontset, result, elements[i])
+                    result = vc.mexpr_merge_v(fontset, {result, elements[i]})
                 end
                 -- Wrap in parentheses
                 return vc.mexpr_bracket(fontset, result, char.round_bracket(sz))
@@ -390,7 +390,7 @@ function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
                     if #row_elements > 0 then
                         local row = row_elements[1]
                         for j = 2, #row_elements do
-                            row = vc.mexpr_merge_h(fontset, row, row_elements[j])
+                            row = vc.mexpr_merge_h(fontset, {row, row_elements[j]})
                         end
                         table.insert(matrix_rows, row)
                     end
@@ -404,7 +404,7 @@ function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
                 else
                     local result = matrix_rows[1]
                     for i = 2, #matrix_rows do
-                        result = vc.mexpr_merge_v(fontset, result, matrix_rows[i])
+                        result = vc.mexpr_merge_v(fontset, {result, matrix_rows[i]})
                     end
                     -- Wrap in brackets
                     return vc.mexpr_bracket(fontset, result, char.round_bracket(sz))

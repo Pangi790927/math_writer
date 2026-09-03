@@ -667,7 +667,7 @@ local function build_row(fs, sz, row, positions)
     positions[row][0] = {x = 0, y = 0, sz = sz}
 
     local function emit(item_mexpr)
-        merged = merged and vc.mexpr_merge_h(fs, merged, item_mexpr) or item_mexpr
+        merged = merged and vc.mexpr_merge_h(fs, {merged, item_mexpr}) or item_mexpr
         -- x is the real merged tree's own outer br.x, read back from mexpr_get_bb(merged) AFTER
         -- building it - not predicted by hand from item_mexpr's own bounding box (mexpr_merge_h's
         -- right-hand anchor position alone, l->br.x, is only where item_mexpr STARTS, not where

@@ -280,8 +280,22 @@ struct mexpr_t : public vc::object_t {
     value in, not a bare assignment - see vc::lua_object_t's doc comment. */
     vc::ref_t<vc::lua_object_t> u;
 
+    /*! Non-owning, raw back-pointer to whichever compound node's subobjs this node is currently a
+    child of - set by whichever mexpr_* factory composes this node into another (mexpr_merge_h/
+    mexpr_merge_v so far - not yet the rest: mexpr_supsub/mexpr_frac/mexpr_bracket/mexpr_binexpr/
+    mexpr_unarexpr/mexpr_bigop don't set it). Deliberately a raw pointer, not a wref_t/weak_ptr - no
+    control-block overhead - so it dangles if this node's actual parent is destroyed while this node
+    is kept alive by something else; nothing here protects against that, same as any raw pointer.
+    Exposed read-only to Lua via get_parent() below (returns nil if null), not as a direct member -
+    keeps the raw pointer itself out of luaw_param_t/luaw_returner_t. nullptr until/unless something
+    composes this node into a parent. */
+    mexpr_t *parent = nullptr;
+
     mexpr_t(vc::object_t::Private priv) : vc::object_t(priv) {}
-    virtual ~mexpr_t() {}
+    virtual ~mexpr_t() {
+        for (auto &anch : subobjs)
+            anch.obj->parent = nullptr;
+    }
 
     static vc::object_type_e type_id_static() { return MEXPR_TYPE_EXPR; }
     virtual vc::object_type_e type_id() const override { return MEXPR_TYPE_EXPR; }
@@ -303,9 +317,28 @@ struct mexpr_t : public vc::object_t {
     }
 
     int anchor_len() const { return subobjs._len(); }
-    void anchor_set(int i, mexpr_p obj, ImVec2 pos) { subobjs._set(i, anchor_t{obj, pos}); }
-    void anchor_insert(int i, mexpr_p obj, ImVec2 pos) { subobjs._insert(i, anchor_t{obj, pos}); }
+
+    void anchor_set(int i, mexpr_p obj, ImVec2 pos) {
+        if (!obj)
+            throw vc::except_t("anchor_set: obj is null");
+        subobjs._set(i, anchor_t{obj, pos});
+        obj->parent = this;
+    }
+
+    void anchor_insert(int i, mexpr_p obj, ImVec2 pos) {
+        if (!obj)
+            throw vc::except_t("anchor_insert: obj is null");
+        subobjs._insert(i, anchor_t{obj, pos});
+        obj->parent = this;
+    }
+
     void anchor_erase(int i, int j) { subobjs._erase(i, j); }
+
+    mexpr_p get_parent() const {
+        if (!parent)
+            return nullptr;
+        return parent->to_related<mexpr_t>();
+    }
 
     int line_strip_len() const { return line_strip._len(); }
     ImVec2 line_strip_at(int i) const { return line_strip._at(i); }
@@ -337,8 +370,8 @@ inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs, mexpr_p base, mexpr_
 inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket);
 inline mexpr_p mexpr_unarexpr(vc::ref_t<charc::fontset_t> fs, char_t op, mexpr_p b);
 inline mexpr_p mexpr_binexpr(vc::ref_t<charc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b);
-inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, mexpr_p l, mexpr_p r);
-inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, mexpr_p u, mexpr_p d);
+inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes);
+inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes);
 
 /* TODO: matrix stuff */
 
@@ -360,6 +393,7 @@ inline int register_meta(vc::virt_state_t *vs) {
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_set, int, mexpr_p, ImVec2);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_insert, int, mexpr_p, ImVec2);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_erase, int, int);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, get_parent);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_len);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_at, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_set, int, ImVec2);
@@ -402,10 +436,10 @@ inline int register_meta(vc::virt_state_t *vs) {
                 vc::ref_t<charc::fontset_t>, mexpr_p, char_t, mexpr_p>
         },
         { "mexpr_merge_h", vc::luaw_function_wrapper<mexpr_merge_h,
-                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p>
+                vc::ref_t<charc::fontset_t>, std::vector<mexpr_p>>
         },
         { "mexpr_merge_v", vc::luaw_function_wrapper<mexpr_merge_v,
-                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p>
+                vc::ref_t<charc::fontset_t>, std::vector<mexpr_p>>
         },
         { "mexpr_get_bb", vc::luaw_function_wrapper<mexpr_get_bb, mexpr_p>
         },
@@ -590,6 +624,8 @@ inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs,
         { .obj = bellow, .pos = ImVec2(-sz_bellow.x/2. + sz_op.x/2., op->br.y - bellow->tl.y + dst) },
         { .obj = right,  .pos = ImVec2(op->br.x, 0) },
     };
+    for (auto &anch : ret->subobjs)
+        anch.obj->parent = ret.get();
 
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
     return ret;
@@ -626,6 +662,8 @@ inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs,
         { .obj = bellow,  .pos = ImVec2((sz_frac_x - sz_bellow.x)/2., -bellow->tl.y + dst) },
         { .obj = dl,      .pos = ImVec2(0, 0) }
     };
+    for (auto &anch : ret->subobjs)
+        anch.obj->parent = ret.get();
 
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
     return ret;
@@ -682,6 +720,9 @@ inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs,
         ret->subobjs.push_back(anchor_t{ .obj = sub, .pos = ImVec2(base->br.x, yoff) });
     }
 
+    for (auto &anch : ret->subobjs)
+        anch.obj->parent = ret.get();
+
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
     return ret;
 }
@@ -695,6 +736,8 @@ inline mexpr_p mexpr_unarexpr(vc::ref_t<charc::fontset_t> fs, char_t op, mexpr_p
         { .obj = op_sym, .pos = ImVec2(0, 0) },
         { .obj = a,      .pos = ImVec2(dst + op_sym->br.x, 0) },
     };
+    for (auto &anch : ret->subobjs)
+        anch.obj->parent = ret.get();
 
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
     return ret;
@@ -711,6 +754,8 @@ inline mexpr_p mexpr_binexpr(vc::ref_t<charc::fontset_t> fs, mexpr_p a, char_t o
         { .obj = op_sym, .pos = ImVec2(dst + a->br.x , 0) },
         { .obj = b,      .pos = ImVec2(dst + a->br.x + dst + op_sym->br.x, 0) },
     };
+    for (auto &anch : ret->subobjs)
+        anch.obj->parent = ret.get();
 
     auto [tl, br] = calc_bb(ret->subobjs);
     ret->tl = tl;
@@ -718,28 +763,47 @@ inline mexpr_p mexpr_binexpr(vc::ref_t<charc::fontset_t> fs, mexpr_p a, char_t o
     return ret;
 }
 
-inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, mexpr_p l, mexpr_p r) {
-    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+/*! Merges `nodes` left to right, each one placed right after the previous one's own br.x (a
+cumulative running advance, the N-way generalization of the old 2-arg "r placed at l->br.x"
+positioning) - sets each node's own ->parent to the returned node as it's placed, the same way the
+old 2-arg version never did (parent was only added after this function already existed). Throws if
+`nodes` is empty - nothing sensible to merge. */
+inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes) {
+    if (nodes.empty())
+        throw vc::except_t("can't use mexpr_merge_h without at least one node");
 
-    ret->subobjs = std::vector<anchor_t> {
-        { .obj = l, .pos = ImVec2(0, 0) },
-        { .obj = r, .pos = ImVec2(l->br.x, 0) },
-    };
+    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+    ret->subobjs.reserve(nodes.size());
+
+    float x = 0;
+    for (auto &n : nodes) {
+        ret->subobjs.push_back({ .obj = n, .pos = ImVec2(x, 0) });
+        n->parent = ret.get();
+        x += n->br.x;
+    }
 
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
     return ret;
 }
 
-/* TODO: of interest about this one is the fact that to build a matrix, column vector or as such from
-it we may want to either balance out the elements or create a new function accepting a vector. This
-problem doesn't seem to appear inside the hmerge */
-inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, mexpr_p u, mexpr_p d) {
-    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+/*! Stacks `nodes` top to bottom - each one placed so its own top edge sits exactly at the previous
+node's own bottom edge (the N-way generalization of the old 2-arg version's "u's bottom meets d's
+top at y=0" positioning), and sets each node's own ->parent to the returned node as it's placed.
+Throws if `nodes` is empty. */
+inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes) {
+    if (nodes.empty())
+        throw vc::except_t("can't use mexpr_merge_v without at least one node");
 
-    ret->subobjs = std::vector<anchor_t> {
-        { .obj = u, .pos = ImVec2(0, -u->br.y) },
-        { .obj = d, .pos = ImVec2(0, -d->tl.y) },
-    };
+    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+    ret->subobjs.reserve(nodes.size());
+
+    float y = 0;
+    for (size_t i = 0; i < nodes.size(); i++) {
+        mexpr_p n = nodes[i];
+        y = (i == 0) ? -n->br.y : y + nodes[i - 1]->br.y - n->tl.y;
+        ret->subobjs.push_back({ .obj = n, .pos = ImVec2(0, y) });
+        n->parent = ret.get();
+    }
 
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
     return ret;
@@ -858,6 +922,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
             lines_l->tl = calc_tl(lines_l->line_strip);
             lines_l->br = calc_br(lines_l->line_strip);
             lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+            lines_l->parent = lb.get();
 
             auto lines_r = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
             auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
@@ -872,6 +937,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
             lines_r->tl = calc_tl(lines_r->line_strip);
             lines_r->br = calc_br(lines_r->line_strip);
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+            lines_r->parent = rb.get();
             std::tie(lb->tl, lb->br) = calc_bb(lb->subobjs);
             std::tie(rb->tl, rb->br) = calc_bb(rb->subobjs);
         }
@@ -898,6 +964,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
             lines_l->tl = calc_tl(lines_l->line_strip);
             lines_l->br = calc_br(lines_l->line_strip);
             lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+            lines_l->parent = lb.get();
 
             auto lines_r = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
             auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
@@ -920,6 +987,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
             lines_r->tl = calc_tl(lines_r->line_strip);
             lines_r->br = calc_br(lines_r->line_strip);
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+            lines_r->parent = rb.get();
             std::tie(lb->tl, lb->br) = calc_bb(lb->subobjs);
             std::tie(rb->tl, rb->br) = calc_bb(rb->subobjs);
         }
@@ -963,6 +1031,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
             lines_l->tl = calc_tl(lines_l->line_strip);
             lines_l->br = calc_br(lines_l->line_strip);
             lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
+            lines_l->parent = lb.get();
 
             auto [d_min, d_max] = fs->char_get_bb(bracket.tr);
             auto [e_min, e_max] = fs->char_get_bb(bracket.cr);
@@ -1001,6 +1070,7 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
             lines_r->tl = calc_tl(lines_r->line_strip);
             lines_r->br = calc_br(lines_r->line_strip);
             rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
+            lines_r->parent = rb.get();
             std::tie(lb->tl, lb->br) = calc_bb(lb->subobjs);
             std::tie(rb->tl, rb->br) = calc_bb(rb->subobjs);
         }
@@ -1018,6 +1088,8 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
         {expr, ImVec2(lb->br.x - expr->tl.x, 0)},
         {rb,   ImVec2(lb->br.x - expr->tl.x + expr->br.x, h)},
     };
+    for (auto &anch : ret->subobjs)
+        anch.obj->parent = ret.get();
 
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
     return ret;
