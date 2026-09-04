@@ -383,7 +383,8 @@ inline mexpr_bb_t mexpr_get_bb(mexpr_p m) {
 
 /* TODO: instead of fontset_t, create a context_t that will be used in all the drawing functions.
 This context should have the fontset as well as required distancers and sizes */
-inline void mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb);
+inline float mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
+        float edge_x);
 inline mexpr_p mexpr_empty(vc::ref_t<charc::fontset_t> fs, float x, float y, float above_bl);
 inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_char);
 inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs, mexpr_p right, mexpr_p above,
@@ -438,7 +439,7 @@ inline int register_meta(vc::virt_state_t *vs) {
         { "rref_mexpr", vc::luaw_function_wrapper<rref_t<mexpr_t>::create, mexpr_p>
         },
         { "mexpr_draw", vc::luaw_function_wrapper<mexpr_draw,
-                vc::ref_t<charc::fontset_t>, ImVec2, mexpr_p, bool>
+                vc::ref_t<charc::fontset_t>, ImVec2, mexpr_p, bool, float>
         },
         { "mexpr_empty", vc::luaw_function_wrapper<mexpr_empty,
                 vc::ref_t<charc::fontset_t>, float, float, float>
@@ -503,14 +504,41 @@ as such, we get the boest of both worlds */
 inline void mexpr_draw_rec(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
         draw_info_t *di);
 
-inline void mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb) {
-    auto *io = &ImGui::GetIO();
+/*! `edge_x` is an ABSOLUTE x (same coordinate space as `pos`, NOT a width) - content past it wraps
+back to `pos.x` and drops down by one row (mexpr_draw_rec's own draw_info_t/wrap loop, already
+there, just never exposed a way to CONTROL where that edge sits before now: this used to hardcode
+ImGui::GetIO().DisplaySize.x, the whole OS window's own right edge, regardless of what column/box
+the caller actually has available). Pass +infinity (Lua: math.huge) for the old "never wraps"
+behavior - the wrap loop's own `>` comparison against +inf is never true, so this is a real no-op,
+not a special case.
+
+@return the TOTAL height this draw actually used - root's own unwrapped height (m->br.y - m->tl.y)
+times (1 + however many times content actually wrapped). root's own tl/br (mexpr_get_bb) only ever
+describes the UNWRAPPED extent, so a caller sizing a box/cell around possibly-wrapped content
+(content.lua's own box-height growth, 2026-09-05) needs this instead - reported live: "increase the
+cell downwards when the insides of a formula increase so much."
+
+Wrap count is computed analytically (root's own total width vs. the usable column width, edge_x -
+pos.x) rather than by threading a counter through mexpr_draw_rec's own recursion: every step wraps
+by the exact same amount (draw_info_t's own `skipy`), so the rightmost/last-drawn leaf - the one
+whose own wrap count is highest, since content flows strictly left-to-right - wraps exactly
+floor(total_width / usable_width) times, the same division done here. usable_width <= 0 (a
+degenerate/misconfigured edge_x) falls back to 0 wraps rather than dividing by a non-positive
+number. */
+inline float mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
+        float edge_x) {
+    float skipy = m->br.y - m->tl.y;
     draw_info_t di {
         .startx = pos.x,
-        .skipy = m->br.y - m->tl.y,
-        .edge = io->DisplaySize.x,
+        .skipy = skipy,
+        .edge = edge_x,
     };
     mexpr_draw_rec(fs, pos, m, draw_bb, &di);
+
+    float usable_w = edge_x - pos.x;
+    float total_w = m->br.x - m->tl.x;
+    int wraps = (usable_w > 0) ? (int)std::floor(std::max(0.0f, total_w - 1e-3f) / usable_w) : 0;
+    return skipy * (wraps + 1);
 }
 
 inline void mexpr_draw_rec(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,

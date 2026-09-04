@@ -72,9 +72,15 @@ def run(cmd, **kwargs):
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
-def compile_one(src: Path, obj: Path) -> bool:
-    """Compiles src -> obj if obj is missing or older than src. Returns False on failure."""
-    if obj.exists() and obj.stat().st_mtime >= src.stat().st_mtime:
+def compile_one(src: Path, obj: Path, force: bool = False) -> bool:
+    """Compiles src -> obj if obj is missing, older than src, or force is set. Returns False on
+    failure. mtime-vs-src is the only staleness check - it has no idea about headers src #includes
+    (math_expr_composer.h, char_draw_composer.h, ...), so editing ONLY a header a .cpp depends on
+    never looks stale by this check alone - `--rebuild` (force=True here) is the only way to force
+    a real recompile in that case. Found 2026-09-04: math_expr_composer.h picked up a real change,
+    test_harness.cpp itself didn't, so its .obj stayed silently stale even under --rebuild, since
+    build_harness() computed `force` but never actually passed it down into this function."""
+    if not force and obj.exists() and obj.stat().st_mtime >= src.stat().st_mtime:
         return True
     print(f"  compiling {src.name} ...")
     cmd = ["cl", "/c", *CXX_FLAGS, *INCLUDES, str(src), f"/Fo{obj}"]
@@ -99,7 +105,7 @@ def build_harness(force: bool) -> bool:
             return False
         obj = BUILD_DIR / f"{name}.obj"
         was_up_to_date = obj.exists() and obj.stat().st_mtime >= src.stat().st_mtime and not force
-        if not compile_one(src, obj):
+        if not compile_one(src, obj, force=force):
             return False
         if not was_up_to_date:
             any_rebuilt = True

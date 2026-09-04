@@ -39,7 +39,13 @@ end
 
 function run_test()
     local fs = char.load_font_set()
-    local SZ = 10
+    -- 12 (36pt), not 10 - char.lua's m_font_sizes table gained two new levels between the old 72
+    -- and 42 (2026-09-04's Ctrl+MouseWheel zoom smoothing), pushing 36pt from index 10 to 12. This
+    -- test's own probe geometry (Part 4 especially) depends on base/sup+1 having a decently wide
+    -- gap (36pt/24pt, 1.5x) to land its "empty space, not inside either glyph" points correctly -
+    -- index 10/11 now lands on the newly-inserted, deliberately CLOSER 50pt/42pt pair (1.19x)
+    -- instead, too narrow a margin for those same probe coordinates.
+    local SZ = 12
 
     -- mformula_new.hit_test()'s public entry point now expects `click` relative to draw()'s own
     -- `pos` (pre-+baseline_correction(sz)) - see its 2026-09-04 fix comment. raw_box() above stays

@@ -10,6 +10,7 @@ exists so far, but content.add_box is the seam where other kinds would plug in l
 local vc = require("virt_composer")
 local editor = require("editor")
 local char = require("char")
+local mexpru = require("mexpru")
 
 local content = {}
 
@@ -19,8 +20,16 @@ local BOX_GAP     = 24   -- vertical gap between boxes
 local BOX_PADDING = 12
 local BOX_WIDTH   = 760
 local NODE_RADIUS = 6
-local FONT_SZ      = 10
+-- state.font_size (below, new_shell()) starts here - a char.lua m_font_sizes table index (1 =
+-- biggest/360pt, 18 = smallest/8pt - see that table's own comment), not a pixel size. mexpru's own
+-- DEFAULT_SIZE (36pt) - the same nominal size this used to be a plain constant at before Ctrl+
+-- MouseWheel zoom (2026-09-04) made it live, adjustable state instead - single source of truth
+-- since editor.lua's own brand-new-formula construction (Ctrl+M/paste) needs the exact same value
+-- (mexpru.DEFAULT_SIZE's own comment: a fixed LOGICAL baseline, not this live state.font_size).
+local DEFAULT_FONT_SIZE = mexpru.DEFAULT_SIZE
+local MIN_FONT_SIZE, MAX_FONT_SIZE = 1, mexpru.MAX_SIZE_INDEX -- char.lua's own table bounds
 local CLOSE_SIZE  = 16   -- close ("x") button, sits just above each box's top-right corner
+local WIREFRAME_SIZE = 16 -- wireframe-toggle button, sits just left of the close button
 local RAIL_CLICK_RADIUS = 16 -- how close to the rail line counts as "clicking the rail"
 
 local RAIL_COLOR         = 0xff777777
@@ -29,6 +38,8 @@ local BOX_ACTIVE_COLOR   = 0xffffffff
 local BOX_FILL_COLOR     = 0x33ffffff
 local CLOSE_COLOR        = 0xffaaaaaa
 local HOVER_COLOR        = 0xff66ff66
+local WIREFRAME_OFF_COLOR = 0xff888888
+local WIREFRAME_ON_COLOR  = 0xff66ccff
 
 local SCROLL_SPEED = 44 -- pixels per wheel notch
 
@@ -47,6 +58,13 @@ local function new_shell()
         last_rail_x = nil,
         show_help = false,     -- F1 toggles a full-screen keybinding panel in place of the boxes
         show_alt_help = false, -- F2 toggles the Alt+letter/Alt+Shift+letter glyph reference
+        show_wireframe = false, -- toggled by the small button next to each box's close ("x") button -
+                                 -- global, not per-box: whether mexpr drawing shows its debug bounding
+                                 -- boxes (vc.mexpr_draw's own draw_bb) everywhere, off by default so
+                                 -- it's only on when actually visually debugging (2026-09-04).
+        font_size = DEFAULT_FONT_SIZE, -- Ctrl+MouseWheel (handle_input()) adjusts this - global, same
+                                 -- reasoning as show_wireframe just above. A char.lua size-table
+                                 -- index, not a pixel size (DEFAULT_FONT_SIZE's own comment).
         scroll_y = 0,          -- how far the whole stack is scrolled up (0 = pinned to the top)
         last_total_height = 0, -- filled by draw(), used to clamp scroll_y in handle_input()
     }
@@ -111,7 +129,8 @@ has for content it can't make sense of - whatever boxes parsed cleanly before th
 rather than losing everything. Always ends up with at least one box, even from an empty/unreadable
 string, so the caller never has to special-case "the file had nothing usable in it". `fontset` is
 only needed for editor.from_text()'s benefit (building any $$...$$ formula embeds a box's saved
-text contains - this file's own internal FONT_SZ covers the size). ]]
+text contains - always at mexpru.DEFAULT_SIZE, the same fixed LOGICAL baseline every other new
+formula gets, regardless of state.font_size - see mexpru.DEFAULT_SIZE's own comment). ]]
 function content.deserialize(text, fontset)
     local state = new_shell()
     local pos = 1
@@ -123,7 +142,7 @@ function content.deserialize(text, fontset)
         end
         local box_text = text:sub(nl + 1, nl + len)
         local ed = editor.new()
-        editor.from_text(ed, box_text, fontset, FONT_SZ)
+        editor.from_text(ed, box_text, fontset)
         table.insert(state.boxes, {editor = ed})
         pos = nl + 1 + len
     end
@@ -263,12 +282,37 @@ function content.handle_input(state, fontset, pos)
         return
     end
 
+    -- Mouse wheel scrolls the whole stack, UNLESS Ctrl is held, in which case it zooms instead
+    -- (state.font_size - a char.lua size-table INDEX, not a pixel size, see DEFAULT_FONT_SIZE's own
+    -- comment) - global, same as show_wireframe, not tied to whichever box the mouse happens to be
+    -- over (2026-09-04). One size-table step per wheel notch, not scaled by SCROLL_SPEED - these are
+    -- discrete levels, not pixels, and a raw multi-unit wheel event (e.g. a fast trackpad flick)
+    -- would otherwise jump several steps at once. Positive wheel (away from the user, the usual
+    -- "scroll up"/"zoom in" gesture) should make text BIGGER, i.e. walk the table towards index 1 -
+    -- opposite sign from the scroll case just below, where positive wheel decreases scroll_y.
+    local wheel = vc.ImGui_GetMouseWheel()
+    if wheel ~= 0 and ctrl_down then
+        local step = wheel > 0 and -1 or 1
+        local new_size = math.max(MIN_FONT_SIZE, math.min(MAX_FONT_SIZE, state.font_size + step))
+        if new_size ~= state.font_size then
+            state.font_size = new_size
+            -- mexpru.set_zoom() first (mexpru.physical_sz()'s own comment: one global value the
+            -- whole app reads) - THEN rescale every box's every formula so already-typed content
+            -- visually catches up too, not just brand-new typing (editor.rescale()'s own comment).
+            -- Global, not just the active box - confirmed 2026-09-04.
+            mexpru.set_zoom(state.font_size - DEFAULT_FONT_SIZE)
+            for _, box in ipairs(state.boxes) do
+                editor.rescale(box.editor, fontset)
+            end
+        end
+        return
+    end
+
     -- Mouse wheel scrolls the whole stack. Clamped against LAST frame's own total height (this
     -- frame's real one isn't known until draw() runs) and the CURRENT viewport - a frame of lag
     -- on the clamp bound itself is imperceptible, and self-corrects continuously every frame
     -- scrolling actually happens, so it never drifts. Positive wheel (away from the user) is the
     -- usual "scroll up" gesture - it should reveal content ABOVE, i.e. decrease scroll_y.
-    local wheel = vc.ImGui_GetMouseWheel()
     if wheel ~= 0 then
         local viewport_h = math.max(0, vc.ImGui_GetDisplaySize().y - pos.y)
         local max_scroll = math.max(0, state.last_total_height - viewport_h)
@@ -283,6 +327,11 @@ function content.handle_input(state, fontset, pos)
         for i, r in ipairs(state.last_layout) do
             if r.close and point_in_rect(mpos.x, mpos.y, r.close.x, r.close.y, r.close.w, r.close.h) then
                 content.remove_box(state, i)
+                return
+            end
+            if r.wireframe_btn and point_in_rect(mpos.x, mpos.y,
+                    r.wireframe_btn.x, r.wireframe_btn.y, r.wireframe_btn.w, r.wireframe_btn.h) then
+                state.show_wireframe = not state.show_wireframe
                 return
             end
         end
@@ -307,7 +356,7 @@ function content.handle_input(state, fontset, pos)
 
     local active = state.active_index and state.boxes[state.active_index]
     if active and not activating then
-        editor.handle_input(active.editor, fontset, FONT_SZ)
+        editor.handle_input(active.editor, fontset, state.font_size)
     end
 
     -- Whenever the active box's own caret actually MOVED this frame - typing/Enter growing the
@@ -408,8 +457,9 @@ for c = string.byte("a"), string.byte("z") do
     ALT_LETTERS[#ALT_LETTERS + 1] = string.char(c)
 end
 
-local ALT_GLYPH_SZ = 10 -- twice the size of the 18pt this used to be (index 13) - same size real
-                         -- formula content itself renders at (matches FONT_SZ)
+local ALT_GLYPH_SZ = DEFAULT_FONT_SIZE -- matches the default box content size (36pt) - independent
+                         -- of any live Ctrl+MouseWheel zoom (state.font_size), this panel's own
+                         -- fixed reference size regardless of what a box is currently zoomed to.
 
 --[[ Real line-height/baseline metrics at font size `sz`, same G/g-measuring trick editor.lua's
 own get_metrics() uses (see that file's comment) - char_draw()'s `pos` is a BASELINE, not a
@@ -516,7 +566,15 @@ function content.draw(state, fontset, pos)
     local y = content_start_y
     local rail_x = pos.x + RAIL_OFFSET
     local box_x = pos.x + BOX_LEFT
-    local content_w = BOX_WIDTH - 2 * BOX_PADDING
+    -- How far right a box is allowed to grow (below) to fit oversized content (a zoomed-in formula
+    -- especially - reported live, 2026-09-05: "zooming makes it exit the box", since the border
+    -- used to be a flat BOX_WIDTH that never grew to match) - up to the display's own right edge,
+    -- kept RIGHT_MARGIN short of actually touching it (deliberately smaller than the box's own
+    -- left-side margin back to the rail, BOX_LEFT - RAIL_OFFSET, so growth never reads as more
+    -- cramped on the right than the fixed rail gap already is on the left).
+    local RIGHT_MARGIN = 24
+    local max_box_w = display_size
+            and math.max(BOX_WIDTH, display_size.x - box_x - RIGHT_MARGIN) or BOX_WIDTH
 
     for i, box in ipairs(state.boxes) do
         local box_y = y
@@ -524,6 +582,12 @@ function content.draw(state, fontset, pos)
 
         local cached = state.last_layout and state.last_layout[i]
         local cached_h = cached and cached.h
+        -- This box's own width, from LAST frame's actual measured need (editor.draw()'s own 2nd
+        -- return value - see its comment) - same one-frame-lag idiom cached_h/out_of_view already
+        -- use below, not a hack specific to this. Floors at BOX_WIDTH, caps at max_box_w (above) -
+        -- a box never shrinks below the plain default, and never grows past available screen room.
+        local box_w = math.max(BOX_WIDTH, math.min(max_box_w, (cached and cached.needed_w or 0) + 2 * BOX_PADDING))
+        local content_w = box_w - 2 * BOX_PADDING
         -- A box entirely outside the viewport, that also isn't the active one (so its content
         -- can't be changing without a click that requires it to be visible first), doesn't need
         -- re-measuring/re-drawing this frame - the glyph work in editor.draw() is the expensive
@@ -535,16 +599,17 @@ function content.draw(state, fontset, pos)
                 and (box_y + cached_h < viewport_top or box_y > viewport_bottom)
 
         if is_active or not out_of_view then
-            local content_h = editor.draw(box.editor, fontset,
-                    {x=box_x + BOX_PADDING, y=box_y + BOX_PADDING}, FONT_SZ, content_w, is_active)
+            local content_h, needed_w = editor.draw(box.editor, fontset,
+                    {x=box_x + BOX_PADDING, y=box_y + BOX_PADDING}, state.font_size, content_w, is_active,
+                    state.show_wireframe)
             local box_h = math.max((content_h or 0) + 2 * BOX_PADDING, 50)
 
             -- Fill/border drawn after the text (translucent, same trick as the selection
             -- highlight - stays legible on top) so this frame's actual content height is used,
             -- not last frame's.
-            vc.ImGui_AddRectFilled({x=box_x, y=box_y}, {x=box_x + BOX_WIDTH, y=box_y + box_h},
+            vc.ImGui_AddRectFilled({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
                     BOX_FILL_COLOR, 6)
-            vc.ImGui_AddRect({x=box_x, y=box_y}, {x=box_x + BOX_WIDTH, y=box_y + box_h},
+            vc.ImGui_AddRect({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
                     is_active and BOX_ACTIVE_COLOR or BOX_BORDER_COLOR, 6, is_active and 2 or 1)
 
             -- Connector: a node on the rail, and a line from it to the box.
@@ -553,7 +618,7 @@ function content.draw(state, fontset, pos)
             vc.ImGui_AddLine({x=rail_x, y=node_y}, {x=box_x, y=node_y}, RAIL_COLOR, 1)
 
             -- Close button: a small "x" sitting just above the box's top-right corner.
-            local close = {x=box_x + BOX_WIDTH - CLOSE_SIZE, y=box_y - CLOSE_SIZE - 2,
+            local close = {x=box_x + box_w - CLOSE_SIZE, y=box_y - CLOSE_SIZE - 2,
                     w=CLOSE_SIZE, h=CLOSE_SIZE}
             vc.ImGui_AddRect({x=close.x, y=close.y}, {x=close.x+close.w, y=close.y+close.h},
                     RAIL_COLOR, 3, 1)
@@ -563,12 +628,34 @@ function content.draw(state, fontset, pos)
             vc.ImGui_AddLine({x=close.x+close.w-pad, y=close.y+pad},
                     {x=close.x+pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
 
-            layout[i] = {x=box_x, y=box_y, w=BOX_WIDTH, h=box_h, close=close}
+            -- Wireframe-toggle button: sits just left of the close button, same row. Global (all
+            -- boxes share state.show_wireframe - see new_shell()'s own comment), drawn per-box just
+            -- so there's always one within reach, same as the close button - toggling any one of
+            -- them flips it everywhere.
+            local wf = {x=close.x - WIREFRAME_SIZE - 4, y=box_y - WIREFRAME_SIZE - 2,
+                    w=WIREFRAME_SIZE, h=WIREFRAME_SIZE}
+            local wf_color = state.show_wireframe and WIREFRAME_ON_COLOR or WIREFRAME_OFF_COLOR
+            vc.ImGui_AddRect({x=wf.x, y=wf.y}, {x=wf.x+wf.w, y=wf.y+wf.h}, wf_color, 3, 1)
+            -- A small dashed-box glyph (a smaller inset rect) standing in for "wireframe" - filled
+            -- when on, outline-only when off, so the state reads at a glance without needing text.
+            local wf_pad = 4
+            if state.show_wireframe then
+                vc.ImGui_AddRectFilled({x=wf.x+wf_pad, y=wf.y+wf_pad},
+                        {x=wf.x+wf.w-wf_pad, y=wf.y+wf.h-wf_pad}, wf_color, 1)
+            else
+                vc.ImGui_AddRect({x=wf.x+wf_pad, y=wf.y+wf_pad},
+                        {x=wf.x+wf.w-wf_pad, y=wf.y+wf.h-wf_pad}, wf_color, 1, 1)
+            end
+
+            layout[i] = {x=box_x, y=box_y, w=box_w, h=box_h, close=close, wireframe_btn=wf,
+                    needed_w=needed_w}
             y = box_y + box_h + BOX_GAP
         else
-            -- Culled: nothing drawn this frame - just carry its own last-known height forward so
-            -- everything stacked below it still lands in the right place.
-            layout[i] = {x=box_x, y=box_y, w=BOX_WIDTH, h=cached_h, close=nil}
+            -- Culled: nothing drawn this frame - just carry its own last-known width/height forward
+            -- so everything stacked below it still lands in the right place, and box_w's own next
+            -- read of cached.needed_w still finds it.
+            layout[i] = {x=box_x, y=box_y, w=box_w, h=cached_h, close=nil, wireframe_btn=nil,
+                    needed_w=cached and cached.needed_w}
             y = box_y + cached_h + BOX_GAP
         end
     end

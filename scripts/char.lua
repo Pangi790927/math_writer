@@ -55,11 +55,20 @@ function capi.load_font_set()
     local ret = vc.create_object(nil, {
         m_type = "charc::fontset_t",
         m_a_code = 61,
+        -- 60.0/50.0 (9, 10) added 2026-09-04, between the pre-existing 72 and 42, for content.lua's
+        -- Ctrl+MouseWheel zoom (make_supsub()'s own SUB_SIZE_DELTA=1/MAX_SIZE_INDEX walk relies on
+        -- consecutive indices being consecutive steps, so a smoothing level has to be INSERTED in
+        -- sorted position, not appended past 8 - the old table jumped 72->42, a ~1.7x step, way out
+        -- of line with every other step's ~1.2-1.3x, right where content.lua's own default (36, now
+        -- index 12) sits closest to). mformula_new.lua/mformula.lua/mformula_latex.lua's own
+        -- MAX_SIZE_INDEX=18 (was 16) has to track this table's actual length - checked 2026-09-04,
+        -- all three still say so.
         m_font_sizes = {
             360.0,  288.0,  216.0,  180.0,  --[[  1,  2,  3,  4]]
             144.0,  120.0,  96.0,   72.0,   --[[  5,  6,  7,  8]]
-            42.0,   36.0,   24.0,   18.0,   --[[  9, 10, 11, 12]] --[[ 9 shall be the default one]]
-            14.0,   12.0,   10.0,   8.0     --[[ 13, 14, 15, 16]]
+            60.0,   50.0,   42.0,   36.0,   --[[  9, 10, 11, 12]] --[[ 12 shall be the default one]]
+            24.0,   18.0,   14.0,   12.0,   --[[ 13, 14, 15, 16]]
+            10.0,   8.0                     --[[ 17, 18]]
         },
         m_font_paths = paths
     })
@@ -499,9 +508,16 @@ mformula.lua's own SUB_SIZE_DELTA comment) a glyph should render at than whateve
 into, keyed by desc. Only "\\int" uses this so far - a big operator inserted at plain text size
 reads as a thin, undersized squiggle instead of the display-style integral sign it's supposed to
 be (compare main.lua's demo, which draws it via char.integral(sz-5) for exactly this reason) -
-not a general per-glyph size feature, just this one shortcut's own fix. ]]
+not a general per-glyph size feature, just this one shortcut's own fix.
+
+-7, not -5: recalibrated 2026-09-04 after inserting two new levels (60/50, between the old 72/42)
+into m_font_sizes above for Ctrl+MouseWheel zoom - those two extra rungs sit exactly inside this
+delta's own path from the default (12), so the old "-5" (which used to land on 144pt, 4x the 36pt
+default) only reached 96pt (2.67x) once the table grew under it - visibly "too small" again,
+reported live. -7 from 12 lands back on index 5 (144pt), the same PHYSICAL target -5 always meant
+against the pre-2026-09-04 table - not a new/different visual size, just re-pointed at the same one. ]]
 capi.size_delta_by_desc = {
-    ["\\int"] = -5,
+    ["\\int"] = -7,
 }
 
 --[[ ImGuiKey name -> lowercase letter, used to poll Alt+letter Greek shortcuts directly (Alt

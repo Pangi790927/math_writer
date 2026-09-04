@@ -14,6 +14,49 @@ local char = require("char")
 
 local mexpru = {}
 
+-- char.lua's own m_font_sizes table length - the single canonical copy (2026-09-04's Ctrl+
+-- MouseWheel zoom levels). Used to be duplicated separately across mformula_new.lua/mformula.lua/
+-- mformula_latex.lua/editor.lua; char.lua's own reindexing that same day needed all four
+-- hand-updated in lockstep, which is exactly the kind of drift a single shared constant avoids.
+mexpru.MAX_SIZE_INDEX = 18
+-- The LOGICAL size level every brand-new formula's root/first atom is built at, regardless of
+-- content.lua's current zoom (mexpru.set_zoom() below) - matches char.lua's own "12 shall be the
+-- default one" (36pt) exactly, so a fresh formula's root always maps back to that same physical
+-- size at zoom 0. Callers that construct a brand-new formula (editor.lua's Ctrl+M/paste) pass this,
+-- never content.lua's own live, possibly-already-zoomed state.font_size - see mexpru.physical_sz()
+-- and mformula_new.rescale()'s own comments for why mixing those up double-counts the zoom.
+mexpru.DEFAULT_SIZE = 12
+
+local current_zoom = 0
+
+--[[ content.lua's own global Ctrl+MouseWheel zoom offset (2026-09-04) - one value for the whole
+app (content.lua's own design choice: "globally"), not threaded as an explicit parameter through
+every function that ends up needing it (draw/measure/handle_input/cursor_rect/hit_test/construction,
+across mformula_new.lua AND mformula_latex.lua) - Lua's single-frame, single-threaded execution here
+makes a module-level global safe: content.lua calls this once, before any drawing/input-handling
+runs, whenever the zoom level actually changes (not every frame). ]]
+function mexpru.set_zoom(z)
+    current_zoom = z
+end
+
+function mexpru.get_zoom()
+    return current_zoom
+end
+
+--[[ Maps a node's own LOGICAL size level (u(_).sz's own meaning - relative, e.g. a sup/sub's own
+level is its base's plus SUB_SIZE_DELTA, NEVER itself touched by zoom) to the PHYSICAL char.lua
+table index actually used wherever real glyph geometry gets constructed or measured (mexpr_symbol/
+mexpr_empty/mexpr_frac's own divider-line construction, char_get_sz-based font metrics). Every
+LOGICAL value stored anywhere stays stable across repeated zooming - re-deriving PHYSICAL fresh from
+the untouched logical value and the CURRENT zoom every time, rather than repeatedly applying a
+RELATIVE delta to an already-physical value, is what keeps zooming out then back in exactly
+reversible even after an intermediate step got clamped (a relative-delta scheme would silently drift
+in that case - the whole reason this exists as a separate mapping instead of just mutating u(_).sz
+directly, 2026-09-04 design discussion). ]]
+function mexpru.physical_sz(logical)
+    return math.max(1, math.min(mexpru.MAX_SIZE_INDEX, logical + current_zoom))
+end
+
 --[[ ref.u is itself a lua_object_t ref (capture/push/release) - u(ref) is just the "give me the
 table" half of that, for anyone holding a mexpr ref who wants its per-node scratch table without
 spelling out ref.u:push() every time. ]]
@@ -80,7 +123,7 @@ single-slot pending discipline (only one unpaired open bracket can ever exist at
 every closed pair in the tree is already same-type matched, so a mismatched-type crossing can never
 actually arise to trip this up. Never needs identity comparison either - purely a plain-index walk
 over whatever mexpru.u(_).bracket each child carries, or doesn't. ]]
-local function scan_bracket(children, idx, direction)
+function mexpru.scan_bracket(children, idx, direction)
     local depth = 0
     local i = idx + direction
     while children[i] do
@@ -258,7 +301,9 @@ carry its own u(_).sz directly, no base-fallback needed anywhere that reads it (
 cursor_rect() both already special-case reading a supsub's own sz off its base; a frac never needs
 that path at all). ]]
 function mexpru.frac(fs, num, den, sz)
-    local ret = mexpru.mexpr_frac(fs, num, den, char.hline_basic(sz))
+    -- sz is LOGICAL (u(ret).sz below) - the divider LINE's own real geometry (char.hline_basic)
+    -- needs the current PHYSICAL size instead (mexpru.physical_sz()'s own comment).
+    local ret = mexpru.mexpr_frac(fs, num, den, char.hline_basic(mexpru.physical_sz(sz)))
     mexpru.u(ret).kind = "frac"
     mexpru.u(ret).num = num
     mexpru.u(ret).den = den
@@ -305,11 +350,23 @@ single ATOM being replaced (empty -> glyph), a HORIZ rebuilt from an insert/remo
 children list, or a horiz that just became someone's base/sup/sub (make_supsub() in
 mformula_new.lua) - either way, "does old_node have a parent, and where does it sit in that parent's
 own construction" is all that matters. Caller's job to reassign container.root to the returned
-value. ]]
+value.
+
+Cuts old_node loose at EVERY level, not just the final root - each superseded intermediate ancestor
+along the way lets go immediately too, same reasoning as the final root (mexpru.cut()'s own comment).
+2026-09-04: this was tried and reverted once already, after it appeared to crash a test exercising
+multi-level recursive rebuilds - root cause turned out to be a real bug in vc.force_release() itself
+(virt_composer.cpp's force_release_ref(): it dropped self_obj without also erasing the object's own
+entry in push_vc_object()'s raw-pointer-keyed weak_cache_ref, so a later object reallocated at the
+same now-freed address could get handed back the old, empty-self_obj wrapper instead of a fresh one -
+see that function's own comment). Fixed there; cutting every level here is safe again with that fix
+in place, verified by re-running the full suite (test_lazy_supsub.lua specifically exercises the
+multi-level chain that used to crash). ]]
 function mexpru.propagate_rebuild(fs, old_node, new_node)
     local parent = old_node:get_parent()
     if not parent then
         mexpru.update_positions(new_node)
+        mexpru.cut(old_node)
         return new_node
     end
 
@@ -352,7 +409,42 @@ function mexpru.propagate_rebuild(fs, old_node, new_node)
         error("propagate_rebuild: don't know how to rebuild a '" .. tostring(kind) .. "' node")
     end
 
+    mexpru.cut(old_node)
     return mexpru.propagate_rebuild(fs, parent, rebuilt)
+end
+
+--[[ Call this on a node the CALLER has already fully cut loose - spliced out of its former
+parent's own children/base/sup/sub/num/den, with propagate_rebuild() already run and
+container.root already reassigned to the new tree - to make it actually let go, right now, instead
+of leaving it to Lua's collector's own schedule (2026-09-04 design discussion).
+
+Why this is needed at all: Lua's collector is a TRACING gc, not a refcounted one - an object with
+zero references doesn't get destroyed the instant the last one disappears, it just becomes
+eligible, and stays alive-but-orphaned until the collector's next trace happens to reach it.
+Measured directly: a node survived two full forced collectgarbage("collect") passes and only died
+at final Lua-state teardown. In the meantime, any WEAK ref elsewhere that still happens to point at
+it (container.pending_bracket, say) reads back as "still alive" - correctly, since it genuinely
+still is, just not reachable from anywhere that matters - which is exactly the shape of bug that
+bit the bracket-pending path this same day.
+
+Why calling it on just the ONE node is enough, not a whole-subtree walk: mexpr_t's own ownership
+graph is a tree with no cycles (children: owning shared_ptr down, math_expr_composer.h; parent: a
+raw, non-owning pointer back up) - shared_ptr's own cascading destruction already handles
+everything still owned beneath whatever gets cut loose, the moment THAT node's own last reference
+goes. Verified empirically the same day: releasing a single already-cut leaf node destroyed it
+immediately, zero GC forcing needed, once it was genuinely its own last owner - which it always is,
+right after propagate_rebuild() has already finished replacing every ancestor up to root and
+nothing else has been keeping a stray reference around (the caller's own job - see
+mformula_new.lua's own cascade-delete comment for the "don't touch this local again" discipline
+that guarantees it).
+
+vc.force_release(node) (virt_composer.cpp) is the actual primitive - a plain global function, not a
+`node:force_release()` method (virt_composer's own per-class `:` dispatch never sees a bare
+lua_setfield() onto the shared metatable - see force_release_ref()'s own comment). This is just the
+documented, single, discoverable name for "yes, right here, is a safe point to call it" within this
+file's own vocabulary, not a Lua wrapper doing any real work of its own. ]]
+function mexpru.cut(node)
+    vc.force_release(node)
 end
 
 return mexpru

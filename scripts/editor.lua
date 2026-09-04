@@ -22,9 +22,15 @@ they're reinterpreted by mformula.lua (Up/Down = enter superscript/subscript).
 
 local vc = require("virt_composer")
 local char = require("char")
+local mexpru = require("mexpru")
 local mformula = require("mformula_new") -- TEMP: swapped in for a live look, see CLAUDE.md/chat
 
 local editor = {}
+
+-- char.lua's own m_font_sizes table length - mexpru's own canonical copy (2026-09-04's Ctrl+
+-- MouseWheel zoom levels). Used below to clamp a boosted glyph's (item.size_off) effective size
+-- into the valid table range.
+local MAX_SIZE_INDEX = mexpru.MAX_SIZE_INDEX
 
 -- #################################################################################################
 -- Model
@@ -152,7 +158,7 @@ end
 "\alpha") is looked up the same way a formula's own macros are (selection_to_text()'s plain-text
 greek/symbol fallback, undone), "\$"/"\\" unescape back to a literal "$"/"\", and anything else
 unmapped - an unrecognized macro included - is skipped, the same leniency plain paste always had. ]]
-local function insert_text(state, text, fontset, sz)
+local function insert_text(state, text, fontset)
     local i = 1
     while i <= #text do
         local c = text:sub(i, i)
@@ -161,7 +167,9 @@ local function insert_text(state, text, fontset, sz)
             -- not a literal substring.
             local close = text:find("$$", i + 2, true)
             local inner = text:sub(i + 2, close and (close - 1) or #text)
-            local formula = mformula.from_latex(fontset, sz, inner)
+            -- mexpru.DEFAULT_SIZE, not a live outer size - same reasoning as Ctrl+M's own formula
+            -- construction above (mexpru.DEFAULT_SIZE's own comment).
+            local formula = mformula.from_latex(fontset, mexpru.DEFAULT_SIZE, inner)
             table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
             state.cursor_pos = state.cursor_pos + 1
             i = close and (close + 2) or (#text + 1)
@@ -223,11 +231,24 @@ go through wholesale state.chars replacement already; this is that same operatio
 fresh (or about to be cleared) editor.new() instead of a snapshot table. Does NOT go through
 push_undo() itself - loading a save file replaces the state a box STARTS with, there's nothing
 before it to undo back to. ]]
-function editor.from_text(state, text, fontset, sz)
+function editor.from_text(state, text, fontset)
     state.chars = {}
     state.cursor_pos = 0
     state.selection_anchor = nil
-    insert_text(state, text, fontset, sz)
+    insert_text(state, text, fontset)
+end
+
+--[[ Rescales every formula embed in state.chars at the CURRENT global zoom (mexpru.set_zoom(), set
+by content.lua just before calling this) - content.lua's own Ctrl+MouseWheel handler calls this for
+every box any time the zoom actually changes (2026-09-04), so already-typed formula content visibly
+catches up (mformula_new.rescale()'s own comment - plain text needs no equivalent call here, it's
+never baked into anything, always measured/drawn fresh from the live `sz` passed to draw() itself). ]]
+function editor.rescale(state, fontset)
+    for _, item in ipairs(state.chars) do
+        if item.formula then
+            mformula.rescale(item.formula, fontset)
+        end
+    end
 end
 
 --[[ Nearest recorded glyph-gap position (index into state.chars) to a screen point, using the
@@ -418,10 +439,16 @@ function editor.handle_input(state, fontset, sz)
             if clicked_inside_fb then
                 local mpos = vc.ImGui_GetMousePos()
                 local local_click = {x = mpos.x - clicked_inside_fb.draw_x, y = mpos.y - clicked_inside_fb.draw_y}
+                -- RELATIVE (hit_test()'s own wrap_width comment) - clicked_inside_fb.wrap_edge is
+                -- ABSOLUTE (draw()'s own cache, above), same conversion cursor_rect()/draw() do
+                -- internally, done here since hit_test() never receives draw_x itself (local_click
+                -- is already draw_x-relative by the time it gets there).
+                local wrap_width = clicked_inside_fb.wrap_edge
+                        and (clicked_inside_fb.wrap_edge - clicked_inside_fb.draw_x)
                 -- TEMP: mformula_new's hit_test() mutates cursor_pos directly (same convention as
                 -- move_*) rather than returning a value - mformula.lua's own hit_test() returned
                 -- {row=,pos=} for the caller to assign into state.cursor instead.
-                mformula.hit_test(state.active_formula, fontset, sz, local_click)
+                mformula.hit_test(state.active_formula, fontset, sz, local_click, wrap_width)
             end
             -- One undo step per keystroke INSIDE a formula (not coalesced, unlike plain typing
             -- outside one) - but only when this keystroke actually changed the tree, not for pure
@@ -455,7 +482,13 @@ function editor.handle_input(state, fontset, sz)
     -- Ctrl+M: insert a new formula embed at the cursor and enter it straight away. -------------
     if is_ctrl and vc.ImGui_IsKeyPressed("ImGuiKey_M", false) then
         push_undo(state, nil)
-        local formula = mformula.new(fontset, sz) -- TEMP: mformula_new.new() needs these, mformula.new() didn't
+        -- mexpru.DEFAULT_SIZE (a fixed LOGICAL baseline), NOT the live `sz` - `sz` is content.lua's
+        -- CURRENT, possibly-already-zoomed state.font_size; baking that in directly here would
+        -- double-count the zoom the moment mexpru.physical_sz() maps it again (2026-09-04's Ctrl+
+        -- MouseWheel zoom - see mexpru.DEFAULT_SIZE's own comment). A brand-new formula still
+        -- renders at the CURRENT zoom immediately either way - physical_sz() applies it fresh at
+        -- construction regardless of which logical baseline was used.
+        local formula = mformula.new(fontset, mexpru.DEFAULT_SIZE)
         table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
         state.cursor_pos = state.cursor_pos + 1
         state.active_formula = formula
@@ -467,7 +500,8 @@ function editor.handle_input(state, fontset, sz)
     -- mformula.new_with_frac()'s own comment for why it doesn't wrap anything). -------------
     if is_ctrl and not is_shift and vc.ImGui_IsKeyPressed("ImGuiKey_Slash", false) then
         push_undo(state, nil)
-        local formula = mformula.new_with_frac(fontset, sz)
+        -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M just above.
+        local formula = mformula.new_with_frac(fontset, mexpru.DEFAULT_SIZE)
         table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
         state.cursor_pos = state.cursor_pos + 1
         state.active_formula = formula
@@ -530,7 +564,7 @@ function editor.handle_input(state, fontset, sz)
             end
             delete_selection(state)
             if text then
-                insert_text(state, text, fontset, sz)
+                insert_text(state, text, fontset)
             end
         end
     end
@@ -825,9 +859,13 @@ local EMPTY_SLOT_COLOR = 0xff888844
 soft-wrapping lines wider than `width_limit` (pass nil/false to disable soft-wrap). The blinking
 caret is only drawn when `show_cursor` is true (or omitted) - a caller managing several editors
 (e.g. content.lua's boxes) should pass false for every editor that isn't the active one.
-@return the total content height in pixels (bottom of the last line, relative to pos.y) - lets a
-caller (e.g. content.lua's boxes) size itself to fit. ]]
-function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
+`show_wireframe` (default false) is forwarded to every inline formula's own mformula.draw() - the
+debug bounding-box overlay (vc.mexpr_draw's draw_bb), off by default so it's only on when actually
+visually debugging (content.lua's own wireframe-toggle button, 2026-09-04).
+@return the total content height in pixels (bottom of the last line, relative to pos.y), and the
+widest any single line's own content actually reached (relative to pos.x - may exceed width_limit,
+see max_x's own comment below) - lets a caller (e.g. content.lua's boxes) size itself to fit both. ]]
+function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wireframe)
     if show_cursor == nil then
         show_cursor = true
     end
@@ -852,7 +890,13 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
                     line_extra_top[line_idx], line_extra_bottom[line_idx] = 0, 0
                     lx = 0
                 elseif item.formula then
-                    local box = mformula.measure(item.formula, fontset, sz)
+                    -- Mirrors pass 2's own content_x = x + margin (x here IS pos.x + lx at this
+                    -- exact point, same reasoning as the width_limit line-break check just below) -
+                    -- an ESTIMATE of how much room this formula will actually have once pass 2 gets
+                    -- to it, so measure()'s own wrap-aware height (content_extent()'s own comment)
+                    -- already reserves enough line height in THIS pass, not one frame late.
+                    local wrap_width = width_limit and (width_limit - lx - FORMULA_MARGIN)
+                    local box = mformula.measure(item.formula, fontset, sz, wrap_width)
                     local extra_top = math.max(0, m.baseline_shift - box.top)
                     local extra_bottom = math.max(0, box.bottom - (m.baseline_shift + m.line_height))
                     line_extra_top[line_idx] = math.max(line_extra_top[line_idx], extra_top)
@@ -869,7 +913,7 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
                     -- normal line band than plain text does, same idea as a formula's
                     -- extra_top/extra_bottom above - without this, a bigger integral sign would
                     -- clip into the line above/below it instead of the line growing to fit.
-                    local eff_sz = math.max(1, math.min(16, sz + (item.size_off or 0)))
+                    local eff_sz = math.max(1, math.min(MAX_SIZE_INDEX, sz + (item.size_off or 0)))
                     local item_sz = fontset:char_get_sz({size=eff_sz, code=item.code})
                     if item.size_off then
                         local yshift = boosted_glyph_yshift(m, item_sz)
@@ -896,6 +940,14 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
     local positions = {}
     local formula_boxes = {}
     local cursor_screen_pos = nil
+    -- Widest any line's own content actually reaches, relative to pos.x - width_limit only
+    -- controls WHERE plain text wraps; a single formula wider than width_limit can't be split, so
+    -- it renders at its own real width regardless and can end up past width_limit anyway (e.g.
+    -- right after a Ctrl+MouseWheel zoom-in - reported live, 2026-09-05, "zooming makes it exit
+    -- the box"). content.lua's own box border only grows to fit content_h automatically, never
+    -- width, so it needs this to know how wide it actually has to be too - see this function's own
+    -- return value/content.lua's own box-sizing comment.
+    local max_x = pos.x
     -- Set only if the active formula's own draw() reports a caret position this frame (see its
     -- comment) - the plain outer cursor_screen_pos above doesn't move while a formula owns input,
     -- so it can't stand in for "where's the caret right now" in that case.
@@ -914,7 +966,7 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
         local item_sz = nil
         local eff_sz = sz
         if item and not item.newline and not item.formula then
-            eff_sz = math.max(1, math.min(16, sz + (item.size_off or 0)))
+            eff_sz = math.max(1, math.min(MAX_SIZE_INDEX, sz + (item.size_off or 0)))
             item_sz = fontset:char_get_sz({size=eff_sz, code=item.code})
             if width_limit and (x - pos.x) + item_sz.adv > width_limit then
                 newline()
@@ -981,7 +1033,13 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
                     end
                 end
 
-                local box = mformula.draw(item.formula, fontset, {x=content_x, y=y}, sz, is_active_formula)
+                -- ABSOLUTE x (mformula.draw()'s own wrap_edge comment) - the box's own right edge,
+                -- not this formula's own content_x, so a formula starting partway through a line
+                -- (after preceding plain text) correctly gets LESS room, same as plain glyphs'
+                -- own width_limit check just above already gives it.
+                local wrap_edge = width_limit and (pos.x + width_limit)
+                local box = mformula.draw(item.formula, fontset, {x=content_x, y=y}, sz,
+                        is_active_formula, show_wireframe, wrap_edge)
                 if is_active_formula and box.cursor_top then
                     formula_cursor_top, formula_cursor_h = y + box.cursor_top, box.cursor_h
                 end
@@ -1008,6 +1066,9 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
                     formula = item.formula,
                     draw_x = content_x, draw_y = y, -- the raw origin mformula.draw()/hit_test()
                                                      -- use - NOT the margin-inset box above
+                    wrap_edge = wrap_edge, -- ABSOLUTE - handle_input()'s own click routing turns
+                                           -- this into hit_test()'s RELATIVE wrap_width itself
+                                           -- (draw_x, cached right above, is what it's relative to)
                 }
                 -- Same rect as formula_boxes above, not just box.top/width/bottom - the border
                 -- has to visually grow to actually contain a marker that sticks out past the
@@ -1029,6 +1090,7 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
                 x = x + item_sz.adv
             end
         end
+        max_x = math.max(max_x, x)
     end
 
     state.last_positions = positions
@@ -1083,7 +1145,7 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor)
             CURSOR_COLOR, 2)
     end
 
-    return (line_top - pos.y) + m.line_height + (line_extra_bottom[line_idx] or 0)
+    return (line_top - pos.y) + m.line_height + (line_extra_bottom[line_idx] or 0), max_x - pos.x
 end
 
 return editor

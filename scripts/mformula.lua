@@ -46,11 +46,12 @@ local SPACE_NCOD = char.find_by_ascii(" ").ncod
 
 -- How much smaller (in font-size-table steps) a sup/sub row's glyphs render at. The table in
 -- char.lua's load_font_set is sorted BIGGEST to smallest, so a larger index = a smaller glyph -
--- this must ADD to sz, not scale it (sz is a discrete 1..16 index, not a pixel size). +1 is the
+-- this must ADD to sz, not scale it (sz is a discrete 1..18 index, not a pixel size). +1 is the
 -- very next size down in that table (e.g. 36pt -> 24pt, a ~67% typographic ratio); +2 skips a
--- whole step (36pt -> 18pt, 50%) and reads as too small.
+-- whole step (36pt -> 18pt, 50%) and reads as too small. MAX_SIZE_INDEX tracks char.lua's own
+-- m_font_sizes table length (18, since 2026-09-04's Ctrl+MouseWheel zoom levels).
 local SUB_SIZE_DELTA = 1
-local MAX_SIZE_INDEX = 16
+local MAX_SIZE_INDEX = 18
 
 local CURSOR_COLOR = 0xff00ffff
 
@@ -1149,7 +1150,7 @@ function mformula.draw(state, fontset, pos, sz, show_cursor)
 
     local c = compute(state, fontset, sz)
     local draw_pos = {x = pos.x, y = pos.y + c.correction}
-    vc.mexpr_draw(fontset, draw_pos, c.merged, false)
+    vc.mexpr_draw(fontset, draw_pos, c.merged, false, math.huge)
 
     state.frame = state.frame + 1
     local cursor_top, cursor_h = nil, nil

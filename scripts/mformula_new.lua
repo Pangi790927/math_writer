@@ -64,9 +64,12 @@ local PENDING_BRACKET_CURSOR_COLOR = 0xffff00cc
 -- How much smaller (in font-size-table steps) a sup/sub's own content renders, relative to its
 -- base - same trick, same constants as mformula.lua's own SUB_SIZE_DELTA/MAX_SIZE_INDEX: char.lua's
 -- size table is sorted BIGGEST to smallest, so this must ADD to sz, not scale it (sz is a discrete
--- 1..16 index, not a pixel size) - +1 is the next size down (e.g. 36pt -> 24pt, a ~67% ratio).
+-- 1..18 index, not a pixel size) - +1 is the next size down (e.g. 36pt -> 24pt, a ~67% ratio).
+-- MAX_SIZE_INDEX defers to mexpru's own canonical copy (2026-09-04's Ctrl+MouseWheel zoom levels -
+-- see mexpru.lua's own comment) instead of keeping a separate duplicate that char.lua's own table
+-- edits would need to track by hand.
 local SUB_SIZE_DELTA = 1
-local MAX_SIZE_INDEX = 16
+local MAX_SIZE_INDEX = mexpru.MAX_SIZE_INDEX
 
 --[[ mexpr_symbol(is_char=true)/mexpr_draw (math_expr_composer.h) re-center every glyph on the
 vertical middle of 'a' at its own size - a convention mexpr's own composition relies on - but NOT
@@ -137,8 +140,13 @@ see its own comment). Tags u(ret).sz = sz - every atom remembers its own size le
 every horiz does (mexpru.horiz()'s own u(ret).sz), since cursor_pos frequently ends up naming an
 atom directly and cursor_target() needs to know what level to render the caret at. ]]
 local function build_empty_atom(fontset, sz)
-    local ext = min_extent(fontset, sz)
-    local bc = baseline_correction(fontset, sz)
+    -- sz is LOGICAL (u(_).sz's own meaning, untouched by zoom - mexpru.rescale()'s own comment);
+    -- the actual geometry below has to be built at the CURRENT PHYSICAL size (mexpru.physical_sz()
+    -- - content.lua's Ctrl+MouseWheel zoom, 2026-09-04), while u(ret).sz keeps recording sz itself
+    -- (logical), same as every other atom this file builds.
+    local phys = mexpru.physical_sz(sz)
+    local ext = min_extent(fontset, phys)
+    local bc = baseline_correction(fontset, phys)
     local ret = mexpru.mexpr_empty(fontset, ext.width, ext.bottom - ext.top, bc - ext.top)
     mexpru.u(ret).sz = sz
     return ret
@@ -187,14 +195,39 @@ box border from - see its own comment - so this clamp has to reach both, not jus
 line-growing pass). root is a horiz, so its own bb is already relative to root's own origin
 directly - no position-cache lookup needed here the way cursor_target() below needs one (root has
 no parent to be offset from). ]]
-local function content_extent(container, fontset, sz)
-    local bb = to_baseline_frame(fontset, sz, vc.mexpr_get_bb(container.root))
+--[[ wrap_width (2026-09-05, vc.mexpr_draw's own edge_x - see this file's own draw() comment) is
+how much horizontal room this formula actually has before it wraps, relative to wherever IT
+starts (NOT an absolute x - a formula sitting partway through a line, after other content, gets
+LESS than the box's own full width, same as plain glyphs' own width_limit check already gives it).
+nil means "never wraps" (vc.mexpr_draw's own math.huge convention upstream).
+
+When content actually needs more than that, width is capped at wrap_width (it can't actually be
+any wider on screen - it wraps back instead) and bottom grows by exactly one more RAW root height
+(skipy - vc.mexpr_draw's own field) per extra row - computed the SAME analytical way vc.mexpr_draw
+itself does (see its own comment: root's total width vs. the usable column, not a counter threaded
+through the recursion), so measure() (called every frame, pass 1, before any real draw) and draw()
+(pass 2) always agree on the box's own required height - no frame lag needed for THIS, unlike
+draw()'s own returned total height (used instead for cursor_rect()/hit_test()'s wrap transforms,
+which need to know exactly which row real content landed on, not just how many rows exist). ]]
+local function content_extent(container, fontset, sz, wrap_width)
+    local raw_bb = vc.mexpr_get_bb(container.root)
+    local bb = to_baseline_frame(fontset, sz, raw_bb)
     local min = min_extent(fontset, sz)
-    return {
-        width = math.max(bb.br.x - bb.tl.x, min.width),
-        top = math.min(bb.tl.y, min.top),
-        bottom = math.max(bb.br.y, min.bottom),
-    }
+    local width = math.max(bb.br.x - bb.tl.x, min.width)
+    local top = math.min(bb.tl.y, min.top)
+    local bottom = math.max(bb.br.y, min.bottom)
+
+    if wrap_width and wrap_width > 0 then
+        local skipy = raw_bb.br.y - raw_bb.tl.y
+        local total_w = raw_bb.br.x - raw_bb.tl.x
+        local wraps = math.floor(math.max(0, total_w - 1e-3) / wrap_width)
+        if wraps > 0 then
+            width = math.min(width, wrap_width)
+            bottom = bottom + wraps * skipy
+        end
+    end
+
+    return {width = width, top = top, bottom = bottom}
 end
 
 --[[ Where the cursor sits, in ROOT-relative terms (this file's own model comment explains WHICH
@@ -233,7 +266,9 @@ local function cursor_target(fontset, node)
     -- CAN legitimately be a supsub directly ("after the whole compound" - see move_left()/
     -- move_right()'s own comments), so this has to fall back to that supsub's own base's size -
     -- the level the compound reads as continuing at, matching how it's anchored to base's baseline.
-    local sz = mexpru.u(node).sz or mexpru.u(mexpru.u(node).base).sz
+    -- LOGICAL (u(_).sz's own meaning) mapped to PHYSICAL right here, before it touches any real
+    -- font metric - mexpru.rescale()'s own comment on why u(_).sz itself always stays logical.
+    local sz = mexpru.physical_sz(mexpru.u(node).sz or mexpru.u(mexpru.u(node).base).sz)
     local pos = mexpru.u(node).pos
     local bb = to_baseline_frame(fontset, sz, vc.mexpr_get_bb(node))
     local cm = cursor_metrics(fontset, sz)
@@ -241,6 +276,50 @@ local function cursor_target(fontset, node)
     local is_start = (node.type == vc.MEXPR_TYPE_EMPTY_BOX) or (mexpru.u(node).kind == "horiz")
     local x = is_start and (pos.x + bb.tl.x) or (pos.x + bb.br.x)
     return {x = x, top = pos.y + cm.baseline_shift, bottom = pos.y + cm.baseline_shift + cm.line_height}
+end
+
+--[[ Forward wrap transform (vc.mexpr_draw's own wrap loop, math_expr_composer.h's draw_info_t) -
+maps a point in the tree's own UNWRAPPED "formula space" (the same raw, root-relative frame
+node_bbox()/cursor_target() already work in) to where it actually lands on screen once wrapping
+drops it onto whichever row it really falls on. Mirrors the C++ `while` loop exactly (not a
+closed-form division) so it can never disagree with what actually got drawn, even in the
+composite-splitting edge case (2026-09-05, left as a known rough edge for now) where different
+leaves can end up wrapping different numbers of times - this only ever needs to be right for ONE
+specific x (whatever's actually being placed - a cursor, here), never the whole tree's worst case at
+once, so per-call iteration costs nothing. unwrap_point() below is the inverse, for a click going
+the other way. wrap_width nil/non-positive means "never wraps" (x,y returned unchanged) - same
+convention as everywhere else in this file. ]]
+local function wrap_point(x, y, wrap_width, skipy)
+    if not wrap_width or wrap_width <= 0 then
+        return x, y
+    end
+    while x > wrap_width do
+        x = x - wrap_width
+        y = y + skipy
+    end
+    return x, y
+end
+
+--[[ Inverse of wrap_point() above - maps a click that landed on some WRAPPED row back to where
+that same point sits in "formula space", so hit_test_node()'s plain space-partitioning descent
+(which only ever knows about unwrapped positions - mexpru.u(_).pos is never touched by wrapping,
+that's purely a vc.mexpr_draw-time visual shift) can be reused as-is regardless of whether the
+formula currently wraps.
+
+Row number recovered from Y alone, not X: post-wrap x is always <= wrap_width regardless of which
+row a point came from (that's the whole point of wrapping), so only y can disambiguate - each
+wrapped row occupies its own [row0_top + N*skipy, row0_top + (N+1)*skipy) band, non-overlapping,
+since every wrap step drops content by EXACTLY skipy. `row0_top` is root's own raw bb.tl.y - row 0's
+own top edge, before any wrap shift. ]]
+local function unwrap_point(x, y, wrap_width, skipy, row0_top)
+    if not wrap_width or wrap_width <= 0 then
+        return x, y
+    end
+    local n = math.floor((y - row0_top) / skipy)
+    if n < 0 then
+        n = 0
+    end
+    return x + n * wrap_width, y - n * skipy
 end
 
 --[[ The cursor's on-screen rect: cursor_target() above (already root-relative, at whatever size
@@ -255,13 +334,29 @@ line_height come from G/g's TRUE-baseline metrics, but mexpru.u(_).pos (root-rel
 via +baseline_correction(fontset, OUTER sz) before ever calling mexpr_draw. Bridging both: add
 baseline_correction(outer sz) - baseline_correction(node's own sz) - zero whenever they're the same
 size (every plain in-line cursor, unaffected), a real correction for a nested (sup/sub) one. ]]
-function mformula_new.cursor_rect(container, pos, fontset)
+--[[ wrap_edge (2026-09-05, vc.mexpr_draw's own edge_x - see draw()'s own comment) is an ABSOLUTE x
+(same frame as `pos`, NOT a width) - the blinker's own x/top/bottom (below) are run through
+wrap_point() so it actually renders on whichever row the named node really landed on, instead of its
+old unwrapped spot. nil means "never wraps", same convention as everywhere else here. ]]
+function mformula_new.cursor_rect(container, pos, fontset, wrap_edge)
     local node = container.cursor_pos:get_obj()
     local t = cursor_target(fontset, node)
-    local node_sz = mexpru.u(node).sz or mexpru.u(mexpru.u(node).base).sz
-    local outer_sz = mexpru.u(container.root).sz
+    -- Both LOGICAL (u(_).sz's own meaning), mapped to PHYSICAL before touching real font metrics -
+    -- mexpru.rescale()'s own comment. A uniform +zoom shift on both sides cancels out of the delta
+    -- exactly as the unmapped values always did (same reasoning content_extent()'s own outer `sz`
+    -- gets left alone for - see this file's own model comment on logical vs. physical).
+    local node_sz = mexpru.physical_sz(mexpru.u(node).sz or mexpru.u(mexpru.u(node).base).sz)
+    local outer_sz = mexpru.physical_sz(mexpru.u(container.root).sz)
     local delta = baseline_correction(fontset, outer_sz) - baseline_correction(fontset, node_sz)
-    return {x = pos.x + t.x, top = pos.y + t.top + delta, bottom = pos.y + t.bottom + delta}
+
+    local wrap_width, skipy = wrap_edge and (wrap_edge - pos.x), nil
+    if wrap_width then
+        local raw_bb = vc.mexpr_get_bb(container.root)
+        skipy = raw_bb.br.y - raw_bb.tl.y
+    end
+    local wx, wtop = wrap_point(t.x, t.top, wrap_width, skipy)
+    local _, wbottom = wrap_point(t.x, t.bottom, wrap_width, skipy)
+    return {x = pos.x + wx, top = pos.y + wtop + delta, bottom = pos.y + wbottom + delta}
 end
 
 --[[ Draws container.root at `pos` (baseline origin - same convention plain text/mformula.lua's
@@ -273,21 +368,56 @@ root/cursor_pos already are.
 (editor.lua reads width/top/bottom off this UNCONDITIONALLY, not just when show_cursor - measure()
 above computes the first three the same way for exactly that reason). cursor_top/cursor_h (relative
 to pos.y, like top/bottom) are nil/nil when show_cursor is false - editor.lua only reads them
-itself when its own is_active_formula is true, but the keys always exist either way. ]]
-function mformula_new.draw(container, fontset, pos, sz, show_cursor)
+itself when its own is_active_formula is true, but the keys always exist either way.
+
+draw_wireframe (default false) is vc.mexpr_draw's own draw_bb - a whole-tree debug bounding-box
+overlay, off by default so it doesn't clutter ordinary editing; content.lua's own wireframe-toggle
+button (2026-09-04) is what flips it on. Used to be hardcoded true here (a leftover from this
+editor's own early development, when seeing every node's bbox by default was the point), which is
+what content.lua's toggle button exists to fix.
+
+wrap_edge (default nil - never wraps, vc.mexpr_draw's own math.huge convention) is an ABSOLUTE x
+(same frame as `pos`, NOT a width) - content past it wraps back under itself instead of running off
+past whatever column/box editor.lua actually has available (vc.mexpr_draw's own long-hidden wrap
+feature, 2026-09-05: it always exists in math_expr_composer.h, just used to hardcode the whole OS
+window's own edge instead of taking one from the caller). @return's own width/bottom already account
+for it below - width never exceeds the usable column (wrap_edge - pos.x), and bottom grows to fit
+however many rows wrapping actually produced (vc.mexpr_draw's own returned total height), so
+content.lua's box grows DOWN to fit a wrapped formula instead of (or now: as well as) growing right.
+
+KNOWN GAP (2026-09-05, not fixed here): cursor_rect()/cursor_target() still compute the caret's
+position from the tree's own UNWRAPPED coordinates - a cursor resting on a glyph that visually
+wrapped to a lower row will render at its old, unwrapped spot instead of following it down. Same
+category of unfinished-ness the C++ wrap loop's own TODO already flags for selection. ]]
+function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wireframe, wrap_edge)
     if show_cursor == nil then
         show_cursor = true
     end
 
     local draw_pos = {x = pos.x, y = pos.y + baseline_correction(fontset, sz)}
-    vc.mexpr_draw(fontset, draw_pos, container.root, true)
+    local wrap_width = wrap_edge and (wrap_edge - draw_pos.x)
+    -- drawn_h is vc.mexpr_draw's own ACTUAL total height (real recursive walk, not the analytical
+    -- estimate content_extent()/measure() use) - kept as a floor below, not the primary source: the
+    -- two USUALLY agree exactly (same formula), but a composite that straddles the wrap boundary
+    -- (a fraction split mid-row - the wrap loop's own known per-leaf-independent limitation, flagged
+    -- live 2026-09-05, left as-is for now) can make the real drawn height come out taller than the
+    -- analytical guess. Only draw() ever sees this (measure() still can't, one frame ahead of any
+    -- actual draw - accepted tradeoff, "it would skip a frame, but that doesn't really matter").
+    local drawn_h = vc.mexpr_draw(fontset, draw_pos, container.root, draw_wireframe or false,
+            wrap_edge or math.huge)
 
-    local ext = content_extent(container, fontset, sz)
+    local ext = content_extent(container, fontset, sz, wrap_width)
+    if wrap_width then
+        local drawn_bottom = ext.top + drawn_h
+        if drawn_bottom > ext.bottom then
+            ext.bottom = drawn_bottom
+        end
+    end
     local cursor_top, cursor_h = nil, nil
 
     container.frame = (container.frame or 0) + 1
     if show_cursor then
-        local rect = mformula_new.cursor_rect(container, pos, fontset)
+        local rect = mformula_new.cursor_rect(container, pos, fontset, wrap_edge)
         cursor_top, cursor_h = rect.top - pos.y, rect.bottom - rect.top
         -- Same ~30-frame half-period blink as mformula.lua's own caret (roughly 0.5s at 60fps).
         if math.floor(container.frame / 30) % 2 == 0 then
@@ -304,9 +434,11 @@ end
 draw() call at the same pos would use - editor.lua calls this UNCONDITIONALLY for every formula
 item on every frame (its own layout pass, before anything is actually drawn) to grow the line to
 fit. content_extent() (above) is the same clamped-to-never-shrink-below-empty-atom reading draw()'s
-own return value uses, so the two agree on how big the formula is. ]]
-function mformula_new.measure(container, fontset, sz)
-    local ext = content_extent(container, fontset, sz)
+own return value uses, so the two agree on how big the formula is - wrap_width (content_extent()'s
+own comment) included, so a wrapped formula grows editor.lua's own line-height reservation in pass 1
+already, not just draw()'s own return value one frame late. ]]
+function mformula_new.measure(container, fontset, sz, wrap_width)
+    local ext = content_extent(container, fontset, sz, wrap_width)
     return {width = ext.width, top = ext.top, bottom = ext.bottom}
 end
 
@@ -540,7 +672,9 @@ purple cursor (PENDING_BRACKET_CURSOR_COLOR) instead of the ordinary CURSOR_COLO
 local function open_bracket(container, fontset, target, target_parent, target_is_horiz,
         target_is_empty, target_is_supsub_base, target_sz, bracket_type)
     local entry = char.find_by_ascii(OPEN_BRACKET_ASCII[bracket_type])
-    local new_glyph = mexpru.mexpr_symbol(fontset, {size = target_sz, code = entry.ncod}, true)
+    -- target_sz is LOGICAL - mapped to PHYSICAL only for the real construction call below, same as
+    -- every other glyph this file builds (mexpru.rescale()'s own comment).
+    local new_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(target_sz), code = entry.ncod}, true)
     mexpru.u(new_glyph).sz = target_sz
     mexpru.u(new_glyph).bracket = {is_open = true, type = bracket_type}
 
@@ -610,7 +744,9 @@ local function try_close_bracket(container, fontset, bracket_type)
     local children = mexpru.u(open_horiz).children
     local close_sz = mexpru.u(open_atom).sz
     local close_entry = char.find_by_ascii(CLOSE_BRACKET_ASCII[bracket_type])
-    local close_glyph = mexpru.mexpr_symbol(fontset, {size = close_sz, code = close_entry.ncod}, true)
+    -- close_sz is LOGICAL - mapped to PHYSICAL only for the real construction call (same reasoning
+    -- as open_bracket()'s own new_glyph construction just above).
+    local close_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(close_sz), code = close_entry.ncod}, true)
     mexpru.u(close_glyph).sz = close_sz
 
     local close_idx
@@ -637,6 +773,109 @@ local function try_close_bracket(container, fontset, bracket_type)
     container.root = mexpru.propagate_rebuild(fontset, open_horiz, rebuilt)
     container.cursor_pos = vc.wref_mexpr(children[close_idx])
     container.version = (container.version or 0) + 1
+end
+
+--[[ Rebuilds `node` (and everything beneath it) at the CURRENT global zoom (mexpru.get_zoom()/
+mexpru.physical_sz()) - every node's own u(_).sz stays exactly what it already was (LOGICAL, never
+touched by zoom - mexpru.physical_sz()'s own comment); only the REAL glyph geometry actually
+constructed for each leaf uses physical_sz(that logical value) instead. A 1:1 structural mirror of
+the original tree - same kind, same children/base-sup-sub/num-den shape - built bottom-up via this
+file's OWN normal construction helpers (mexpru.horiz()/supsub()/frac(), build_empty_atom(),
+mexpru.mexpr_symbol()), so every kind of node this file can ever build is handled the exact same way
+it was built the first time, nothing rescale-specific to keep in sync as new node kinds get added.
+
+Bracket atoms (u(_).bracket) are rebuilt back to their PENDING/un-resolved shape - a small plain
+glyph at the new physical size, is_open/type preserved, peer dropped - rather than reconstructing
+the resolved mexpr_bracket_left/right composite by hand: the enclosing mexpru.horiz() call a few
+lines below re-runs resolve_bracket_pairs() (mexpru.lua) on the way back up regardless, which
+rebuilds the REAL sized bracket glyphs and re-links peers itself, exactly mirroring how a live
+close-bracket keypress (try_close_bracket() above) produces them the first time. Cheaper to let that
+existing machinery redo its own job than to duplicate bracket-height math here.
+
+Returns (new_node, mapped_cursor) - mapped_cursor is the NEW node standing in for `cursor_target`
+(compared by mexpru.same, i.e. identity) once the walk passes through it, or nil if this branch
+never encountered it. Deterministic, not a nearest-fit guess: since the walk is a structural mirror
+of the original tree, "the node built at the exact step that replaced cursor_target" IS cursor_pos's
+new home, however deeply nested. mformula_new.rescale() (the public entry point, below) does the
+top-level container.cursor_pos reassignment once the whole walk completes. ]]
+local function rescale_node(fontset, node, cursor_target)
+    local u = mexpru.u(node)
+    local logical = u.sz
+    local new_node, mapped
+
+    if u.kind == "horiz" then
+        local new_children = {}
+        for i, child in ipairs(u.children) do
+            local nc, m = rescale_node(fontset, child, cursor_target)
+            new_children[i] = nc
+            mapped = mapped or m
+        end
+        new_node = mexpru.horiz(fontset, new_children, logical)
+    elseif u.kind == "supsub" then
+        local new_base, m1 = rescale_node(fontset, u.base, cursor_target)
+        local new_sup, new_sub, m2, m3
+        if u.sup then new_sup, m2 = rescale_node(fontset, u.sup, cursor_target) end
+        if u.sub then new_sub, m3 = rescale_node(fontset, u.sub, cursor_target) end
+        new_node = mexpru.supsub(fontset, new_base, new_sup, new_sub)
+        mapped = m1 or m2 or m3
+    elseif u.kind == "frac" then
+        local new_num, m1 = rescale_node(fontset, u.num, cursor_target)
+        local new_den, m2 = rescale_node(fontset, u.den, cursor_target)
+        new_node = mexpru.frac(fontset, new_num, new_den, logical)
+        mapped = m1 or m2
+    elseif u.bracket then
+        local ascii = u.bracket.is_open and OPEN_BRACKET_ASCII[u.bracket.type]
+                or CLOSE_BRACKET_ASCII[u.bracket.type]
+        local entry = char.find_by_ascii(ascii)
+        new_node = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(logical), code = entry.ncod}, true)
+        mexpru.u(new_node).bracket = {is_open = u.bracket.is_open, type = u.bracket.type}
+        mexpru.u(new_node).sz = logical
+    elseif node.type == vc.MEXPR_TYPE_EMPTY_BOX then
+        new_node = build_empty_atom(fontset, logical)
+    else
+        -- A plain glyph's own baked geometry ISN'T always built at exactly `logical` - char.lua's
+        -- size_delta_by_desc (currently just "\\int") boosts specific glyphs bigger than their
+        -- surrounding nominal level at construction time (mformula_latex.lua's own from_latex()
+        -- comment: "u(_).sz is a LOGICAL... reading, not a visual one" - the boost is real ink,
+        -- deliberately NOT reflected in u(_).sz). That boost isn't recorded anywhere else on the
+        -- node, so it has to be RE-DERIVED here the same way construction derives it the first
+        -- time (from the glyph's own code -> desc -> size_delta_by_desc lookup) - found 2026-09-05,
+        -- reported live: without this, every rescale (any zoom change) silently rebuilt a boosted
+        -- glyph like \\int as a perfectly ordinary-sized one, since this branch used to just take
+        -- `logical` at face value.
+        local entry = char.find_by_ncod(node.symb.code)
+        local delta = entry and char.size_delta_by_desc[entry.desc]
+        local glyph_sz = delta and math.max(1, math.min(logical + delta, MAX_SIZE_INDEX)) or logical
+        new_node = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz), code = node.symb.code}, true)
+        mexpru.u(new_node).sz = logical
+    end
+
+    if cursor_target and mexpru.same(node, cursor_target) then
+        mapped = new_node
+    end
+    return new_node, mapped
+end
+
+--[[ Public entry point for rescale_node() above - content.lua's own Ctrl+MouseWheel zoom handler
+calls this (via editor.rescale(), per box) on every embedded formula any time the global zoom
+actually changes, so already-typed content visually catches up (newly-typed content already picks
+up the current zoom on its own - target_sz's own construction call, unchanged by any of this).
+Reassigns container.root/cursor_pos in place; the OLD root is mexpru.cut() loose the same way
+propagate_rebuild() already does for a superseded root (mexpru.cut()'s own comment - without this
+the whole OLD tree lingers on Lua's own collector schedule instead of letting go immediately). ]]
+function mformula_new.rescale(container, fontset)
+    local cursor_target = container.cursor_pos:get_obj()
+    local old_root = container.root
+    local new_root, mapped_cursor = rescale_node(fontset, old_root, cursor_target)
+    mexpru.update_positions(new_root)
+    -- cursor_target (an OLD descendant, possibly deep inside old_root) is done being read after
+    -- the walk above completes - nil it out before cut(), same "don't touch this local again"
+    -- discipline as everywhere else in this file (handle_input()'s own cascade-delete comment):
+    -- left live, it'd keep that ONE old node from cascading away with the rest of old_root.
+    cursor_target = nil
+    mexpru.cut(old_root)
+    container.root = new_root
+    container.cursor_pos = vc.wref_mexpr(mapped_cursor or new_root)
 end
 
 -- Forward-declared: mutually recursive (a frac's num/den, having no base to land on, exits by
@@ -1143,7 +1382,8 @@ function mformula_new.handle_input(container, fontset, sz)
 
             local entry = char.find_by_ascii(ch)
             if entry then
-                local new_glyph = mexpru.mexpr_symbol(fontset, {size = target_sz, code = entry.ncod}, true)
+                -- target_sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
+                local new_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(target_sz), code = entry.ncod}, true)
                 mexpru.u(new_glyph).sz = target_sz
                 insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
                         target_is_empty, target_is_supsub_base, target_sz, new_glyph)
@@ -1229,8 +1469,60 @@ function mformula_new.handle_input(container, fontset, sz)
     -- target:get_parent_idx() - safe, `children` is a fresh, unmutated read of target's own parent.
     local i = target:get_parent_idx()
 
+    -- Which atom this keypress actually removes, and where. fwd_delete with nothing after target
+    -- is the existing no-op (children[i+1] absent) - unchanged.
+    local victim, victim_idx
     if backspace then
-        table.remove(children, i)
+        victim, victim_idx = target, i
+    elseif fwd_delete and children[i + 1] then
+        victim, victim_idx = children[i + 1], i + 1
+    else
+        return
+    end
+
+    -- Bracket cascade (2026-09-04 design discussion): a RESOLVED bracket atom (has a peer) takes
+    -- that peer down with it - the pair disappears together, the CONTENT between them survives,
+    -- unwrapped, as ordinary siblings (mformula_new.lua's own model: a bracket pair is never a
+    -- separate composite node the way a supsub/frac is, its content already lives directly in
+    -- `children` alongside everything else - there is nothing else TO unwrap). A still-PENDING
+    -- open bracket (typed, never closed - no peer yet) has no cascade target; mexpru.cut() below,
+    -- once it runs on it, is what makes container.pending_bracket (a weak ref) correctly read back
+    -- nil from then on - no separate bookkeeping needed for that specific field, or for any other
+    -- weak ref anywhere that might also point at this same node.
+    -- mexpru.scan_bracket(), not a hand-rolled search: victim's own peer, found by depth-tracked
+    -- walk in the direction its OWN kind implies (open -> rightward, close -> leftward) - it can
+    -- never resolve to `i` itself (an already-resolved pair always has at least one real element
+    -- between its two atoms - resolve_bracket_pairs()'s own invariant, mexpru.lua - so victim and
+    -- ITS OWN peer are never adjacent), so target survives intact whenever victim isn't target.
+    local victim_br = mexpru.u(victim).bracket
+    local peer_idx = victim_br and victim_br.peer
+            and mexpru.scan_bracket(children, victim_idx, victim_br.is_open and 1 or -1)
+
+    -- Only table.remove() here - NOT mexpru.cut() yet. Cutting has to wait until AFTER
+    -- propagate_rebuild() below actually completes: until then, the OLD (pre-edit) ancestor chain
+    -- - not yet superseded - still references these nodes via its OWN C++-side subobjs
+    -- (math_expr_composer.h), same as `children` itself did before this table.remove(). Cutting
+    -- early releases Lua's claim while that OLD chain still holds its own, so nothing actually
+    -- dies - found by this file's own test (test_bracket_cascade.lua) catching exactly that
+    -- ordering mistake in an earlier draft of this function.
+    local cut_lo, cut_hi
+    if peer_idx then
+        -- Remove the LARGER index first so the smaller one's own index doesn't shift out from
+        -- under it. `i` (the landing-spot reference for backspace below) becomes the lower of the
+        -- two - "before the whole cut pair", the same convention a single-atom removal already
+        -- uses for "before the removed atom".
+        local lo, hi = math.min(victim_idx, peer_idx), math.max(victim_idx, peer_idx)
+        cut_hi = table.remove(children, hi)
+        cut_lo = table.remove(children, lo)
+        i = lo
+    else
+        cut_lo = table.remove(children, victim_idx)
+        i = victim_idx
+    end
+    -- `target`/`victim` are never read again below - only `cut_lo`/`cut_hi`, and only to pass to
+    -- mexpru.cut() once it's actually safe to.
+
+    if backspace then
         if #children == 0 then
             -- The horiz can't be left with zero children (mexpr_merge_h needs at least one) -
             -- falls back to a single fresh empty atom, same shape as a brand new formula (new()) -
@@ -1244,24 +1536,28 @@ function mformula_new.handle_input(container, fontset, sz)
         else
             local rebuilt = mexpru.horiz(fontset, children, horiz_sz)
             container.root = mexpru.propagate_rebuild(fontset, horiz, rebuilt)
-            -- Preceding sibling if there was one, else the horiz itself (the removed atom was
-            -- first) - matches where backspacing forward through plain text would leave you.
+            -- Preceding sibling if there was one, else the horiz itself (the removed atom, or the
+            -- cut pair's own lower index, was first) - matches where backspacing forward through
+            -- plain text would leave you.
             if i > 1 then
                 container.cursor_pos = vc.wref_mexpr(children[i - 1])
             else
                 container.cursor_pos = vc.wref_mexpr(rebuilt)
             end
         end
-        container.version = (container.version or 0) + 1
-    elseif fwd_delete and children[i + 1] then
-        table.remove(children, i + 1)
+        if cut_hi then mexpru.cut(cut_hi) end
+        mexpru.cut(cut_lo)
+    else
         local rebuilt = mexpru.horiz(fontset, children, horiz_sz)
         container.root = mexpru.propagate_rebuild(fontset, horiz, rebuilt)
-        -- cursor_pos still names `target` itself, untouched by this edit - still valid without
-        -- reassignment: mexpru.horiz()/mexpr_merge_h re-parents its EXISTING children rather than
-        -- recreating them, so target's own identity survives the rebuild around it.
-        container.version = (container.version or 0) + 1
+        -- cursor_pos still names `target` itself, untouched by this edit (fwd_delete never cuts
+        -- target - see this function's own comment on why victim/peer can't land on it) - still
+        -- valid without reassignment: mexpru.horiz()/mexpr_merge_h re-parents its EXISTING
+        -- children rather than recreating them, so target's own identity survives the rebuild.
+        if cut_hi then mexpru.cut(cut_hi) end
+        mexpru.cut(cut_lo)
     end
+    container.version = (container.version or 0) + 1
 end
 
 --[[ Root-relative bounding box for any mexpr_t node (horiz, supsub, or atom), for hit_test()'s own
@@ -1423,9 +1719,20 @@ that shift on the way in, so hit_test_node()'s descent can compare against node_
 box, so hit_test_node()'s x-only margin fallback fired regardless of where vertically you clicked -
 symptom was every click resolving to "right before \\int", no matter where on/under it you clicked.)
 See this file's own hit_test_node()/target_before()/horiz_margin_target() comments for the full
-algorithm. ]]
-function mformula_new.hit_test(container, fontset, sz, click)
+algorithm.
+
+wrap_width (2026-09-05, RELATIVE - editor.lua's own cached wrap_edge minus its own draw_x, since
+`click` itself already arrives draw_x-relative - see this comment's own click paragraph) is
+unwrap_point()'s own reverse of vc.mexpr_draw's wrap: a click that visually landed on some wrapped
+row needs mapping back to "formula space" BEFORE hit_test_node()'s descent, which only ever knows
+about unwrapped positions. nil means "never wraps", same convention as everywhere else here. ]]
+function mformula_new.hit_test(container, fontset, sz, click, wrap_width)
     local raw_click = {x = click.x, y = click.y - baseline_correction(fontset, sz)}
+    if wrap_width then
+        local raw_bb = vc.mexpr_get_bb(container.root)
+        local skipy = raw_bb.br.y - raw_bb.tl.y
+        raw_click.x, raw_click.y = unwrap_point(raw_click.x, raw_click.y, wrap_width, skipy, raw_bb.tl.y)
+    end
     container.cursor_pos = vc.wref_mexpr(hit_test_node(fontset, container.root, raw_click))
 end
 
@@ -1451,7 +1758,8 @@ function mformula_new.slot_markers(container, fontset, sz)
         return {}
     end
     local t = cursor_target(fontset, node)
-    local min = min_extent(fontset, mexpru.u(node).sz)
+    -- LOGICAL -> PHYSICAL before touching real font metrics (mexpru.rescale()'s own comment).
+    local min = min_extent(fontset, mexpru.physical_sz(mexpru.u(node).sz))
     return {{x = t.x, y = t.top, w = min.width, h = t.bottom - t.top}}
 end
 

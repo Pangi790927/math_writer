@@ -27,7 +27,8 @@ local mexpru = require("mexpru")
 local mformula_latex = {}
 
 local SUB_SIZE_DELTA = 1
-local MAX_SIZE_INDEX = 16
+-- Defers to mexpru's own canonical copy (2026-09-04's Ctrl+MouseWheel zoom levels).
+local MAX_SIZE_INDEX = mexpru.MAX_SIZE_INDEX
 
 local function is_horiz(node)
     return mexpru.u(node).kind == "horiz"
@@ -69,10 +70,12 @@ local function min_extent(fs, sz)
 end
 
 --[[ Builds one fresh empty atom (mexpr_empty) at font size sz - see mformula_new.lua's own
-build_empty_atom() comment for what the three mexpr_empty() args mean; identical here. ]]
+build_empty_atom() comment for what the three mexpr_empty() args mean; identical here, LOGICAL vs.
+PHYSICAL split (mexpru.physical_sz()'s own comment) included. ]]
 local function build_empty_atom(fontset, sz)
-    local ext = min_extent(fontset, sz)
-    local bc = baseline_correction(fontset, sz)
+    local phys = mexpru.physical_sz(sz)
+    local ext = min_extent(fontset, phys)
+    local bc = baseline_correction(fontset, phys)
     local ret = mexpru.mexpr_empty(fontset, ext.width, ext.bottom - ext.top, bc - ext.top)
     mexpru.u(ret).sz = sz
     return ret
@@ -218,7 +221,9 @@ local function parse_latex_children(fontset, s, pos, sz)
                 local one = s:sub(pos, pos)
                 local entry = one ~= "" and char.find_by_ascii(one)
                 if entry then
-                    local g = mexpru.mexpr_symbol(fontset, {size = sub_sz, code = entry.ncod}, true)
+                    -- sub_sz is LOGICAL - mapped to PHYSICAL only for the real construction call
+                    -- (mexpru.physical_sz()'s own comment).
+                    local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sub_sz), code = entry.ncod}, true)
                     mexpru.u(g).sz = sub_sz
                     slot_children[1] = g
                     pos = pos + 1
@@ -282,7 +287,7 @@ local function parse_latex_children(fontset, s, pos, sz)
                         -- table's own comment; main.lua's demo draws \\int the same bigger way via
                         -- char.integral(sz-5)). Clamped into the valid [1, MAX_SIZE_INDEX] table
                         -- range the same way every other size computation in this codebase is -
-                        -- size_delta_by_desc's deltas are small relative to the table (-5 vs 16
+                        -- size_delta_by_desc's deltas are small relative to the table (-5 vs 18
                         -- entries) so this only ever matters for glyphs already near an edge.
                         --
                         -- glyph_sz is ONLY for mexpr_symbol()'s own construction call - it bakes
@@ -297,8 +302,11 @@ local function parse_latex_children(fontset, s, pos, sz)
                         -- normal glyph's height (matching \\int's own boosted line-height) reads as
                         -- broken, not as "you're now inside bigger text".
                         local delta = char.size_delta_by_desc[entry.desc]
+                        -- glyph_sz is LOGICAL too (same table, just a boosted level) - mapped to
+                        -- PHYSICAL only for the real construction call (mexpru.physical_sz()'s own
+                        -- comment), same as every other glyph this file builds.
                         local glyph_sz = delta and math.max(1, math.min(sz + delta, MAX_SIZE_INDEX)) or sz
-                        local g = mexpru.mexpr_symbol(fontset, {size = glyph_sz, code = entry.ncod}, true)
+                        local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
                         mexpru.u(g).sz = sz
                         children[#children + 1] = g
                     end
@@ -312,7 +320,8 @@ local function parse_latex_children(fontset, s, pos, sz)
                 -- Escaped literal (\$, \\, \{, \}, \^, \_).
                 local entry = nc ~= "" and char.find_by_ascii(nc)
                 if entry then
-                    local g = mexpru.mexpr_symbol(fontset, {size = sz, code = entry.ncod}, true)
+                    -- sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
+                    local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sz), code = entry.ncod}, true)
                     mexpru.u(g).sz = sz
                     children[#children + 1] = g
                 end
@@ -329,7 +338,8 @@ local function parse_latex_children(fontset, s, pos, sz)
             local cp = c:byte()
             local entry = (cp and cp > 32 and cp < 256) and char.find_by_ascii(c) or nil
             if entry then
-                local g = mexpru.mexpr_symbol(fontset, {size = sz, code = entry.ncod}, true)
+                -- sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
+                local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sz), code = entry.ncod}, true)
                 mexpru.u(g).sz = sz
                 children[#children + 1] = g
             end
