@@ -109,8 +109,10 @@ shell new() itself builds - see new_shell()). Silently stops at the first malfor
 (a corrupt/truncated/foreign file) rather than erroring, same leniency insert_text() itself already
 has for content it can't make sense of - whatever boxes parsed cleanly before that point are kept
 rather than losing everything. Always ends up with at least one box, even from an empty/unreadable
-string, so the caller never has to special-case "the file had nothing usable in it". ]]
-function content.deserialize(text)
+string, so the caller never has to special-case "the file had nothing usable in it". `fontset` is
+only needed for editor.from_text()'s benefit (building any $$...$$ formula embeds a box's saved
+text contains - this file's own internal FONT_SZ covers the size). ]]
+function content.deserialize(text, fontset)
     local state = new_shell()
     local pos = 1
     while pos <= #text do
@@ -121,7 +123,7 @@ function content.deserialize(text)
         end
         local box_text = text:sub(nl + 1, nl + len)
         local ed = editor.new()
-        editor.from_text(ed, box_text)
+        editor.from_text(ed, box_text, fontset, FONT_SZ)
         table.insert(state.boxes, {editor = ed})
         pos = nl + 1 + len
     end

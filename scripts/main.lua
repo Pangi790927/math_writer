@@ -40,7 +40,7 @@ function test_init()
     local saved = read_file(SAVE_PATH)
     -- content.new()'s own single-empty-box default is exactly the right fallback when there's
     -- nothing to load yet - not a special case.
-    content_state = saved and content.deserialize(saved) or content.new()
+    content_state = saved and content.deserialize(saved, fontset) or content.new()
 end
 
 function test_draw()

@@ -10,7 +10,10 @@
 #include <deque>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <cstdlib>
+#include <cstdio>
+#include <cstdint>
 
 #ifdef _WIN32
 # ifndef WIN32_LEAN_AND_MEAN
@@ -45,9 +48,95 @@ table the Lua bindings already use). */
 /* reveal_window(): the imgui_window global, glfwSetWindowPos/glfwShowWindow. */
 #include "imgui_helpers.h"
 
+#ifdef _WIN32
+/* glfwGetWin32Window() - reveal_window() shows the window via the native Win32 API instead of
+glfwShowWindow() so it can pass SW_SHOWNOACTIVATE: GLFW's own glfwShowWindow() always also
+focuses the window (there's no GLFW-level equivalent of "show without activating"), which defeats
+the entire point of showing it pre-positioned - the whole reason this module positions the window
+before ever revealing it is so automated driving never steals the developer's focus (see this
+file's own top comment / debug_input_pipe.h's doc comment). Must be included after glfw3.h
+(pulled in transitively above via imgui_helpers.h) and after windows.h (included near the top of
+this file). */
+# define GLFW_EXPOSE_NATIVE_WIN32
+# include <GLFW/glfw3native.h>
+#endif
+
 namespace debug_input_pipe {
 
 namespace {
+
+/*! Writes an uncompressed 24-bit BMP (top-to-bottom `rgb` pixel data, `w*h*3` bytes, row-major).
+No external dependency (stb_image_write.h etc.) needed for a format this simple - BMP's only real
+complication vs. writing raw bytes is that scanlines are bottom-to-top and each row is padded to a
+multiple of 4 bytes, both handled below. Returns false on any I/O failure. */
+bool write_bmp(const char *path, int w, int h, const unsigned char *rgb) {
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+
+    int row_sz = w * 3;
+    int row_pad = (4 - (row_sz % 4)) % 4;
+    int padded_row_sz = row_sz + row_pad;
+    uint32_t pixel_data_sz = (uint32_t)(padded_row_sz * h);
+    uint32_t file_sz = 14 + 40 + pixel_data_sz;
+
+    unsigned char bmp_header[14] = {
+        'B', 'M',
+        (unsigned char)(file_sz), (unsigned char)(file_sz >> 8),
+        (unsigned char)(file_sz >> 16), (unsigned char)(file_sz >> 24),
+        0, 0, 0, 0,
+        54, 0, 0, 0 /* pixel data offset */
+    };
+    unsigned char dib_header[40] = {0};
+    *(uint32_t *)(dib_header + 0) = 40;
+    *(int32_t  *)(dib_header + 4) = w;
+    *(int32_t  *)(dib_header + 8) = h;
+    *(uint16_t *)(dib_header + 12) = 1;
+    *(uint16_t *)(dib_header + 14) = 24;
+    *(uint32_t *)(dib_header + 20) = pixel_data_sz;
+
+    fwrite(bmp_header, 1, sizeof(bmp_header), f);
+    fwrite(dib_header, 1, sizeof(dib_header), f);
+
+    unsigned char pad[3] = {0, 0, 0};
+    /* BMP stores rows bottom-to-top; glReadPixels() already reads bottom-to-top too (GL's origin
+    is bottom-left), so row 0 read from GL is already BMP's LAST row - write rows in the order
+    they come in, no flip needed. Each pixel is RGB from GL but BMP wants BGR. */
+    for (int row = 0; row < h; row++) {
+        const unsigned char *src_row = rgb + (size_t)row * row_sz;
+        for (int col = 0; col < w; col++) {
+            unsigned char bgr[3] = {src_row[col * 3 + 2], src_row[col * 3 + 1], src_row[col * 3 + 0]};
+            fwrite(bgr, 1, 3, f);
+        }
+        if (row_pad)
+            fwrite(pad, 1, row_pad, f);
+    }
+
+    fclose(f);
+    return true;
+}
+
+/*! Captures the current framebuffer (whatever was last drawn - call after a real frame has
+rendered, e.g. from pump(), which runs before ImGui::NewFrame() for the frame AFTER the one that
+drew what you want to see - see this file's own doc comment on pump()'s timing) via glReadPixels()
+and writes it to `path` as a BMP. Works whether or not the window is actually visible/shown -
+GLFW/OpenGL rendering to the window's own framebuffer never depended on the OS actually presenting
+it on screen, only glfwSwapBuffers() needs to have run, which the main loop already does every
+frame regardless of visibility - this is what makes VC_WINDOW_STAY_HIDDEN (see reveal_window())
+useful for fully headless automated driving: never show the window at all, ever, and use this
+command instead of a real screen capture. */
+bool capture_screenshot(const char *path) {
+    int w = 0, h = 0;
+    glfwGetFramebufferSize(imgui_window, &w, &h);
+    if (w <= 0 || h <= 0)
+        return false;
+
+    std::vector<unsigned char> pixels((size_t)w * h * 3);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+
+    return write_bmp(path, w, h, pixels.data());
+}
 
 constexpr uint16_t PORT = 47821;
 
@@ -103,6 +192,9 @@ ImGuiKey key_from_name(const std::string& name) {
  *    mouse_pos <x> <y>
  *    mouse_down <0|1|2>       / mouse_up <0|1|2>       / mouse_click <0|1|2>
  *    mouse_wheel <x> <y>
+ *    screenshot <path>       - captures the current framebuffer to `path` as a BMP (see
+ *                               capture_screenshot() - works even if the window is hidden/never
+ *                               shown, e.g. under VC_WINDOW_STAY_HIDDEN)
  * Unknown/malformed lines are ignored (DBG-logged) - this is a debug tool, not a protocol to be
  * strict about.
  *
@@ -169,6 +261,17 @@ void dispatch_line(const std::string& line) {
         float x = 0, y = 0;
         iss >> x >> y;
         io.AddMouseWheelEvent(x, y);
+    }
+    else if (cmd == "screenshot") {
+        std::string path;
+        std::getline(iss, path);
+        if (!path.empty() && path[0] == ' ')
+            path = path.substr(1);
+        if (path.empty()) {
+            DBG("debug_input_pipe: 'screenshot' needs a path");
+        } else if (!capture_screenshot(path.c_str())) {
+            DBG("debug_input_pipe: screenshot capture/write failed for '%s'", path.c_str());
+        }
     }
     else {
         DBG("debug_input_pipe: unknown command '%s'", cmd.c_str());
@@ -303,7 +406,19 @@ void reveal_window() {
             if (sscanf(pos, "%d,%d", &x, &y) == 2)
                 glfwSetWindowPos(imgui_window, x, y);
         }
+        /* VC_WINDOW_STAY_HIDDEN: for fully headless automated driving - never show the window at
+        all, ever (position it anyway, harmlessly, in case something later does reveal it some
+        other way). Rendering still happens every frame regardless (glfwSwapBuffers() doesn't
+        care whether the window is visible) - use the "screenshot" debug_input_pipe command to see
+        what's on screen instead of ever showing a real window. */
+        if (getenv("VC_WINDOW_STAY_HIDDEN"))
+            return;
+#ifdef _WIN32
+        /* SW_SHOWNOACTIVATE, not glfwShowWindow() - see the #include comment above for why. */
+        ShowWindow(glfwGetWin32Window(imgui_window), SW_SHOWNOACTIVATE);
+#else
         glfwShowWindow(imgui_window);
+#endif
     }
 }
 

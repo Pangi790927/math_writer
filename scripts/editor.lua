@@ -22,7 +22,7 @@ they're reinterpreted by mformula.lua (Up/Down = enter superscript/subscript).
 
 local vc = require("virt_composer")
 local char = require("char")
-local mformula = require("mformula")
+local mformula = require("mformula_new") -- TEMP: swapped in for a live look, see CLAUDE.md/chat
 
 local editor = {}
 
@@ -152,7 +152,7 @@ end
 "\alpha") is looked up the same way a formula's own macros are (selection_to_text()'s plain-text
 greek/symbol fallback, undone), "\$"/"\\" unescape back to a literal "$"/"\", and anything else
 unmapped - an unrecognized macro included - is skipped, the same leniency plain paste always had. ]]
-local function insert_text(state, text)
+local function insert_text(state, text, fontset, sz)
     local i = 1
     while i <= #text do
         local c = text:sub(i, i)
@@ -161,7 +161,7 @@ local function insert_text(state, text)
             -- not a literal substring.
             local close = text:find("$$", i + 2, true)
             local inner = text:sub(i + 2, close and (close - 1) or #text)
-            local formula = mformula.from_latex(inner)
+            local formula = mformula.from_latex(fontset, sz, inner)
             table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
             state.cursor_pos = state.cursor_pos + 1
             i = close and (close + 2) or (#text + 1)
@@ -223,11 +223,11 @@ go through wholesale state.chars replacement already; this is that same operatio
 fresh (or about to be cleared) editor.new() instead of a snapshot table. Does NOT go through
 push_undo() itself - loading a save file replaces the state a box STARTS with, there's nothing
 before it to undo back to. ]]
-function editor.from_text(state, text)
+function editor.from_text(state, text, fontset, sz)
     state.chars = {}
     state.cursor_pos = 0
     state.selection_anchor = nil
-    insert_text(state, text)
+    insert_text(state, text, fontset, sz)
 end
 
 --[[ Nearest recorded glyph-gap position (index into state.chars) to a screen point, using the
@@ -418,7 +418,10 @@ function editor.handle_input(state, fontset, sz)
             if clicked_inside_fb then
                 local mpos = vc.ImGui_GetMousePos()
                 local local_click = {x = mpos.x - clicked_inside_fb.draw_x, y = mpos.y - clicked_inside_fb.draw_y}
-                state.active_formula.cursor = mformula.hit_test(state.active_formula, fontset, sz, local_click)
+                -- TEMP: mformula_new's hit_test() mutates cursor_pos directly (same convention as
+                -- move_*) rather than returning a value - mformula.lua's own hit_test() returned
+                -- {row=,pos=} for the caller to assign into state.cursor instead.
+                mformula.hit_test(state.active_formula, fontset, sz, local_click)
             end
             -- One undo step per keystroke INSIDE a formula (not coalesced, unlike plain typing
             -- outside one) - but only when this keystroke actually changed the tree, not for pure
@@ -428,7 +431,7 @@ function editor.handle_input(state, fontset, sz)
             local formula = state.active_formula
             local pre_version = formula.version
             local pre_snapshot = snapshot(state)
-            mformula.handle_input(formula)
+            mformula.handle_input(formula, fontset, sz) -- TEMP: mformula_new needs these, mformula didn't
             if formula.version ~= pre_version then
                 commit_undo(state, pre_snapshot, nil)
             end
@@ -452,7 +455,7 @@ function editor.handle_input(state, fontset, sz)
     -- Ctrl+M: insert a new formula embed at the cursor and enter it straight away. -------------
     if is_ctrl and vc.ImGui_IsKeyPressed("ImGuiKey_M", false) then
         push_undo(state, nil)
-        local formula = mformula.new()
+        local formula = mformula.new(fontset, sz) -- TEMP: mformula_new.new() needs these, mformula.new() didn't
         table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
         state.cursor_pos = state.cursor_pos + 1
         state.active_formula = formula
@@ -464,7 +467,7 @@ function editor.handle_input(state, fontset, sz)
     -- mformula.new_with_frac()'s own comment for why it doesn't wrap anything). -------------
     if is_ctrl and not is_shift and vc.ImGui_IsKeyPressed("ImGuiKey_Slash", false) then
         push_undo(state, nil)
-        local formula = mformula.new_with_frac()
+        local formula = mformula.new_with_frac(fontset, sz)
         table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
         state.cursor_pos = state.cursor_pos + 1
         state.active_formula = formula
@@ -527,7 +530,7 @@ function editor.handle_input(state, fontset, sz)
             end
             delete_selection(state)
             if text then
-                insert_text(state, text)
+                insert_text(state, text, fontset, sz)
             end
         end
     end
@@ -620,7 +623,7 @@ function editor.handle_input(state, fontset, sz)
             -- (see mformula's own handle_input caller in this file).
             state.selection_anchor = nil
             state.active_formula = adjacent_formula
-            state.active_formula.cursor = {row = state.active_formula.root, pos = #state.active_formula.root.items}
+            mformula.cursor_to_end(state.active_formula)
         else
             update_selection_for_move(state, is_shift)
             local function on_ws()    return is_whitespace(state.chars[state.cursor_pos]) end
@@ -647,7 +650,7 @@ function editor.handle_input(state, fontset, sz)
             -- own start.
             state.selection_anchor = nil
             state.active_formula = adjacent_formula
-            state.active_formula.cursor = {row = state.active_formula.root, pos = 0}
+            mformula.cursor_to_start(state.active_formula)
         else
             update_selection_for_move(state, is_shift)
             local function on_ws()    return is_whitespace(state.chars[state.cursor_pos+1]) end

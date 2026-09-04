@@ -44,9 +44,16 @@ void hide_console();
 
 /*! DEBUG-ONLY, opt-in via VC_WINDOW_START_HIDDEN (see imgui_helpers.h's own comment on that env
  * var - it's what makes imgui_init() create the window hidden in the first place). Moves the
- * window to MATH_WRITER_DEV_WINDOW_POS ("X,Y") if given, then reveals it. This is the only place
- * the window becomes visible in that mode, so there's no flash at the default position first.
- * No-op unless VC_WINDOW_START_HIDDEN is set.
+ * window to MATH_WRITER_DEV_WINDOW_POS ("X,Y") if given, then reveals it (via the native Win32
+ * API with SW_SHOWNOACTIVATE, not glfwShowWindow() - so revealing it never steals focus either).
+ * This is the only place the window becomes visible in that mode, so there's no flash at the
+ * default position first. No-op unless VC_WINDOW_START_HIDDEN is set.
+ *
+ * If VC_WINDOW_STAY_HIDDEN is ALSO set, the window is never revealed at all - stays hidden for
+ * the app's whole lifetime (it still renders every frame regardless, glfwSwapBuffers() doesn't
+ * care about visibility). Use the "screenshot <path>" debug_input_pipe command (see .cpp) to see
+ * what's on screen instead - fully headless automated driving, nothing ever touches the
+ * developer's screen or focus at all.
  *
  * Call once, right after imgui_init(). */
 void reveal_window();

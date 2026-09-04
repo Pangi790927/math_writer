@@ -293,8 +293,15 @@ struct mexpr_t : public vc::object_t {
 
     mexpr_t(vc::object_t::Private priv) : vc::object_t(priv) {}
     virtual ~mexpr_t() {
+        /* Only clear a child's parent if it still points back to US - a rebuild that reuses an
+        EXISTING child (mexpr_supsub()/etc. re-parent it to the NEW node on construction, same as
+        any other compose call) leaves the OLD node's own subobjs still referencing that same
+        child; if the old node outlives the rebuild for a while (GC is lazy, not immediate) and
+        gets destroyed later, blindly nulling here would clobber the child's CORRECT, newer parent
+        pointer instead of the stale one this destructor is actually cleaning up. */
         for (auto &anch : subobjs)
-            anch.obj->parent = nullptr;
+            if (anch.obj->parent == this)
+                anch.obj->parent = nullptr;
     }
 
     static vc::object_type_e type_id_static() { return MEXPR_TYPE_EXPR; }
