@@ -56,6 +56,10 @@ local mexpru = require("mexpru")
 local mformula_new = {}
 
 local CURSOR_COLOR = 0xff00ffff
+-- Cursor color while container.pending_bracket is set - "you're in bracket-closing mode, waiting
+-- for the matching )/]/}". A visibly different hue (purple, vs. CURSOR_COLOR's yellow) rather than
+-- a blink-rate/shape change, so it reads at a glance without having to watch it blink first.
+local PENDING_BRACKET_CURSOR_COLOR = 0xffff00cc
 
 -- How much smaller (in font-size-table steps) a sup/sub's own content renders, relative to its
 -- base - same trick, same constants as mformula.lua's own SUB_SIZE_DELTA/MAX_SIZE_INDEX: char.lua's
@@ -287,7 +291,8 @@ function mformula_new.draw(container, fontset, pos, sz, show_cursor)
         cursor_top, cursor_h = rect.top - pos.y, rect.bottom - rect.top
         -- Same ~30-frame half-period blink as mformula.lua's own caret (roughly 0.5s at 60fps).
         if math.floor(container.frame / 30) % 2 == 0 then
-            vc.ImGui_AddLine({x = rect.x, y = rect.top}, {x = rect.x, y = rect.bottom}, CURSOR_COLOR, 2)
+            local color = container.pending_bracket and PENDING_BRACKET_CURSOR_COLOR or CURSOR_COLOR
+            vc.ImGui_AddLine({x = rect.x, y = rect.top}, {x = rect.x, y = rect.bottom}, color, 2)
         end
     end
 
@@ -361,7 +366,10 @@ local function make_supsub(container, fontset, slot)
     end
 
     local children = mexpru.u(original_parent).children
-    children[mexpru.index_of(children, target)] = supsub_node
+    -- target:get_parent_idx() (math_expr_composer.h) - safe here since `children` was just read
+    -- fresh above, nothing's mutated it since, so target's own parent (not yet rebuilt) and this
+    -- Lua list are still in exact sync.
+    children[target:get_parent_idx()] = supsub_node
     local rebuilt = mexpru.horiz(fontset, children, mexpru.u(original_parent).sz)
     container.root = mexpru.propagate_rebuild(fontset, original_parent, rebuilt)
 
@@ -399,7 +407,8 @@ local function make_frac(container, fontset, target_sz)
     else
         local horiz = target:get_parent()
         local children = mexpru.u(horiz).children
-        table.insert(children, mexpru.index_of(children, target) + 1, frac_node)
+        -- target:get_parent_idx() - safe here, same reasoning as make_supsub()'s own use above.
+        table.insert(children, target:get_parent_idx() + 1, frac_node)
         local rebuilt = mexpru.horiz(fontset, children, mexpru.u(horiz).sz)
         container.root = mexpru.propagate_rebuild(fontset, horiz, rebuilt)
     end
@@ -470,6 +479,166 @@ local function base_of(node)
     return nil
 end
 
+-- '(' / '[' / '{' -> bracket type, and back - entangled-bracket opening (open_bracket() below).
+local OPEN_BRACKETS = {
+    ["("] = vc.MEXPR_BRACKET_ROUND, ["["] = vc.MEXPR_BRACKET_SQUARE, ["{"] = vc.MEXPR_BRACKET_CURLY,
+}
+local OPEN_BRACKET_ASCII = {
+    [vc.MEXPR_BRACKET_ROUND] = "(", [vc.MEXPR_BRACKET_SQUARE] = "[", [vc.MEXPR_BRACKET_CURLY] = "{",
+}
+
+--[[ Splices a freshly-built glyph atom (`new_glyph` - ALREADY tagged with whatever it needs, at
+minimum u(_).sz, same as every atom this file builds carries) into the tree at cursor_pos, per this
+file's own model comment's REPLACE/INSERT-AT-START/INSERT-AFTER/bump-old-base-out rules - shared by
+the ordinary character-typing loop in handle_input() below and open_bracket()'s own placeholder
+insertion (a bracket atom is typed exactly like any other character at this point - it's just an
+ordinary ASCII glyph with extra bookkeeping tagged on), so both go through the identical splice
+mechanics rather than duplicating them. Moves cursor_pos to `new_glyph` and bumps container.version,
+same as every tree-editing operation in this file already does. ]]
+local function insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
+        target_is_empty, target_is_supsub_base, target_sz, new_glyph)
+    if target_is_empty then
+        container.root = mexpru.propagate_rebuild(fontset, target, new_glyph)
+    elseif target_is_horiz then
+        local children = mexpru.u(target).children
+        table.insert(children, 1, new_glyph)
+        local rebuilt = mexpru.horiz(fontset, children, target_sz)
+        container.root = mexpru.propagate_rebuild(fontset, target, rebuilt)
+    elseif target_is_supsub_base then
+        local supsub_node = target_parent
+        local outer_horiz = supsub_node:get_parent()
+        local outer_children = mexpru.u(outer_horiz).children
+        local u = mexpru.u(supsub_node)
+        local rebuilt_supsub = mexpru.supsub(fontset, new_glyph, u.sup, u.sub)
+
+        local idx = supsub_node:get_parent_idx()
+        outer_children[idx] = rebuilt_supsub
+        table.insert(outer_children, idx, target)
+
+        local rebuilt_outer = mexpru.horiz(fontset, outer_children, mexpru.u(outer_horiz).sz)
+        container.root = mexpru.propagate_rebuild(fontset, outer_horiz, rebuilt_outer)
+    else
+        local horiz = target_parent
+        local children = mexpru.u(horiz).children
+        table.insert(children, target:get_parent_idx() + 1, new_glyph)
+        local rebuilt = mexpru.horiz(fontset, children, mexpru.u(horiz).sz)
+        container.root = mexpru.propagate_rebuild(fontset, horiz, rebuilt)
+    end
+
+    container.cursor_pos = vc.wref_mexpr(new_glyph)
+    container.version = (container.version or 0) + 1
+end
+
+--[[ '(' / '[' / '{' typed (bracket_type = OPEN_BRACKETS[ch]): builds the placeholder open-bracket
+glyph - an ordinary ASCII glyph at this point, same as any other typed character - and splices it in
+via insert_glyph_at_cursor(), the exact same 4-way splice an ordinary typed character goes through,
+since at this point it genuinely IS just an ordinary character as far as the tree is concerned. Tags
+it u(_).bracket = {is_open=true, type=bracket_type} and parks container.pending_bracket on it - a
+single slot, not a stack (opening a SECOND bracket while one is already pending is a no-op/blocked -
+see this function's own call site in handle_input()). While pending, mformula_new.draw() shows a
+purple cursor (PENDING_BRACKET_CURSOR_COLOR) instead of the ordinary CURSOR_COLOR. ]]
+local function open_bracket(container, fontset, target, target_parent, target_is_horiz,
+        target_is_empty, target_is_supsub_base, target_sz, bracket_type)
+    local entry = char.find_by_ascii(OPEN_BRACKET_ASCII[bracket_type])
+    local new_glyph = mexpru.mexpr_symbol(fontset, {size = target_sz, code = entry.ncod}, true)
+    mexpru.u(new_glyph).sz = target_sz
+    mexpru.u(new_glyph).bracket = {is_open = true, type = bracket_type}
+
+    insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
+            target_is_empty, target_is_supsub_base, target_sz, new_glyph)
+
+    container.pending_bracket = vc.wref_mexpr(new_glyph)
+end
+
+-- ')' / ']' / '}' -> bracket type, and back - entangled-bracket closing (try_close_bracket() below).
+local CLOSE_BRACKETS = {
+    [")"] = vc.MEXPR_BRACKET_ROUND, ["]"] = vc.MEXPR_BRACKET_SQUARE, ["}"] = vc.MEXPR_BRACKET_CURLY,
+}
+local CLOSE_BRACKET_ASCII = {
+    [vc.MEXPR_BRACKET_ROUND] = ")", [vc.MEXPR_BRACKET_SQUARE] = "]", [vc.MEXPR_BRACKET_CURLY] = "}",
+}
+
+--[[ ')' / ']' / '}' typed (bracket_type = CLOSE_BRACKETS[ch]) - only actually closes when: a
+bracket IS pending, its own type matches the key pressed, and cursor_pos currently rests at a
+position belonging to the SAME horiz the open atom itself lives in (its own get_parent()) - either
+an ordinary sibling slot there, or (base_of()'s own "a base reads as occupying its supsub's slot"
+convention, reused here) a supsub's base whose supsub sits in that horiz. Any other cursor position,
+or no pending bracket at all, or a type mismatch: swallowed - a pure no-op, nothing inserted as a
+stray character either (closing brackets are reserved, never ordinary content).
+A closing bracket landing exactly ON the open atom itself closes an EMPTY pair ("imagine an I
+[cursor] at the current font level" - a fresh empty atom fills the gap, since mexpru.lua's
+resolve_bracket_pairs() relies on a pair's span never actually being empty and errors loudly
+otherwise) - only in that exact case; any real content already there gets no filler, its own extent
+alone drives both brackets' eventual size.
+Once matched, BOTH atoms get u(_).bracket.peer set on each other - a reference to the OTHER's own
+u() table, not the raw node (mexpru.lua's own top comment on why that distinction matters - real Lua
+`==`, no C++ identity workaround needed) - which is what lets mexpru.horiz()'s very next rebuild
+(triggered right here) immediately resolve the pair into its real, properly-sized glyphs via
+resolve_bracket_pairs() - the open atom rendered as a perfectly ordinary, unsized glyph up until
+this exact point (open_bracket()'s own comment), both sides replaced together the instant it closes. ]]
+local function try_close_bracket(container, fontset, bracket_type)
+    local pending = container.pending_bracket
+    if not pending then
+        return
+    end
+    local open_atom = pending:get_obj()
+    local open_bracket_u = mexpru.u(open_atom).bracket
+    if open_bracket_u.type ~= bracket_type then
+        return
+    end
+    local open_horiz = open_atom:get_parent()
+
+    local close_target = container.cursor_pos:get_obj()
+    local base_owner = base_of(close_target)
+    if base_owner then
+        close_target = base_owner
+    end
+    if is_horiz(close_target) then
+        return
+    end
+    local close_parent = close_target:get_parent()
+    if not close_parent or not mexpru.same(close_parent, open_horiz) then
+        return
+    end
+
+    local open_idx = open_atom:get_parent_idx()
+    local close_target_idx = close_target:get_parent_idx()
+    if open_idx == 0 or close_target_idx == 0 or close_target_idx < open_idx then
+        return
+    end
+
+    local children = mexpru.u(open_horiz).children
+    local close_sz = mexpru.u(open_atom).sz
+    local close_entry = char.find_by_ascii(CLOSE_BRACKET_ASCII[bracket_type])
+    local close_glyph = mexpru.mexpr_symbol(fontset, {size = close_sz, code = close_entry.ncod}, true)
+    mexpru.u(close_glyph).sz = close_sz
+
+    local close_idx
+    if close_target_idx == open_idx then
+        local filler = build_empty_atom(fontset, close_sz)
+        table.insert(children, open_idx + 1, filler)
+        table.insert(children, open_idx + 2, close_glyph)
+        close_idx = open_idx + 2
+    else
+        table.insert(children, close_target_idx + 1, close_glyph)
+        close_idx = close_target_idx + 1
+    end
+
+    mexpru.u(close_glyph).bracket = {is_open = false, type = bracket_type, peer = open_bracket_u}
+    open_bracket_u.peer = mexpru.u(close_glyph)
+    container.pending_bracket = nil
+
+    -- children[close_idx] is read AFTER the rebuild below, not a local variable holding close_glyph
+    -- directly - resolve_bracket_pairs() (mexpru.lua), part of that same rebuild, immediately
+    -- resolves this brand-new pair (its first ever resolve) and REPLACES both atoms in `children`
+    -- with the real sized glyphs - close_glyph itself is the now-discarded placeholder by the time
+    -- this returns.
+    local rebuilt = mexpru.horiz(fontset, children, mexpru.u(open_horiz).sz)
+    container.root = mexpru.propagate_rebuild(fontset, open_horiz, rebuilt)
+    container.cursor_pos = vc.wref_mexpr(children[close_idx])
+    container.version = (container.version or 0) + 1
+end
+
 -- Forward-declared: mutually recursive (a frac's num/den, having no base to land on, exits by
 -- treating the FRAC ITSELF as an atom in ITS OWN container - the same "whatever occupies this slot"
 -- move move_left_within() already does for a plain atom or a supsub).
@@ -527,7 +696,9 @@ it is:
     producing a stray leftover empty atom next to whatever got typed. ]]
 move_left_within = function(container, horiz, node)
     local children = mexpru.u(horiz).children
-    local idx = mexpru.index_of(children, node)
+    -- node:get_parent_idx() - safe: every call site of this function passes horiz = node:get_parent()
+    -- (see this function's own callers), and `children` here is a fresh, unmutated read of it.
+    local idx = node:get_parent_idx()
     if idx > 1 then
         container.cursor_pos = vc.wref_mexpr(children[idx - 1])
     elseif node.type == vc.MEXPR_TYPE_EMPTY_BOX then
@@ -589,7 +760,9 @@ so a chain of "was also last in ITS OWN container" resolves one keypress at a ti
 in one call - matches how every other keypress only ever takes one visual step. ]]
 local function move_right_within(container, horiz, node)
     local children = mexpru.u(horiz).children
-    local idx = mexpru.index_of(children, node)
+    -- node:get_parent_idx() - safe, same reasoning as move_left_within()'s own use above (every
+    -- call site here also passes horiz = node:get_parent()).
+    local idx = node:get_parent_idx()
     if idx < #children then
         container.cursor_pos = vc.wref_mexpr(land_rightward(children[idx + 1]))
         return
@@ -753,8 +926,10 @@ function mformula_new.move_down(container)
     end
     local hp_u = mexpru.u(horiz_parent)
     local horiz_children = mexpru.u(horiz).children
-    local is_last_element = (not is_horiz(target))
-            and mexpru.index_of(horiz_children, target) == #horiz_children
+    -- target:get_parent_idx() - safe: only evaluated (Lua's `and` short-circuit) when target is NOT
+    -- a horiz, in which case `horiz` above was set to target:get_parent() directly - a fresh,
+    -- unmutated read.
+    local is_last_element = (not is_horiz(target)) and target:get_parent_idx() == #horiz_children
 
     if mexpru.same(hp_u.sup, horiz) and is_last_element then
         container.cursor_pos = vc.wref_mexpr(horiz_parent)
@@ -827,8 +1002,8 @@ function mformula_new.move_up(container)
     end
     local hp_u = mexpru.u(horiz_parent)
     local horiz_children = mexpru.u(horiz).children
-    local is_last_element = (not is_horiz(target))
-            and mexpru.index_of(horiz_children, target) == #horiz_children
+    -- target:get_parent_idx() - safe, same reasoning as move_down()'s own use above.
+    local is_last_element = (not is_horiz(target)) and target:get_parent_idx() == #horiz_children
 
     if mexpru.same(hp_u.sub, horiz) and is_last_element then
         container.cursor_pos = vc.wref_mexpr(horiz_parent)
@@ -948,52 +1123,30 @@ function mformula_new.handle_input(container, fontset, sz)
 
     for _, cp in ipairs(vc.ImGui_input_queue_chars()) do
         if cp > 32 and cp < 256 then
-            local entry = char.find_by_ascii(string.char(cp))
+            local ch = string.char(cp)
+
+            -- '(' / '[' / '{' and ')' / ']' / '}' are intercepted here, ahead of the ordinary
+            -- char.find_by_ascii() path below - see open_bracket()'s/try_close_bracket()'s own
+            -- comments (near base_of()). Opening a SECOND bracket while one is already pending is a
+            -- no-op/blocked (single pending slot, not a stack); a CLOSE bracket always goes through
+            -- try_close_bracket() (its own comment covers every way it can be a no-op).
+            if OPEN_BRACKETS[ch] then
+                if not container.pending_bracket then
+                    open_bracket(container, fontset, target, target_parent, target_is_horiz,
+                            target_is_empty, target_is_supsub_base, target_sz, OPEN_BRACKETS[ch])
+                end
+                return
+            elseif CLOSE_BRACKETS[ch] then
+                try_close_bracket(container, fontset, CLOSE_BRACKETS[ch])
+                return
+            end
+
+            local entry = char.find_by_ascii(ch)
             if entry then
                 local new_glyph = mexpru.mexpr_symbol(fontset, {size = target_sz, code = entry.ncod}, true)
                 mexpru.u(new_glyph).sz = target_sz
-
-                if target_is_empty then
-                    -- Replace this one atom, in place, within its parent horiz OR (if target is an
-                    -- EMPTY base) its supsub - propagate_rebuild()'s own kind dispatch already
-                    -- knows the difference, nothing extra needed here either way.
-                    container.root = mexpru.propagate_rebuild(fontset, target, new_glyph)
-                elseif target_is_horiz then
-                    -- Insert at the very start of the horiz's own list.
-                    local children = mexpru.u(target).children
-                    table.insert(children, 1, new_glyph)
-                    local rebuilt = mexpru.horiz(fontset, children, target_sz)
-                    container.root = mexpru.propagate_rebuild(fontset, target, rebuilt)
-                elseif target_is_supsub_base then
-                    -- A NON-empty base: new_glyph BECOMES the base, and the glyph that used to be
-                    -- there is bumped out into the horiz holding the whole supsub, landing right
-                    -- BEFORE the supsub's own slot - "xy^2" reads left-to-right as x, then y^2, not
-                    -- y^2 stuck in front of x (the reverse of this is backspace's own "pull it back
-                    -- in" rule below).
-                    local supsub_node = target_parent
-                    local outer_horiz = supsub_node:get_parent()
-                    local outer_children = mexpru.u(outer_horiz).children
-                    local u = mexpru.u(supsub_node)
-                    local rebuilt_supsub = mexpru.supsub(fontset, new_glyph, u.sup, u.sub)
-
-                    local idx = mexpru.index_of(outer_children, supsub_node)
-                    outer_children[idx] = rebuilt_supsub
-                    table.insert(outer_children, idx, target)
-
-                    local rebuilt_outer = mexpru.horiz(fontset, outer_children, mexpru.u(outer_horiz).sz)
-                    container.root = mexpru.propagate_rebuild(fontset, outer_horiz, rebuilt_outer)
-                else
-                    -- A glyph atom sitting in a horiz: insert the new one right after it in that
-                    -- horiz's own list.
-                    local horiz = target_parent
-                    local children = mexpru.u(horiz).children
-                    table.insert(children, mexpru.index_of(children, target) + 1, new_glyph)
-                    local rebuilt = mexpru.horiz(fontset, children, mexpru.u(horiz).sz)
-                    container.root = mexpru.propagate_rebuild(fontset, horiz, rebuilt)
-                end
-
-                container.cursor_pos = vc.wref_mexpr(new_glyph)
-                container.version = (container.version or 0) + 1
+                insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
+                        target_is_empty, target_is_supsub_base, target_sz, new_glyph)
                 return
             end
         end
@@ -1041,7 +1194,10 @@ function mformula_new.handle_input(container, fontset, sz)
         local supsub_node = target_parent
         local outer_horiz = supsub_node:get_parent()
         local outer_children = mexpru.u(outer_horiz).children
-        local supsub_idx = mexpru.index_of(outer_children, supsub_node)
+        -- supsub_node:get_parent_idx() - safe HERE (outer_children is a fresh, unmutated read), but
+        -- NOT below anymore, once table.remove() has already mutated this same Lua list - see that
+        -- one's own comment.
+        local supsub_idx = supsub_node:get_parent_idx()
 
         local new_base
         if supsub_idx > 1 then
@@ -1053,6 +1209,11 @@ function mformula_new.handle_input(container, fontset, sz)
 
         local u = mexpru.u(supsub_node)
         local rebuilt_supsub = mexpru.supsub(fontset, new_base, u.sup, u.sub)
+        -- Deliberately NOT supsub_node:get_parent_idx() here - the table.remove() above already
+        -- mutated outer_children (Lua), but outer_horiz's own C++ subobjs hasn't been rebuilt yet
+        -- (still reflects the PRE-removal order) - get_parent_idx() would silently return the stale
+        -- index. mexpru.index_of() re-scans the LIVE, already-mutated Lua list instead, which is
+        -- what's actually needed once the two have diverged like this.
         outer_children[mexpru.index_of(outer_children, supsub_node)] = rebuilt_supsub
 
         local rebuilt_outer = mexpru.horiz(fontset, outer_children, mexpru.u(outer_horiz).sz)
@@ -1065,7 +1226,8 @@ function mformula_new.handle_input(container, fontset, sz)
     local horiz = target_parent
     local horiz_sz = mexpru.u(horiz).sz
     local children = mexpru.u(horiz).children
-    local i = mexpru.index_of(children, target)
+    -- target:get_parent_idx() - safe, `children` is a fresh, unmutated read of target's own parent.
+    local i = target:get_parent_idx()
 
     if backspace then
         table.remove(children, i)
@@ -1140,7 +1302,8 @@ local function target_before(node)
         return target_before(parent)
     end
     local children = mexpru.u(parent).children
-    local idx = mexpru.index_of(children, node)
+    -- node:get_parent_idx() - safe, `children` is a fresh, unmutated read of node's own parent.
+    local idx = node:get_parent_idx()
     if idx > 1 then
         return children[idx - 1]
     end

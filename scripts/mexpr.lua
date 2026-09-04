@@ -1,5 +1,17 @@
 -- mexpr.lua - Converts AST nodes to mexpr trees for rendering
 -- This module provides functions to convert AST expressions to mexpr format
+--
+-- TODO (2026-09-04): vc.mexpr_bracket() is GONE - math_expr_composer.h split it into
+-- vc.mexpr_bracket_left(fs, expr, opts)/vc.mexpr_bracket_right(fs, expr, opts), each just its own
+-- glyph-like leaf sized to fit `expr` (no more single call gluing brackets+expr into one container -
+-- see the header's own comment on why: entangled-bracket editing in mformula_new.lua needs the two
+-- sides as independent, separately-placeable siblings). The four vc.mexpr_bracket calls still in
+-- this file (node_to_wrapped_mexpr(), and the CELL/VEC/MAT branches of to_mexpr() below) still use
+-- the OLD signature and will fail if this module's bracket-touching code path is ever actually
+-- reached again - left as-is for now (only reachable through main.lua's own dead demo_draw(), not on
+-- any currently-live path - confirmed 2026-09-04) rather than patched, since the real work right now
+-- is mformula_new.lua's own entangled-bracket support, not this old AST-to-mexpr path. Fix this
+-- whenever to_mexpr()'s bracket branches actually need to run again.
 
 local vc = require("virt_composer")
 local char = require("char")

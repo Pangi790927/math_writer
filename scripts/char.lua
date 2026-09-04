@@ -168,6 +168,20 @@ function capi.curly_bracket(fontsz)
     }
 end
 
+--[[ Dispatches to round_bracket()/square_bracket()/curly_bracket() above by the vc.MEXPR_BRACKET_*
+`bracket_type` a bracket atom's own u(_).bracket.type carries (mexpru.lua's resolve_bracket_pairs()) -
+lets that generic code build the right mexpr_bracket_t for whichever type a given entangled pair
+actually is, without itself needing a three-way if/elseif of its own. ]]
+function capi.bracket_opts(bracket_type, fontsz)
+    if bracket_type == vc.MEXPR_BRACKET_SQUARE then
+        return capi.square_bracket(fontsz)
+    elseif bracket_type == vc.MEXPR_BRACKET_CURLY then
+        return capi.curly_bracket(fontsz)
+    else
+        return capi.round_bracket(fontsz)
+    end
+end
+
 capi.chars = {
     {acod='!',  fcod=0x21, fnum=capi.FONT_NORMAL , ncod=  0, desc="!" },               -- exclamation mark
     {acod='"',  fcod=0x22, fnum=capi.FONT_NORMAL , ncod=  1, desc="\""},               -- double quote

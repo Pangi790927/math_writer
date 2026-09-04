@@ -60,6 +60,19 @@ end
 
 -- Kept as a reference for the mexpr_* API, not called by default anymore - see editor.lua for
 -- the live, typeable canvas.
+--
+-- TODO (2026-09-04): vc.mexpr_bracket() is GONE - math_expr_composer.h split it into
+-- vc.mexpr_bracket_left(fs, expr, opts)/vc.mexpr_bracket_right(fs, expr, opts), each just its own
+-- glyph-like leaf sized to fit `expr` (no more single call gluing brackets+expr into one container -
+-- see the header's own comment on why: entangled-bracket editing in mformula_new.lua needs the two
+-- sides as independent, separately-placeable siblings). Every brack1..brack15 call below (and the
+-- vc.mexpr_bracket calls in mexpr.lua's to_mexpr()) still uses the OLD signature and will fail if
+-- this function - or anything reaching mexpr.lua's bracket-touching branches - is ever actually
+-- called again; left as-is for now (dead code, not on any currently-reachable path - confirmed
+-- 2026-09-04) rather than patched, since the real work right now is mformula_new.lua's own
+-- entangled-bracket support, not this reference demo. Fix this (or just delete it, if by then
+-- nothing still wants it as an mexpr_* API reference) whenever this file's own bracket calls
+-- actually need to run again.
 local increment = 1
 local i = 0
 local function demo_draw()

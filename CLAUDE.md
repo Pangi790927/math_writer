@@ -20,6 +20,19 @@ this file is about how to work in it. These rules are specific to this repo and 
 - **git structure is read-only.** `git status`/`diff`/`log`/`show` etc. are fine any time. Never
   `add`/`commit`/`push`/`stash`/`checkout`/`reset --hard` or anything else that touches history or
   the index.
+- **When Lua needs a capability C++/`virt_composer` doesn't expose, ask before working around it.**
+  User's own words, verbatim, 2026-09-04: "ASK FOR WHAT YOU DON'T HAVE FROM C++, DON'T IMPLEMENT IT
+  YOURSELF WITHOUT GUIDANCE, DON'T ASSUME YOU CAN'T HAVE IT." Hit directly that day: `mexpru.lua`'s
+  `same(a, b)` papers over `mexpr_t` having no `__eq` registered by comparing `tostring()` output
+  instead; new bracket-pairing code got built on top of that hack without ever questioning whether
+  real identity comparison could just be exposed from C++ — don't repeat that.
+- **Any conflict/contradiction in what the user says is theirs to resolve — ask, don't guess.**
+  User's own words, verbatim, 2026-09-04: "ANY CONFLICT/CONTRADICTION OF WHAT I SAY IS SOLVED BY
+  ME, SO IF YOU DETECT A CONTRADICTION, ASK ME!" — clarified scope, also verbatim: "a contradiction
+  in what I say of course" (i.e. this message vs. an earlier one, not a mismatch between the user's
+  intent and what the code actually does - that's ordinary review). Never silently pick a side,
+  paper over it, or guess which one still holds - surface it and ask. Also in the global
+  `~/.claude/CLAUDE.md` ("Working style" section) as the general, all-projects form of this rule.
 
 ## Build
 

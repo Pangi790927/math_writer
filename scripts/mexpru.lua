@@ -27,7 +27,8 @@ end
 -- themselves - no u field on those at all.)
 local WRAPPED = {
     "mexpr_empty", "mexpr_symbol", "mexpr_bigop", "mexpr_frac", "mexpr_supsub",
-    "mexpr_bracket", "mexpr_unarexpr", "mexpr_binexpr", "mexpr_merge_h", "mexpr_merge_v",
+    "mexpr_bracket_left", "mexpr_bracket_right",
+    "mexpr_unarexpr", "mexpr_binexpr", "mexpr_merge_h", "mexpr_merge_v",
 }
 
 for _, name in ipairs(WRAPPED) do
@@ -36,6 +37,140 @@ for _, name in ipairs(WRAPPED) do
         local ret = raw(...)
         ret.u:capture({})
         return ret
+    end
+end
+
+--[[ Entangled bracket pairs (2026-09-04 design discussion, revised twice same day): a bracket atom
+built by mexpru.mexpr_bracket_left()/mexpru.mexpr_bracket_right() carries u(_).bracket = {is_open,
+type, peer} - `peer` a reference to the OTHER atom's own u TABLE (mexpru.u(other_atom), NOT the raw
+mexpr_p node itself). That distinction matters: mexpr_t never registered a real `__eq` with
+virt_composer (see same() below, and its own comment) - comparing two mexpr_p handles with plain `==`
+throws. A u table, by contrast, is an ordinary Lua table with no such wrapping at all, and
+lua_object_t::push() (../utils/virt_composer.h) always hands back the SAME table for the same node
+(a plain lua_rawgeti against the registry slot it was captured into, never a fresh copy) - so plain
+`==` between two mexpru.u(...) results IS a real, reliable identity check, with nothing invented or
+worked around: this is just an ordinary Lua table comparison, on data that was always a plain Lua
+table to begin with. resolve_bracket_pairs() below leans on exactly this to find a bracket atom's own
+match directly, without same()/index_of() or any depth-tracking.
+Nothing but a bracket atom itself ever carries a .bracket field - an ordinary content node (the "a"
+in "(a)", the "+" between two brackets, ...) has none, full stop; bracket_kind() below returns nil
+for it. peer is nil while still PENDING (typed, not yet closed - mformula_new.lua's own
+container.pending_bracket) and set together on BOTH atoms the moment a pair is created or rebuilt
+(mformula_new.lua's try_close_bracket() at first pairing; resolve_bracket_pairs() below on every
+later rebuild) - always kept in sync, never left dangling, since whoever sets one side always sets
+the other in the same breath. ]]
+local function bracket_kind(node)
+    local u = mexpru.u(node)
+    return u and u.bracket
+end
+
+--[[ Walks `children` from `idx + direction` onward (direction = 1 rightward, -1 leftward), matching
+nested brackets by depth as it goes, and returns the index of the first bracket found that ISN'T
+already claimed by some nested pair passed along the way - nil if the walk reaches the end without
+ever finding one. Used with idx naming an ORDINARY (non-bracket) position and direction=-1: finds
+the nearest bracket ENCLOSING it ("walk the horiz out in a direction... if you fail to find any
+bracket on the way, then it is not bracketed at this level" - any close bracket passed along the way
+belongs to an earlier, already-fully-closed group with nothing to do with idx, skipped past whole).
+Returns nil when idx isn't inside any bracket pair AT THIS HORIZ's own level at all.
+(A bracket atom's own match is NOT found this way - see this file's own top comment - it's a direct
+.peer read. This function is kept for the one case that still needs a real walk: an ordinary node
+has no .bracket field of its own to read, so there's nothing to look up directly.)
+Correct without needing to check bracket TYPE while walking (only is_open) - mformula_new.lua's own
+single-slot pending discipline (only one unpaired open bracket can ever exist at a time) guarantees
+every closed pair in the tree is already same-type matched, so a mismatched-type crossing can never
+actually arise to trip this up. Never needs identity comparison either - purely a plain-index walk
+over whatever mexpru.u(_).bracket each child carries, or doesn't. ]]
+local function scan_bracket(children, idx, direction)
+    local depth = 0
+    local i = idx + direction
+    while children[i] do
+        local br = bracket_kind(children[i])
+        if br then
+            -- An open met while walking right, or a close met while walking left, starts (or
+            -- continues) a nested/earlier-unrelated pair that has to be skipped past whole before
+            -- our own search can resolve.
+            local starts_nested = (direction == 1 and br.is_open) or (direction == -1 and not br.is_open)
+            if starts_nested then
+                depth = depth + 1
+            elseif depth > 0 then
+                depth = depth - 1
+            else
+                return i
+            end
+        end
+        i = i + direction
+    end
+    return nil
+end
+
+--[[ Resolves every entangled bracket pair currently found in children[lo..hi] (the WHOLE list by
+default - lo/hi are only ever passed explicitly by this function's OWN recursion below), innermost
+first, before `children` is handed to mexpr_merge_h - see mformula_new.lua's own PENDING_BRACKET
+comment for why a horiz's rebuild can't just be "merge whatever's here" anymore once brackets are
+involved: each pair's own glyphs depend on everything CURRENTLY between them.
+
+For an open bracket at `i`, finding where its own close currently sits is a plain forward walk
+comparing each element's own u table against `br.peer` (this file's own top comment on why that's a
+real, reliable check) - not wasted work: this function's actual job per pair is gathering everything
+strictly BETWEEN the two into `inner` for sizing, which requires visiting every element in the span
+regardless of how the boundary gets found, so the search costs nothing beyond what the job already
+needs. It does NOT need depth-tracking (a stack, or scan_bracket()'s own counter) to stay correct
+despite however many OTHER open/close brackets (nested pairs) sit in between - unlike interpreting
+brackets generically, checking against one SPECIFIC known target (`br.peer`) doesn't care what it
+passes over on the way to it.
+Innermost-first: on finding an open bracket's own close this way, it first recurses into the range
+strictly BETWEEN them (whatever nests inside gets fully resolved first, its own atoms' identities
+possibly replaced) before gathering `inner` and rebuilding this pair's own two glyphs against that
+now-settled content. ]]
+local function resolve_bracket_pairs(fs, children, lo, hi)
+    lo = lo or 1
+    hi = hi or #children
+    local i = lo
+    while i <= hi do
+        local br = bracket_kind(children[i])
+        if br and br.is_open and br.peer then
+            local close_idx = i + 1
+            while close_idx <= hi and mexpru.u(children[close_idx]) ~= br.peer do
+                close_idx = close_idx + 1
+            end
+
+            if close_idx <= hi then
+                resolve_bracket_pairs(fs, children, i + 1, close_idx - 1)
+
+                local inner = {}
+                for k = i + 1, close_idx - 1 do
+                    table.insert(inner, children[k])
+                end
+                if #inner == 0 then
+                    error("resolve_bracket_pairs: bracket pair's own span is empty - " ..
+                            "mformula_new.lua is supposed to keep a bracket pair's span non-empty " ..
+                            "(a fresh empty atom, same as an emptied-out horiz falls back to) " ..
+                            "whenever backspace/delete would otherwise remove its last remaining child")
+                end
+
+                local assembled = (#inner == 1) and inner[1] or mexpru.mexpr_merge_h(fs, inner)
+                local sz = mexpru.u(children[i]).sz
+                local opts = char.bracket_opts(br.type, sz)
+
+                local new_left = mexpru.mexpr_bracket_left(fs, assembled, opts)
+                local new_right = mexpru.mexpr_bracket_right(fs, assembled, opts)
+                mexpru.u(new_left).sz = sz
+                mexpru.u(new_right).sz = mexpru.u(children[close_idx]).sz
+                mexpru.u(new_left).bracket = {is_open = true, type = br.type, peer = mexpru.u(new_right)}
+                mexpru.u(new_right).bracket = {is_open = false, type = br.type, peer = mexpru.u(new_left)}
+
+                children[i] = new_left
+                children[close_idx] = new_right
+
+                i = close_idx + 1
+            else
+                -- Still pending (no peer, or peer not found within this range) - an ordinary glyph
+                -- as far as this pass is concerned, nothing to resolve.
+                i = i + 1
+            end
+        else
+            i = i + 1
+        end
     end
 end
 
@@ -91,6 +226,7 @@ their own rebuild recipe in propagate_rebuild() when they show up; horiz is the 
 so far). `children` is kept BY REFERENCE (not copied) - propagate_rebuild() relies on being able to
 splice it in place. ]]
 function mexpru.horiz(fs, children, sz)
+    resolve_bracket_pairs(fs, children)
     local ret = mexpru.mexpr_merge_h(fs, children)
     mexpru.u(ret).kind = "horiz"
     mexpru.u(ret).children = children
@@ -181,7 +317,12 @@ function mexpru.propagate_rebuild(fs, old_node, new_node)
     local rebuilt
     if kind == "horiz" then
         local children = mexpru.u(parent).children
-        children[index_of(children, old_node)] = new_node
+        -- old_node:get_parent_idx() (math_expr_composer.h) instead of index_of() - a real C++
+        -- pointer-identity scan against parent's own subobjs, valid here since `children` was JUST
+        -- read fresh above and nothing's mutated it since (parent hasn't been rebuilt, so its own
+        -- subobjs and this Lua list are still in exact sync - see this function's own use of
+        -- get_parent_idx() elsewhere for why that stops being true after any table.insert/remove).
+        children[old_node:get_parent_idx()] = new_node
         rebuilt = mexpru.horiz(fs, children, mexpru.u(parent).sz)
     elseif kind == "supsub" then
         local u = mexpru.u(parent)

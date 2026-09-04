@@ -281,14 +281,16 @@ struct mexpr_t : public vc::object_t {
     vc::ref_t<vc::lua_object_t> u;
 
     /*! Non-owning, raw back-pointer to whichever compound node's subobjs this node is currently a
-    child of - set by whichever mexpr_* factory composes this node into another (mexpr_merge_h/
-    mexpr_merge_v so far - not yet the rest: mexpr_supsub/mexpr_frac/mexpr_bracket/mexpr_binexpr/
-    mexpr_unarexpr/mexpr_bigop don't set it). Deliberately a raw pointer, not a wref_t/weak_ptr - no
-    control-block overhead - so it dangles if this node's actual parent is destroyed while this node
-    is kept alive by something else; nothing here protects against that, same as any raw pointer.
-    Exposed read-only to Lua via get_parent() below (returns nil if null), not as a direct member -
-    keeps the raw pointer itself out of luaw_param_t/luaw_returner_t. nullptr until/unless something
-    composes this node into a parent. */
+    child of - set by every mexpr_* factory in this file that composes nodes into another (mexpr_
+    merge_h/mexpr_merge_v/mexpr_binexpr/mexpr_unarexpr/mexpr_bigop/mexpr_frac/mexpr_supsub/mexpr_
+    bracket_left/mexpr_bracket_right all set it on each of their own subobjs - checked 2026-09-04,
+    an earlier version of this comment claimed several of these didn't yet, stale by the time it was
+    read). Deliberately a raw pointer, not a wref_t/weak_ptr - no control-block overhead - so it
+    dangles if this node's actual parent is destroyed while this node is kept alive by something
+    else; nothing here protects against that, same as any raw pointer. Exposed read-only to Lua via
+    get_parent() below (returns nil if null), not as a direct member - keeps the raw pointer itself
+    out of luaw_param_t/luaw_returner_t. nullptr until/unless something composes this node into a
+    parent. */
     mexpr_t *parent = nullptr;
 
     mexpr_t(vc::object_t::Private priv) : vc::object_t(priv) {}
@@ -347,6 +349,21 @@ struct mexpr_t : public vc::object_t {
         return parent->to_related<mexpr_t>();
     }
 
+    /*! `this`'s own 1-indexed position within its parent's own subobjs (matching anchor_at()'s own
+    1-indexed convention just above) - a REAL pointer-identity scan against parent->subobjs, not the
+    tostring()-based hack Lua-side same()/index_of() (mexpru.lua) need for lack of a registered
+    __eq. 0 if this node has no parent, or (shouldn't happen - defensive) isn't actually found among
+    its own parent's subobjs. */
+    int get_parent_idx() const {
+        if (!parent)
+            return 0;
+        for (size_t i = 0; i < parent->subobjs.size(); i++) {
+            if (parent->subobjs[i].obj.get() == this)
+                return (int)i + 1;
+        }
+        return 0;
+    }
+
     int line_strip_len() const { return line_strip._len(); }
     ImVec2 line_strip_at(int i) const { return line_strip._at(i); }
     void line_strip_set(int i, ImVec2 p) { line_strip._set(i, p); }
@@ -374,7 +391,11 @@ inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs, mexpr_p right, mexpr_
 inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs, mexpr_p above, mexpr_p bellow,
         char_t divline);
 inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs, mexpr_p base, mexpr_p sup, mexpr_p sub);
-inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket);
+/*! The two bracket halves, each its own independent glyph-like leaf, sized to fit `expr` (see
+mexpr_bracket_side() near their implementation) but never attaching `expr` itself anywhere in the
+returned tree - `expr` is used purely for sizing/centering, the caller places it separately. */
+inline mexpr_p mexpr_bracket_left(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket);
+inline mexpr_p mexpr_bracket_right(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket);
 inline mexpr_p mexpr_unarexpr(vc::ref_t<charc::fontset_t> fs, char_t op, mexpr_p b);
 inline mexpr_p mexpr_binexpr(vc::ref_t<charc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b);
 inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes);
@@ -401,6 +422,7 @@ inline int register_meta(vc::virt_state_t *vs) {
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_insert, int, mexpr_p, ImVec2);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, anchor_erase, int, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, get_parent);
+    VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, get_parent_idx);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_len);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_at, int);
     VC_REGISTER_MEMBER_FUNCTION(vs, mexpr_t, line_strip_set, int, ImVec2);
@@ -433,7 +455,10 @@ inline int register_meta(vc::virt_state_t *vs) {
         { "mexpr_supsub", vc::luaw_function_wrapper<mexpr_supsub,
                 vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, mexpr_p>
         },
-        { "mexpr_bracket", vc::luaw_function_wrapper<mexpr_bracket,
+        { "mexpr_bracket_left", vc::luaw_function_wrapper<mexpr_bracket_left,
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_bracket_t>
+        },
+        { "mexpr_bracket_right", vc::luaw_function_wrapper<mexpr_bracket_right,
                 vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_bracket_t>
         },
         { "mexpr_unarexpr", vc::luaw_function_wrapper<mexpr_unarexpr,
@@ -844,7 +869,20 @@ inline void beziere_path_rec(std::vector<ImVec2>& path, ImVec2 P1, ImVec2 P2, Im
     }
 }
 
-inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket) {
+/*! Shared by mexpr_bracket_left()/mexpr_bracket_right() below - builds just ONE side (left when
+`is_left`, right otherwise) of a bracket sized to fit `expr`, picking only one side's own glyphs
+(bracket.left[N]/tl/bl/cl/conl for the left, bracket.right[N]/tr/br/cr/conr for the right - see
+mexpr_bracket_t's own doc comment for what each of those actually is) at whichever size tier fits
+`expr`'s own height. The tier-selection CHECK itself always tests sym_h() against bracket.left[N]
+regardless of `is_left` - left/right glyphs at the same tier index are mirror images of the same font
+glyph, same height, so this guarantees both sides independently agree on which tier to use for the
+same `expr`, without either needing to know what the other one picked (mexpr_bracket_left()/_right()
+are called independently, from Lua, at different times even). Returned in its own local frame
+(baseline y=0, NOT yet shifted to expr's own vertical middle - mexpr_bracket_left()/_right() do that
+shift, each in their own single-anchor wrapper, since a raw glyph/LINE_STRIP composite has no anchor
+of its own to carry that shift). */
+inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket,
+        bool is_left) {
     auto sym_h = [&](char_t sym) {
         return fs->char_get_bb(sym).a_max.y - fs->char_get_bb(sym).a_min.y;
     };
@@ -873,28 +911,26 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
             p += off;
     };
 
-    /* First we need to select the appropiate paranthesis dimension for the expression and construct
-    the paranthesis objects */
-    mexpr_p lb, rb;
+    char_t side_3 = is_left ? bracket.left[3] : bracket.right[3];
+    char_t side_2 = is_left ? bracket.left[2] : bracket.right[2];
+    char_t side_1 = is_left ? bracket.left[1] : bracket.right[1];
+    char_t side_0 = is_left ? bracket.left[0] : bracket.right[0];
+
+    mexpr_p b;
     if (sym_h(bracket.left[3]) > expr_sz.y * sz_threshold) {
-        lb = mexpr_symbol(fs, bracket.left[3], false);
-        rb = mexpr_symbol(fs, bracket.right[3], false);
+        b = mexpr_symbol(fs, side_3, false);
     }
     else if (sym_h(bracket.left[2]) > expr_sz.y * sz_threshold) {
-        lb = mexpr_symbol(fs, bracket.left[2], false);
-        rb = mexpr_symbol(fs, bracket.right[2], false);
+        b = mexpr_symbol(fs, side_2, false);
     }
     else if (sym_h(bracket.left[1]) > expr_sz.y * sz_threshold) {
-        lb = mexpr_symbol(fs, bracket.left[1], false);
-        rb = mexpr_symbol(fs, bracket.right[1], false);
+        b = mexpr_symbol(fs, side_1, false);
     }
     else if (sym_h(bracket.left[0]) > expr_sz.y * sz_threshold) {
-        lb = mexpr_symbol(fs, bracket.left[0], false);
-        rb = mexpr_symbol(fs, bracket.right[0], false);
+        b = mexpr_symbol(fs, side_0, false);
     }
     else {
-        lb = mexpr_t::create(MEXPR_TYPE_INTERNAL);
-        rb = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+        b = mexpr_t::create(MEXPR_TYPE_INTERNAL);
 
         auto lb_tl_sz = calc_sz(mexpr_symbol(fs, bracket.tl,   false));
         auto lb_bl_sz = calc_sz(mexpr_symbol(fs, bracket.bl,   false));
@@ -916,187 +952,208 @@ inline mexpr_p mexpr_bracket(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr
         float h = 0;
         if (bracket.type == MEXPR_BRACKET_SQUARE) {
             h = lb_tl_sz.y + lb_bl_sz.y + lb_cl_sz.y + con_cnt * conl_sz.y;
-            auto lines_l = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
-            auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
-            float minx = a_min.x;
-            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
-            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, 0));
-            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, h));
-            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, h));
-            lines_l->line_width = conl_sz.x;
-            lines_l->color = 0xff'eeeeee;
-            offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
-            lines_l->tl = calc_tl(lines_l->line_strip);
-            lines_l->br = calc_br(lines_l->line_strip);
-            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
-            lines_l->parent = lb.get();
-
-            auto lines_r = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
-            auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
-            minx = b_min.x;
-            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
-            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, 0));
-            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, h));
-            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, h));
-            lines_r->line_width = conl_sz.x;
-            lines_r->color = 0xff'eeeeee;
-            offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
-            lines_r->tl = calc_tl(lines_r->line_strip);
-            lines_r->br = calc_br(lines_r->line_strip);
-            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
-            lines_r->parent = rb.get();
-            std::tie(lb->tl, lb->br) = calc_bb(lb->subobjs);
-            std::tie(rb->tl, rb->br) = calc_bb(rb->subobjs);
+            if (is_left) {
+                auto lines_l = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+                auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
+                float minx = a_min.x;
+                lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
+                lines_l->line_strip.push_back(ImVec2(a_min.x - minx, 0));
+                lines_l->line_strip.push_back(ImVec2(a_min.x - minx, h));
+                lines_l->line_strip.push_back(ImVec2(a_max.x - minx, h));
+                lines_l->line_width = conl_sz.x;
+                lines_l->color = 0xff'eeeeee;
+                offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
+                lines_l->tl = calc_tl(lines_l->line_strip);
+                lines_l->br = calc_br(lines_l->line_strip);
+                b->subobjs.push_back({lines_l, ImVec2(0, 0)});
+                lines_l->parent = b.get();
+            }
+            else {
+                auto lines_r = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+                auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
+                float minx = b_min.x;
+                lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
+                lines_r->line_strip.push_back(ImVec2(b_max.x - minx, 0));
+                lines_r->line_strip.push_back(ImVec2(b_max.x - minx, h));
+                lines_r->line_strip.push_back(ImVec2(b_min.x - minx, h));
+                lines_r->line_width = conl_sz.x;
+                lines_r->color = 0xff'eeeeee;
+                offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
+                lines_r->tl = calc_tl(lines_r->line_strip);
+                lines_r->br = calc_br(lines_r->line_strip);
+                b->subobjs.push_back({lines_r, ImVec2(0, 0)});
+                lines_r->parent = b.get();
+            }
+            std::tie(b->tl, b->br) = calc_bb(b->subobjs);
         }
         else if (bracket.type == MEXPR_BRACKET_ROUND) {
             h = lb_tl_sz.y + lb_bl_sz.y + lb_cl_sz.y + con_cnt * conl_sz.y;
-            auto lines_l = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
-            auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
-            float minx = a_min.x;
-            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(a_max.x - minx, 0),
-                    ImVec2((a_max.x + a_min.x) / 2. - minx, lb_tl_sz.y / 8.),
-                    ImVec2(a_min.x - minx, lb_tl_sz.y / 8. * 3.),
-                    ImVec2(a_min.x - minx, lb_tl_sz.y));
-            lines_l->line_strip.push_back(ImVec2(a_min.x - minx, lb_tl_sz.y));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(a_min.x - minx, h - lb_bl_sz.y),
-                    ImVec2(a_min.x - minx, h - lb_bl_sz.y / 8. * 3.),
-                    ImVec2((a_min.x + a_max.x) / 2. - minx, h - lb_bl_sz.y / 8.),
-                    ImVec2(a_max.x - minx, h));
-            lines_l->line_width = conl_sz.x;
-            lines_l->color = 0xff'eeeeee;
-            offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
-            lines_l->tl = calc_tl(lines_l->line_strip);
-            lines_l->br = calc_br(lines_l->line_strip);
-            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
-            lines_l->parent = lb.get();
-
-            auto lines_r = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
-            auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
-            minx = b_min.x;
-            lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(b_min.x - minx, 0),
-                    ImVec2((b_min.x + b_max.x) / 2. - minx, rb_tr_sz.y / 8.),
-                    ImVec2(b_max.x - minx, rb_tr_sz.y / 8. * 3.),
-                    ImVec2(b_max.x - minx, rb_tr_sz.y));
-            lines_r->line_strip.push_back(ImVec2(b_max.x - minx, rb_tr_sz.y));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(b_max.x - minx, h - rb_br_sz.y),
-                    ImVec2(b_max.x - minx, h - rb_br_sz.y / 8. * 3.),
-                    ImVec2((b_max.x + b_min.x) / 2. - minx, h - rb_br_sz.y / 8.),
-                    ImVec2(b_min.x - minx, h));
-            lines_r->line_width = conr_sz.x;
-            lines_r->color = 0xff'eeeeee;
-            offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
-            lines_r->tl = calc_tl(lines_r->line_strip);
-            lines_r->br = calc_br(lines_r->line_strip);
-            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
-            lines_r->parent = rb.get();
-            std::tie(lb->tl, lb->br) = calc_bb(lb->subobjs);
-            std::tie(rb->tl, rb->br) = calc_bb(rb->subobjs);
+            if (is_left) {
+                auto lines_l = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+                auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
+                float minx = a_min.x;
+                lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
+                beziere_path_rec(lines_l->line_strip,
+                        ImVec2(a_max.x - minx, 0),
+                        ImVec2((a_max.x + a_min.x) / 2. - minx, lb_tl_sz.y / 8.),
+                        ImVec2(a_min.x - minx, lb_tl_sz.y / 8. * 3.),
+                        ImVec2(a_min.x - minx, lb_tl_sz.y));
+                lines_l->line_strip.push_back(ImVec2(a_min.x - minx, lb_tl_sz.y));
+                beziere_path_rec(lines_l->line_strip,
+                        ImVec2(a_min.x - minx, h - lb_bl_sz.y),
+                        ImVec2(a_min.x - minx, h - lb_bl_sz.y / 8. * 3.),
+                        ImVec2((a_min.x + a_max.x) / 2. - minx, h - lb_bl_sz.y / 8.),
+                        ImVec2(a_max.x - minx, h));
+                lines_l->line_width = conl_sz.x;
+                lines_l->color = 0xff'eeeeee;
+                offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
+                lines_l->tl = calc_tl(lines_l->line_strip);
+                lines_l->br = calc_br(lines_l->line_strip);
+                b->subobjs.push_back({lines_l, ImVec2(0, 0)});
+                lines_l->parent = b.get();
+            }
+            else {
+                auto lines_r = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+                auto [b_min, b_max] = fs->char_get_bb(bracket.tr);
+                float minx = b_min.x;
+                lines_r->line_strip.push_back(ImVec2(b_min.x - minx, 0));
+                beziere_path_rec(lines_r->line_strip,
+                        ImVec2(b_min.x - minx, 0),
+                        ImVec2((b_min.x + b_max.x) / 2. - minx, rb_tr_sz.y / 8.),
+                        ImVec2(b_max.x - minx, rb_tr_sz.y / 8. * 3.),
+                        ImVec2(b_max.x - minx, rb_tr_sz.y));
+                lines_r->line_strip.push_back(ImVec2(b_max.x - minx, rb_tr_sz.y));
+                beziere_path_rec(lines_r->line_strip,
+                        ImVec2(b_max.x - minx, h - rb_br_sz.y),
+                        ImVec2(b_max.x - minx, h - rb_br_sz.y / 8. * 3.),
+                        ImVec2((b_max.x + b_min.x) / 2. - minx, h - rb_br_sz.y / 8.),
+                        ImVec2(b_min.x - minx, h));
+                lines_r->line_width = conr_sz.x;
+                lines_r->color = 0xff'eeeeee;
+                offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
+                lines_r->tl = calc_tl(lines_r->line_strip);
+                lines_r->br = calc_br(lines_r->line_strip);
+                b->subobjs.push_back({lines_r, ImVec2(0, 0)});
+                lines_r->parent = b.get();
+            }
+            std::tie(b->tl, b->br) = calc_bb(b->subobjs);
         }
         else if (bracket.type == MEXPR_BRACKET_CURLY) {
             h = lb_tl_sz.y + lb_bl_sz.y + lb_cl_sz.y + con_cnt * conl_sz.y;
             float h2 = h / 2.;
-            auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
-            auto [b_min, b_max] = fs->char_get_bb(bracket.cl);
-            auto [c_min, c_max] = fs->char_get_bb(bracket.bl);
+            if (is_left) {
+                auto [a_min, a_max] = fs->char_get_bb(bracket.tl);
+                auto [b_min, b_max] = fs->char_get_bb(bracket.cl);
+                auto [c_min, c_max] = fs->char_get_bb(bracket.bl);
 
-            float minx = std::min({a_min.x, b_min.x, c_min.x});
+                float minx = std::min({a_min.x, b_min.x, c_min.x});
 
-            auto lines_l = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
-            lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(a_max.x - minx, 0),
-                    ImVec2(a_min.x * 0.75 + a_max.x * 0.25 - minx, 0),
-                    ImVec2(a_min.x - minx, lb_tl_sz.y * 0.25),
-                    ImVec2(a_min.x - minx, lb_tl_sz.y));
-            lines_l->line_strip.push_back(ImVec2(b_max.x - minx, h2 - lb_cl_sz.y * 0.5));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(b_max.x - minx, h2 - lb_cl_sz.y * 0.5),
-                    ImVec2(b_max.x - minx, h2 + lb_cl_sz.y * (.75 * .5 - .5)),
-                    ImVec2(b_max.x * 0.75 + b_min.x * 0.25 - minx, h2),
-                    ImVec2(b_min.x - minx, h2));
-            lines_l->line_strip.push_back(ImVec2(b_min.x - minx, h2));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(b_min.x - minx, h2),
-                    ImVec2(b_min.x * .25 + b_max.x * .75 - minx, h2),
-                    ImVec2(b_max.x - minx, h2 + lb_cl_sz.y * .75 * .5),
-                    ImVec2(b_max.x - minx, h2 + lb_cl_sz.y * .5));
-            lines_l->line_strip.push_back(ImVec2(c_min.x - minx, h - lb_bl_sz.y));
-            beziere_path_rec(lines_l->line_strip,
-                    ImVec2(c_min.x - minx, h - lb_bl_sz.y),
-                    ImVec2(c_min.x - minx, h - lb_bl_sz.y * .25),
-                    ImVec2(c_min.x * .75 + c_max.x * .25 - minx, h),
-                    ImVec2(c_max.x - minx, h));
-            lines_l->color = 0xff'eeeeee;
-            lines_l->line_width = conl_sz.x;
-            offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
-            lines_l->tl = calc_tl(lines_l->line_strip);
-            lines_l->br = calc_br(lines_l->line_strip);
-            lb->subobjs.push_back({lines_l, ImVec2(0, 0)});
-            lines_l->parent = lb.get();
+                auto lines_l = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+                lines_l->line_strip.push_back(ImVec2(a_max.x - minx, 0));
+                beziere_path_rec(lines_l->line_strip,
+                        ImVec2(a_max.x - minx, 0),
+                        ImVec2(a_min.x * 0.75 + a_max.x * 0.25 - minx, 0),
+                        ImVec2(a_min.x - minx, lb_tl_sz.y * 0.25),
+                        ImVec2(a_min.x - minx, lb_tl_sz.y));
+                lines_l->line_strip.push_back(ImVec2(b_max.x - minx, h2 - lb_cl_sz.y * 0.5));
+                beziere_path_rec(lines_l->line_strip,
+                        ImVec2(b_max.x - minx, h2 - lb_cl_sz.y * 0.5),
+                        ImVec2(b_max.x - minx, h2 + lb_cl_sz.y * (.75 * .5 - .5)),
+                        ImVec2(b_max.x * 0.75 + b_min.x * 0.25 - minx, h2),
+                        ImVec2(b_min.x - minx, h2));
+                lines_l->line_strip.push_back(ImVec2(b_min.x - minx, h2));
+                beziere_path_rec(lines_l->line_strip,
+                        ImVec2(b_min.x - minx, h2),
+                        ImVec2(b_min.x * .25 + b_max.x * .75 - minx, h2),
+                        ImVec2(b_max.x - minx, h2 + lb_cl_sz.y * .75 * .5),
+                        ImVec2(b_max.x - minx, h2 + lb_cl_sz.y * .5));
+                lines_l->line_strip.push_back(ImVec2(c_min.x - minx, h - lb_bl_sz.y));
+                beziere_path_rec(lines_l->line_strip,
+                        ImVec2(c_min.x - minx, h - lb_bl_sz.y),
+                        ImVec2(c_min.x - minx, h - lb_bl_sz.y * .25),
+                        ImVec2(c_min.x * .75 + c_max.x * .25 - minx, h),
+                        ImVec2(c_max.x - minx, h));
+                lines_l->color = 0xff'eeeeee;
+                lines_l->line_width = conl_sz.x;
+                offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
+                lines_l->tl = calc_tl(lines_l->line_strip);
+                lines_l->br = calc_br(lines_l->line_strip);
+                b->subobjs.push_back({lines_l, ImVec2(0, 0)});
+                lines_l->parent = b.get();
+            }
+            else {
+                auto [d_min, d_max] = fs->char_get_bb(bracket.tr);
+                auto [e_min, e_max] = fs->char_get_bb(bracket.cr);
+                auto [f_min, f_max] = fs->char_get_bb(bracket.br);
 
-            auto [d_min, d_max] = fs->char_get_bb(bracket.tr);
-            auto [e_min, e_max] = fs->char_get_bb(bracket.cr);
-            auto [f_min, f_max] = fs->char_get_bb(bracket.br);
+                float minx = std::min({d_min.x, e_min.x, f_min.x});
 
-            minx = std::min({d_min.x, e_min.x, f_min.x});
-
-            auto lines_r = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
-            lines_r->line_strip.push_back(ImVec2(d_min.x - minx, 0));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(d_min.x - minx, 0),
-                    ImVec2(d_max.x * 0.75 + d_min.x * 0.25 - minx, 0),
-                    ImVec2(d_max.x - minx, rb_tr_sz.y * 0.25),
-                    ImVec2(d_max.x - minx, rb_tr_sz.y));
-            lines_r->line_strip.push_back(ImVec2(e_min.x - minx, h2 - rb_cr_sz.y * 0.5));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(e_min.x - minx, h2 - rb_cr_sz.y * 0.5),
-                    ImVec2(e_min.x - minx, h2 + rb_cr_sz.y * (.75 * .5 - .5)),
-                    ImVec2(e_min.x * 0.75 + e_max.x * 0.25 - minx, h2),
-                    ImVec2(e_max.x - minx, h2));
-            lines_r->line_strip.push_back(ImVec2(e_max.x - minx, h2));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(e_max.x - minx, h2),
-                    ImVec2(e_max.x * .25 + e_min.x * .75 - minx, h2),
-                    ImVec2(e_min.x - minx, h2 + rb_cr_sz.y * .75 * .5),
-                    ImVec2(e_min.x - minx, h2 + rb_cr_sz.y * .5));
-            lines_r->line_strip.push_back(ImVec2(f_max.x - minx, h - rb_br_sz.y));
-            beziere_path_rec(lines_r->line_strip,
-                    ImVec2(f_max.x - minx, h - rb_br_sz.y),
-                    ImVec2(f_max.x - minx, h - rb_br_sz.y * .25),
-                    ImVec2(f_max.x * .75 + f_min.x * .25 - minx, h),
-                    ImVec2(f_min.x - minx, h));
-            lines_r->color = 0xff'eeeeee;
-            lines_r->line_width = conr_sz.x;
-            offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
-            lines_r->tl = calc_tl(lines_r->line_strip);
-            lines_r->br = calc_br(lines_r->line_strip);
-            rb->subobjs.push_back({lines_r, ImVec2(0, 0)});
-            lines_r->parent = rb.get();
-            std::tie(lb->tl, lb->br) = calc_bb(lb->subobjs);
-            std::tie(rb->tl, rb->br) = calc_bb(rb->subobjs);
+                auto lines_r = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+                lines_r->line_strip.push_back(ImVec2(d_min.x - minx, 0));
+                beziere_path_rec(lines_r->line_strip,
+                        ImVec2(d_min.x - minx, 0),
+                        ImVec2(d_max.x * 0.75 + d_min.x * 0.25 - minx, 0),
+                        ImVec2(d_max.x - minx, rb_tr_sz.y * 0.25),
+                        ImVec2(d_max.x - minx, rb_tr_sz.y));
+                lines_r->line_strip.push_back(ImVec2(e_min.x - minx, h2 - rb_cr_sz.y * 0.5));
+                beziere_path_rec(lines_r->line_strip,
+                        ImVec2(e_min.x - minx, h2 - rb_cr_sz.y * 0.5),
+                        ImVec2(e_min.x - minx, h2 + rb_cr_sz.y * (.75 * .5 - .5)),
+                        ImVec2(e_min.x * 0.75 + e_max.x * 0.25 - minx, h2),
+                        ImVec2(e_max.x - minx, h2));
+                lines_r->line_strip.push_back(ImVec2(e_max.x - minx, h2));
+                beziere_path_rec(lines_r->line_strip,
+                        ImVec2(e_max.x - minx, h2),
+                        ImVec2(e_max.x * .25 + e_min.x * .75 - minx, h2),
+                        ImVec2(e_min.x - minx, h2 + rb_cr_sz.y * .75 * .5),
+                        ImVec2(e_min.x - minx, h2 + rb_cr_sz.y * .5));
+                lines_r->line_strip.push_back(ImVec2(f_max.x - minx, h - rb_br_sz.y));
+                beziere_path_rec(lines_r->line_strip,
+                        ImVec2(f_max.x - minx, h - rb_br_sz.y),
+                        ImVec2(f_max.x - minx, h - rb_br_sz.y * .25),
+                        ImVec2(f_max.x * .75 + f_min.x * .25 - minx, h),
+                        ImVec2(f_min.x - minx, h));
+                lines_r->color = 0xff'eeeeee;
+                lines_r->line_width = conr_sz.x;
+                offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
+                lines_r->tl = calc_tl(lines_r->line_strip);
+                lines_r->br = calc_br(lines_r->line_strip);
+                b->subobjs.push_back({lines_r, ImVec2(0, 0)});
+                lines_r->parent = b.get();
+            }
+            std::tie(b->tl, b->br) = calc_bb(b->subobjs);
         }
     }
 
-    auto lb_sz = calc_sz(lb);
-    auto rb_sz = calc_sz(rb);
+    return b;
+}
 
-    float dst = MEXPR_DISTANCER * 2 * get_font_mul(fs, bracket.left[0]);
+/*! One glyph-like leaf: just the LEFT bracket sized to fit `expr` (mexpr_bracket_side() above),
+wrapped in its own single-anchor container so its own tl/br already land vertically centered on
+expr's own middle - `expr` is used only for that sizing/centering math, never attached anywhere in
+the returned tree, and never appears as a sibling here either - the caller places whatever expr was
+built from separately, as an ordinary sibling of both this and mexpr_bracket_right()'s own result. */
+inline mexpr_p mexpr_bracket_left(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket) {
+    auto lb = mexpr_bracket_side(fs, expr, bracket, true);
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
 
     float h = (expr->tl.y + expr->br.y) / 2.;
-    ret->subobjs = std::vector<anchor_t> {
-        {lb,   ImVec2(0, h)},
-        {expr, ImVec2(lb->br.x - expr->tl.x, 0)},
-        {rb,   ImVec2(lb->br.x - expr->tl.x + expr->br.x, h)},
-    };
-    for (auto &anch : ret->subobjs)
-        anch.obj->parent = ret.get();
+    ret->subobjs = std::vector<anchor_t> { {lb, ImVec2(0, h)} };
+    lb->parent = ret.get();
+
+    std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
+    return ret;
+}
+
+/*! Mirror of mexpr_bracket_left() above - the RIGHT bracket instead, same centering on expr's own
+middle. */
+inline mexpr_p mexpr_bracket_right(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket) {
+    auto rb = mexpr_bracket_side(fs, expr, bracket, false);
+    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+
+    float h = (expr->tl.y + expr->br.y) / 2.;
+    ret->subobjs = std::vector<anchor_t> { {rb, ImVec2(0, h)} };
+    rb->parent = ret.get();
 
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
     return ret;
