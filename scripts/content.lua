@@ -9,6 +9,7 @@ exists so far, but content.add_box is the seam where other kinds would plug in l
 
 local vc = require("virt_composer")
 local editor = require("editor")
+local prof = require("prof")
 local char = require("char")
 local mexpru = require("mexpru")
 
@@ -45,6 +46,11 @@ local WIREFRAME_OFF_COLOR = 0xff888888
 local WIREFRAME_ON_COLOR  = 0xff66ccff
 
 local SCROLL_SPEED = 44 -- pixels per wheel notch
+
+-- Spike recording (Ctrl+F3, prof.lua / perf_composer.h). 25ms is a frame and a half at 60Hz - past
+-- the point where a stall stops being a dropped frame and becomes something you can see.
+local PROF_SPIKE_PATH = "perf_spikes.log"
+local PROF_SPIKE_MS   = 25.0
 
 -- #################################################################################################
 -- Model
@@ -245,15 +251,38 @@ function content.handle_input(state, fontset, pos)
     -- input this frame is swallowed here (nothing forwarded to any box) so it can't be typed into
     -- or clicked through from behind the panel. Opening one closes the other, rather than letting
     -- them stack - only one overlay makes sense on screen at a time.
-    if vc.ImGui_IsKeyPressed("ImGuiKey_F1", false) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_F1, false) then
         state.show_help = not state.show_help
         state.show_alt_help = false
         return
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_F2", false) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_F2, false) then
         state.show_alt_help = not state.show_alt_help
         state.show_help = false
         return
+    end
+    --[[ F3 toggles the profiler (prof.lua / perf_composer.h); Shift+F3 clears its worst-frame
+    record. Deliberately NOT one of the full-screen panels above and deliberately NOT `return`ing:
+    the overlay has to be readable WHILE the app is being used, since the whole point is to catch a
+    spike as it happens. Everything else this frame carries on as normal. ]]
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_F3, false) then
+        local shift = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
+        local ctrl = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
+        if ctrl then
+            --[[ Ctrl+F3 - spike RECORDING, the mode for actually hunting a lag: it keeps running
+            with the overlay hidden, so watching costs nothing and the numbers aren't the watcher's.
+            Every frame over the threshold lands in PROF_SPIKE_PATH with its full breakdown and its
+            event tags, flushed immediately, appended across runs. ]]
+            if prof.recording() then
+                prof.record_stop()
+            else
+                prof.record_start(PROF_SPIKE_PATH, PROF_SPIKE_MS)
+            end
+        elseif shift then
+            prof.reset()
+        else
+            prof.set_enabled(not prof.enabled())
+        end
     end
     if state.show_help or state.show_alt_help then
         return
@@ -266,15 +295,15 @@ function content.handle_input(state, fontset, pos)
     -- view if it wasn't already. Checked here, ahead of any box-specific handling (including
     -- whether a formula inside the active box currently owns input), so it's always available as
     -- a global shortcut, not something a formula's own plain Up/Down could ever shadow.
-    local ctrl_down = vc.ImGui_IsKeyDown("ImGuiKey_LeftCtrl") or vc.ImGui_IsKeyDown("ImGuiKey_RightCtrl")
-    if ctrl_down and vc.ImGui_IsKeyPressed("ImGuiKey_UpArrow", false) then
+    local ctrl_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
+    if ctrl_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_UpArrow, false) then
         if state.active_index and state.active_index > 1 then
             state.active_index = state.active_index - 1
             scroll_into_view(state, pos, state.active_index)
         end
         return
     end
-    if ctrl_down and vc.ImGui_IsKeyPressed("ImGuiKey_DownArrow", false) then
+    if ctrl_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_DownArrow, false) then
         if state.active_index and state.active_index < #state.boxes then
             state.active_index = state.active_index + 1
             scroll_into_view(state, pos, state.active_index)
@@ -284,7 +313,7 @@ function content.handle_input(state, fontset, pos)
 
     -- Ctrl+N: a new empty box right after the current one (or at the end, if none is active),
     -- activated straight away - the keyboard equivalent of clicking the rail just below it.
-    if ctrl_down and vc.ImGui_IsKeyPressed("ImGuiKey_N", false) then
+    if ctrl_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_N, false) then
         local index = (state.active_index or #state.boxes) + 1
         state.active_index = content.insert_box(state, index)
         return
@@ -421,6 +450,8 @@ local HELP_LINES = {
     "  Ctrl+N                   New box right after the current one",
     "  Mouse wheel              Scroll",
     "  Ctrl+Mouse wheel          Zoom text size in / out",
+    "  F3 / Shift+F3             Profiler overlay on-off / clear its worst frame",
+    "  Ctrl+F3                   Record frames slower than 25ms to perf_spikes.log",
     "  Buttons above a box       Graph / wireframe overlays, and close",
     "",
     "Plain text",
@@ -438,6 +469,7 @@ local HELP_LINES = {
     "  Ctrl+Shift+-              Wrap the character before the cursor into a subscript",
     "  Ctrl+Shift+=              Wrap the character before the cursor into a superscript",
     "  Ctrl+/                   Insert an empty fraction here and enter its numerator",
+    "  Ctrl+=                   Insert a stack here and enter its first cell",
     "  Click a formula            Enter it",
     "  Inside a formula:",
     "    Type / Alt+letter          Same as plain text, inside the formula",
@@ -449,6 +481,7 @@ local HELP_LINES = {
     "                               denominator, back onto the fraction itself",
     "    Ctrl+Shift+= / Ctrl+Shift+-   Superscript / subscript on the character before the cursor",
     "    Ctrl+/                     Insert an empty fraction at the cursor",
+    "    Ctrl+= / Ctrl+-            Start a stack / add a cell to it, or drop a cell",
     "    ( [ {  then  ) ] }           Brackets pair up and resize to fit what's between them",
     "    Ctrl+Left/Right, Escape,     Exit the formula",
     "      or click outside",
@@ -471,6 +504,47 @@ help panel whose bottom entries are off-screen is worse than useless. Breaks at 
 it can, so a section is never split across a column boundary. ]]
 local HELP_COLUMN_W = 620
 local HELP_TOP = 16
+
+--[[ The profiler overlay (F3 - prof.lua / perf_composer.h). A translucent panel in the top-right
+corner, NOT one of the full-screen panels below: the whole reason it exists is to be readable while
+the app is being used, since a lag spike is over before anyone can switch views to look at it.
+
+Text comes back from C++ already formatted and sorted (prof_report()) and is just split on newlines
+here - the overlay never does arithmetic of its own, so there is only one place where "what a
+millisecond means" is decided. ]]
+local PROF_BG_COLOR   = 0xdd101010
+local PROF_TEXT_COLOR = 0xffd0ffd0
+local PROF_LINE_H     = 15
+local PROF_WIDTH      = 430
+
+local function draw_prof_overlay()
+    --[[ The overlay measures ITSELF. prof_report() formats a few dozen lines in C++ and this then
+    issues an AddText per line, every frame it is visible - not free, and a profiler that quietly
+    charged its own cost to whatever it was sitting inside would misattribute exactly the spikes it
+    exists to find. Reported as lua.prof_overlay so it can be subtracted by eye. ]]
+    prof.begin("lua.prof_overlay")
+    local report = prof.report()
+    local lines = {}
+    for line in (report .. "\n"):gmatch("([^\n]*)\n") do
+        lines[#lines + 1] = line
+    end
+
+    local size = vc.ImGui_GetDisplaySize()
+    local x = (size and size.x or 1280) - PROF_WIDTH - 12
+    local y = 12
+    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
+            {x = x + PROF_WIDTH, y = y + #lines * PROF_LINE_H + 8}, PROF_BG_COLOR, 4)
+    for i, line in ipairs(lines) do
+        vc.ImGui_AddText({x = x, y = y + (i - 1) * PROF_LINE_H}, PROF_TEXT_COLOR, line)
+    end
+    local rec = prof.recording()
+            and string.format("REC -> %s  (%d spikes >%.0fms)", PROF_SPIKE_PATH,
+                    prof.spike_count(), PROF_SPIKE_MS)
+            or "Ctrl+F3 record spikes to file"
+    vc.ImGui_AddText({x = x, y = y + #lines * PROF_LINE_H - PROF_LINE_H + 2}, PROF_TEXT_COLOR,
+            "F3 off   Shift+F3 clear worst   " .. rec)
+    prof.stop("lua.prof_overlay")
+end
 
 local function draw_help()
     local size = vc.ImGui_GetDisplaySize()
@@ -591,12 +665,23 @@ state.show_help/show_alt_help is set (F1/F2), that panel instead, covering the w
 nothing underneath shows or can be mistaken for still being interactive (handle_input() already
 backs that up by swallowing input while either is up). ]]
 function content.draw(state, fontset, pos)
+    --[[ Drawn LAST, on top of everything, including the F1/F2 panels - so opening one of those
+    doesn't take the numbers away mid-investigation. Hence the flag rather than a straight call:
+    the early returns below would otherwise skip it. ]]
+    local function overlay()
+        if prof.overlay_visible() then
+            draw_prof_overlay()
+        end
+    end
+
     if state.show_help then
         draw_help()
+        overlay()
         return
     end
     if state.show_alt_help then
         draw_alt_help(fontset)
+        overlay()
         return
     end
 
@@ -750,6 +835,8 @@ function content.draw(state, fontset, pos)
     state.last_layout = layout
     state.last_rail_x = rail_x
     state.last_total_height = y - content_start_y
+
+    overlay()
 end
 
 return content

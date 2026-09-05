@@ -11,6 +11,8 @@
 #include "char_draw_composer.h"
 #include "math_expr_composer.h"
 #include "imgui_composer.h"
+#include "perf_composer.h"
+#include "async_log_composer.h"
 #include "virt_composer_end.h"
 
 #include "debug.h"
@@ -78,6 +80,8 @@ namespace vc = virt_composer;
 namespace charc = char_draw_composer;
 namespace mexpr = math_expr_composer;
 namespace imgc = imgui_composer;
+namespace perfc = perf_composer;
+namespace alogc = async_log_composer;
 
 int main(int argc, char const *argv[])
 {
@@ -101,6 +105,8 @@ int main(int argc, char const *argv[])
     ASSERT_FN(charc::register_meta(vs.get()));
     ASSERT_FN(mexpr::register_meta(vs.get()));
     ASSERT_FN(imgc::register_meta(vs.get()));
+    ASSERT_FN(perfc::register_meta(vs.get()));
+    ASSERT_FN(alogc::register_meta(vs.get()));
     ASSERT_FN(vc::parse_config(vs.get(), "math_writer.yaml"));
 
     imgui_prepare_render();
@@ -115,14 +121,21 @@ int main(int argc, char const *argv[])
     debug_input_pipe::init();
 
     while (!glfwWindowShouldClose(imgui_window)) {
-        glfwPollEvents();
+        /* The four things the frame is made of besides Lua. Added 2026-09-05 after the spike log
+        showed every frame at ~33ms while all the Lua scopes together accounted for only ~10 - i.e.
+        two thirds of the frame was time no scope could see. Without these, "the app lags" and "the
+        editor is slow" are indistinguishable. */
+        { PROF_SCOPE("cpp.glfwPollEvents");
+        glfwPollEvents(); }
         if (glfwGetKey(imgui_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetWindowShouldClose(imgui_window, GL_TRUE);
             continue ;
         }
 
-        debug_input_pipe::pump();
-        imgui_prepare_render();
+        { PROF_SCOPE("cpp.input_pipe_pump");
+        debug_input_pipe::pump(); }
+        { PROF_SCOPE("cpp.imgui_prepare");
+        imgui_prepare_render(); }
 
         auto main_flags = 
                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
@@ -133,7 +146,8 @@ int main(int argc, char const *argv[])
 
         ImGui::Begin("Math Editor", NULL, main_flags);
 
-        auto [ret, err] = vc::call_lua<int>(vs.get(), "test_draw");
+        auto [ret, err] = [&]{ PROF_SCOPE("cpp.call_lua");
+                return vc::call_lua<int>(vs.get(), "test_draw"); }();
         ASSERT_FN(ret);
         ASSERT_FN(err);
 
@@ -143,7 +157,14 @@ int main(int argc, char const *argv[])
         ImGui::End();
 
         /* Add imgui stuff here */
-        imgui_render(clear_color);
+        { PROF_SCOPE("cpp.imgui_render");
+        imgui_render(clear_color); }
+
+        /* Frame boundary for the profiler (perf_composer.h). Here rather than at the end of Lua's
+        own test_draw() so the measured frame includes glfwPollEvents, the input pump and
+        imgui_render - a spike caused by one of those would otherwise show up as unexplained time
+        that no Lua scope accounts for. A no-op while the profiler is off. */
+        perfc::prof_frame();
     }
 
     /* Mirrors the test_init() call above, at the other end of the app's lifetime - lets
@@ -153,6 +174,12 @@ int main(int argc, char const *argv[])
     auto [shutdown_ret, shutdown_err] = vc::call_lua<int>(vs.get(), "test_shutdown");
     ASSERT_FN(shutdown_ret);
     ASSERT_FN(shutdown_err);
+
+    /* Drains the async log's queue and joins its writer thread (async_log_composer.h). test_shutdown
+    above normally does this itself via input_recorder.close(); this is the backstop for the paths
+    where it doesn't - a Lua error in test_shutdown, or a future caller that forgets - because a
+    detached writer thread outliving main() is a far worse outcome than one redundant no-op call. */
+    alogc::alog_close();
 
     debug_input_pipe::uninit();
     imgui_uninit();

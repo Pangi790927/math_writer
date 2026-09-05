@@ -6,10 +6,23 @@ exception) those will be all available for you to inspect".
 Every frame, polls the exact same ImGui key/mouse state the rest of this app already reads (nothing
 new exposed from C++ - vc.ImGui_IsKeyPressed/IsKeyDown/GetMousePos/IsMouseClicked/GetMouseWheel are
 all already bound) and appends one line per DISTINCT event (a key just pressed, a click, a non-zero
-wheel tick) to a plain text log, flushed to disk immediately after every write - not buffered until
-some "on crash" moment, since a real segfault gives no chance to flush anything after the fact (the
-user's own "not a segfault one" caveat - this recorder can't do anything for THAT case beyond
-whatever was already durably on disk from frames before it, which immediate-flush already covers).
+wheel tick) to a plain text log.
+
+WRITTEN BY ANOTHER THREAD (async_log_composer.h). This frame does an enqueue and nothing else - no
+write, no flush, no file handle. It took two wrong turns to get here, both worth recording so
+neither gets re-proposed:
+
+  - Originally it flushed every line, from the render thread. A syscall per keystroke.
+  - Then the flush was dropped outright. That lost the ENTIRE log on a kill, not the "last few
+    lines" it was described as - an unflushed buffer holds several KB, which at these line lengths
+    is a whole session. Verified by killing the app and finding the file empty.
+  - A 1s periodic flush patched that, but it was only a compromise between the two.
+
+Moving the writing off the frame dissolves the trade instead of splitting it: because the flush now
+happens somewhere that is not the frame, it goes back to being per-line, so every event is durable
+the moment the writer picks it up and the app pays nothing at all. A kill loses only what was still
+in flight; a normal exit waits for the queue to drain (see close()) - verified 2026-09-05 by sending
+the debug pipe's `quit` milliseconds after the last keystroke and finding every line present.
 
 main.lua's own test_draw() additionally wraps the real per-frame logic in a pcall and, on failure,
 appends the Lua error string here too - virt_composer's own call_on_stack already catches an
@@ -29,6 +42,7 @@ instead of three separate "Control down"/"Shift down"/"Equal pressed" ones.
 ]]
 
 local vc = require("virt_composer")
+local prof = require("prof")
 local char = require("char")
 
 local input_recorder = {}
@@ -36,27 +50,49 @@ local input_recorder = {}
 local LOG_PATH = "input_history.log"
 local OLD_LOG_PATH = "input_history.old.log"
 
-local log_file = nil
+local log_open = false
 local frame = 0
 
 -- Every non-letter key any script in this app actually checks (2026-09-05 - see this file's own
 -- top comment on keeping this list honest via grep, not assumption).
-local WATCHED_KEYS = {
+local WATCHED_KEY_NAMES = {
     "ImGuiKey_Backspace", "ImGuiKey_Delete", "ImGuiKey_LeftArrow", "ImGuiKey_RightArrow",
     "ImGuiKey_UpArrow", "ImGuiKey_DownArrow", "ImGuiKey_Enter", "ImGuiKey_KeypadEnter",
     "ImGuiKey_Escape", "ImGuiKey_Home", "ImGuiKey_End", "ImGuiKey_Space",
     "ImGuiKey_Equal", "ImGuiKey_Minus", "ImGuiKey_Slash", "ImGuiKey_F1", "ImGuiKey_F2",
 }
 for key_name in pairs(char.greek_keys) do
-    WATCHED_KEYS[#WATCHED_KEYS + 1] = key_name
+    WATCHED_KEY_NAMES[#WATCHED_KEY_NAMES + 1] = key_name
 end
 
+--[[ Resolved to INTEGERS once, here, instead of passing the name string on every poll.
+
+virt_composer's bm_t<ImGuiKey> parameter accepts either, and the two are not remotely equivalent:
+the string path builds an fkyaml::node per call just to look the enum up, the integer path is a
+lua_tointegerx. Measured in the real app 2026-09-05, 20000 calls each:
+
+    "ImGuiKey_Backspace"    180.83us per call
+    vc.ImGuiKey_Backspace     0.22us per call      (822x)
+
+This loop polls 43 keys EVERY frame, so the string form cost ~6.4ms of a 16.7ms frame budget - by
+itself about a third of why the app was running at 30fps instead of 60. The integer values were
+already sitting on the vc table (add_lua_flag_mapping puts every ImGuiKey_* there as a plain
+number); nothing needed adding to C++, the fast path was simply never being taken.
+
+Resolved at load rather than per call because the mapping never changes. A name that is somehow
+absent is kept as its string, so it still works - just slowly - rather than silently never firing. ]]
+local WATCHED_KEYS = {}
+for _, name in ipairs(WATCHED_KEY_NAMES) do
+    WATCHED_KEYS[#WATCHED_KEYS + 1] = vc[name] or name
+end
+
+-- Hands the line to the writer thread and returns immediately (async_log_composer.h). No file
+-- handle here at all any more - no write, no flush, nothing that can block a frame.
 local function write_line(line)
-    if not log_file then
+    if not log_open then
         return
     end
-    log_file:write(line, "\n")
-    log_file:flush()
+    vc.alog_write(line)
 end
 
 --[[ Rotates the previous session's log to input_history.old.log (overwriting whatever was there
@@ -73,16 +109,39 @@ function input_recorder.init()
             dst:close()
         end
     end
-    log_file = io.open(LOG_PATH, "wb")
+    --[[ Truncate here, in Lua, then hand the path to the writer thread, which opens it for APPEND.
+    Two steps rather than one because the rotation above has to finish reading the old file before
+    anything reopens it, and because "start a fresh log" is this module's decision, not the writer's
+    - alog_open() appending is what lets it be reopened later without losing what came before. ]]
+    local truncate = io.open(LOG_PATH, "wb")
+    if truncate then
+        truncate:close()
+    end
+    --[[ async_log_composer.h is registered by main.cpp but not by the test harness, which registers
+    only charc/mexpr - so vc.alog_open is nil there and calling it would be an error rather than a
+    quiet no-op. Nothing under the harness loads this module today; the guard is so that stays a
+    non-event if something ever does. Same reasoning as prof.lua's own stub block. ]]
+    log_open = (vc.alog_open ~= nil) and vc.alog_open(LOG_PATH) or false
     frame = 0
     write_line("=== session start ===")
+end
+
+--[[ Stops the writer. Called from main.lua's test_shutdown(), with main.cpp calling it again as a
+backstop. alog_close() pushes its stop marker BEHIND everything already queued and then joins, so
+this blocks until the last line is on disk - which is the intent: a normal exit waits for the log to
+finish rather than cutting the writer off mid-queue. ]]
+function input_recorder.close()
+    if log_open then
+        vc.alog_close()   -- drains the queue and joins the writer before returning
+        log_open = false
+    end
 end
 
 --[[ Call once per frame, BEFORE any real per-frame logic runs - so an event is on disk even if
 whatever it triggers goes on to error out later in the SAME frame. ]]
 function input_recorder.poll()
     frame = frame + 1
-    if not log_file then
+    if not log_open then
         return
     end
 
@@ -91,11 +150,15 @@ function input_recorder.poll()
     local alt = vc.ImGui_IsKeyDown("ImGuiKey_LeftAlt") or vc.ImGui_IsKeyDown("ImGuiKey_RightAlt")
     local mods = (ctrl and "Ctrl+" or "") .. (shift and "Shift+" or "") .. (alt and "Alt+" or "")
 
-    for _, key_name in ipairs(WATCHED_KEYS) do
-        if vc.ImGui_IsKeyPressed(key_name, false) then
-            write_line(frame .. " key " .. mods .. key_name:gsub("^ImGuiKey_", ""))
+    prof.begin("lua.recorder.key_scan")
+    for i, key in ipairs(WATCHED_KEYS) do
+        if vc.ImGui_IsKeyPressed(key, false) then
+            -- The NAME for the log comes from the parallel list, since `key` is now an integer.
+            write_line(frame .. " key " .. mods .. WATCHED_KEY_NAMES[i]:gsub("^ImGuiKey_", ""))
         end
     end
+
+    prof.stop("lua.recorder.key_scan")
 
     for _, cp in ipairs(vc.ImGui_input_queue_chars()) do
         if cp >= 32 and cp < 256 then
@@ -120,6 +183,8 @@ end
 
 --[[ Call from main.lua's own pcall wrapper around the real per-frame logic, with the error value
 pcall itself returned, whenever that call fails. ]]
+--[[ No special flush handling any more: the writer thread flushes every line it writes, so an error
+is durable as soon as the writer reaches it, the same as any other line. ]]
 function input_recorder.log_error(err)
     write_line(frame .. " *** ERROR *** " .. tostring(err))
 end

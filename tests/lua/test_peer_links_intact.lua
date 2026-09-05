@@ -132,12 +132,14 @@ function run_test()
 
         -- Fault 2: the peer must be found by identity, from BOTH directions - including when it is
         -- a base the flat walk cannot see.
-        check("open finds its peer as a supsub base",
-                mexpru.peer_base_owner_index(kids, open_atom) ~= nil)
-        check("open is NOT found as an ordinary sibling peer (it really is in a base)",
-                mexpru.peer_index(kids, open_atom) == nil)
+        -- One lookup answers both shapes now: peer_slot() reports the row slot AND the atom
+        -- actually carrying the peer, so "it's a base" is carrier ~= the slot itself.
+        local idx, is_base = mexpru.peer_slot(kids, open_atom)
+        check("open finds its peer's row slot", idx ~= nil)
+        check("...and reports it as carried by that slot's BASE, not the slot itself",
+                is_base == true)
         check("the base ')' finds its own peer among the siblings by identity",
-                mexpru.peer_index(kids, close_glyph) ~= nil)
+                mexpru.peer_slot(kids, close_glyph) ~= nil)
     end
 
     do
@@ -148,14 +150,13 @@ function run_test()
         local victim = supsub_node
         local victim_idx = victim:get_parent_idx()
 
-        local peer_idx = mexpru.peer_index(kids, victim)
-        check("a supsub is not itself a bracket, so the direct lookup finds nothing", peer_idx == nil)
-        local vu = mexpru.u(victim)
-        if vu.kind == "supsub" and vu.base and mexpru.u(vu.base).bracket then
-            peer_idx = mexpru.peer_index(kids, vu.base)
-        end
-        check("...but its BASE's peer is found, so the cascade has something to take down",
-                peer_idx ~= nil)
+        -- slot_atom() turns "the victim is a supsub carrying a bracket as its base" into the
+        -- ordinary lookup - the caller no longer has to try two things in turn.
+        check("a supsub is not itself a bracket", mexpru.u(victim).bracket == nil)
+        check("...but slot_atom() resolves it to the ')' it carries",
+                mexpru.u(mexpru.slot_atom(victim)).bracket ~= nil)
+        local peer_idx = mexpru.peer_slot(kids, mexpru.slot_atom(victim))
+        check("so the cascade finds something to take down", peer_idx ~= nil)
 
         local lo, hi = math.min(victim_idx, peer_idx), math.max(victim_idx, peer_idx)
         table.remove(kids, hi)

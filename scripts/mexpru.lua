@@ -86,9 +86,9 @@ end
 --[[ Entangled bracket pairs (2026-09-04 design discussion, revised twice same day): a bracket atom
 built by mexpru.mexpr_bracket_left()/mexpru.mexpr_bracket_right() carries u(_).bracket = {is_open,
 type, peer} - `peer` a reference to the OTHER atom's own u TABLE (mexpru.u(other_atom), NOT the raw
-mexpr_p node itself). That distinction matters: mexpr_t never registered a real `__eq` with
-virt_composer (see same() below, and its own comment) - comparing two mexpr_p handles with plain `==`
-throws. A u table, by contrast, is an ordinary Lua table with no such wrapping at all, and
+mexpr_p node itself). Originally that distinction was forced: comparing two mexpr_p handles with
+`==` used to THROW, since mexpr_t had registered no __eq (fixed 2026-09-05 - see same() below). It
+still holds up on its own terms now that `==` works, because
 lua_object_t::push() (../utils/virt_composer.h) always hands back the SAME table for the same node
 (a plain lua_rawgeti against the registry slot it was captured into, never a fresh copy) - so plain
 `==` between two mexpru.u(...) results IS a real, reliable identity check, with nothing invented or
@@ -132,12 +132,29 @@ and it can BE a bracket - "(a)^{N}" is [ "(", a, supsub(base=")") ], where the c
 pair is a base and not a sibling at all. Every walk that looked only at siblings was blind to it,
 which is how mispaired and unbalanced states kept getting built while both the rendering and the
 LaTeX looked perfectly fine. ]]
-function mexpru.bracket_delta(node)
+--[[ THE atom that carries a row slot's bracket meaning: the node itself, or - when that slot is a
+supsub which is not a bracket in its own right - its BASE.
+
+This exists because "(a)^{2}" is [ "(", a, supsub(base=")") ]: the closing half of that pair is a
+BASE, not a sibling, so any code that walks a horiz looking at its children directly cannot see it.
+That single blind spot produced four separate live bugs before it was named - cascade-delete taking
+down the wrong partner, scan_bracket reporting an unrelated bracket as a boundary, the wrap counter
+mis-balancing, and the sprint skipping straight over a bracket carrying an exponent. Stated once
+here so the next walk over a row gets it right by construction instead of rediscovering it.
+
+Deliberately NOT the same question as "is the cursor sitting on a base" (mformula_new.lua's own
+target_is_supsub_base), which is about the cursor's own node rather than what a row slot carries -
+those look alike and must not be merged. ]]
+function mexpru.slot_atom(node)
     local u = mexpru.u(node)
-    local br = u.bracket
-    if not br and u.kind == "supsub" and u.base then
-        br = mexpru.u(u.base).bracket
+    if not u.bracket and u.kind == "supsub" and u.base then
+        return u.base
     end
+    return node
+end
+
+function mexpru.bracket_delta(node)
+    local br = mexpru.u(mexpru.slot_atom(node)).bracket
     if not br then
         return 0
     end
@@ -210,33 +227,28 @@ That is exactly how "((A)^{N})" lost a bracket on backspace and became the unbal
 straight over the supsub, met the INNER "(" first and cascaded that one away instead of its own.
 
 So: use this to find a bracket's own partner, and scan_bracket() below only for what it's actually
-documented for - finding the pair that ENCLOSES an ordinary, non-bracket position. ]]
-function mexpru.peer_index(children, node)
-    local br = mexpru.u(node).bracket
-    if not br or not br.peer then
-        return nil
-    end
-    for i, child in ipairs(children) do
-        if mexpru.u(child) == br.peer then
-            return i
-        end
-    end
-    return nil
-end
+documented for - finding the pair that ENCLOSES an ordinary, non-bracket position.
 
---[[ The index of whichever child in `children` is a supsub whose own BASE is `node`'s peer - i.e.
-where peer_index() above came up empty because the peer is serving as a base rather than sitting in
-the flat list. Returns nil if there is no such child. Together the two cover every place a resolved
-peer can actually live. ]]
-function mexpru.peer_base_owner_index(children, node)
+Returns (index, is_base): `index` is the row slot holding the peer; `is_base` is true when the peer
+sits in that slot's supsub BASE rather than being the slot itself - which is how a caller knows
+whether removing it means splicing the row or rebuilding that supsub. Those used to be two separate
+lookups (one for siblings, one for bases) that every caller had to try in turn and keep straight;
+slot_atom() makes them the same search.
+
+A BOOLEAN rather than handing back the carrying node. That began as a guard against a real trap -
+a caller given two nodes would naturally compare them with `==`, which THREW before mexpr_t
+registered an __eq handler (2026-09-05, see same() below). The trap is gone, but answering the
+question directly is still the better shape: the caller wants "is it the base?", not a node to
+re-derive that from. ]]
+function mexpru.peer_slot(children, node)
     local br = mexpru.u(node).bracket
     if not br or not br.peer then
         return nil
     end
     for i, child in ipairs(children) do
-        local cu = mexpru.u(child)
-        if cu.kind == "supsub" and cu.base and mexpru.u(cu.base) == br.peer then
-            return i
+        local carrier = mexpru.slot_atom(child)
+        if mexpru.u(carrier) == br.peer then
+            return i, mexpru.u(carrier) ~= mexpru.u(child)
         end
     end
     return nil
@@ -458,6 +470,44 @@ typesetting doesn't shrink them the way an exponent shrinks) - so, unlike supsub
 carry its own u(_).sz directly, no base-fallback needed anywhere that reads it (cursor_target() and
 cursor_rect() both already special-case reading a supsub's own sz off its base; a frac never needs
 that path at all). ]]
+--[[ A "vert" - N slots stacked vertically, each one a horiz, with no divider between them.
+mexpr_merge_v (math_expr_composer.h) under the hood, which is the same primitive a frac's own
+stacking uses minus the line.
+
+Same bookkeeping pattern as horiz()/supsub()/frac(): tags u(ret).kind = "vert" and remembers its own
+slot list (u(ret).slots, BY REFERENCE - propagate_rebuild() splices it in place, exactly as it does
+with a horiz's children) plus the level everything in it renders at. Unlike supsub, and like frac,
+every slot is one uniform size - a stack doesn't shrink its rows the way an exponent does. ]]
+--[[ The min_cell floor (mexpr_merge_v's third argument) is derived HERE, from sz, rather than being
+passed in by callers: mexpru.vert() is reached from four places (mformula_new's make_vert()/
+shrink_vert(), rescale_node(), and propagate_rebuild() below), and a floor that each of them had to
+remember to pass is a floor that eventually gets forgotten at one of them. Deriving it once, from
+the one thing they all already supply, makes that impossible.
+
+The two numbers are exactly mformula_new.lua's own min_extent()/cursor_metrics() pair - H's advance
+for the width, G's top to g's baseline for the height - i.e. the box a still-EMPTY slot has, which
+is precisely "the size the cell started with". Recomputed here rather than imported because mexpru
+is the lower layer of the two (mformula_new requires mexpru, not the other way round); if a third
+caller ever needs them, they should move down here and mformula_new should read them from mexpru,
+not the reverse. PHYSICAL size, not logical - these are real font metrics (physical_sz()'s own
+comment). ]]
+local function empty_cell_extent(fs, sz)
+    local physical = mexpru.physical_sz(sz)
+    local G, g, H = char.find_by_ascii("G"), char.find_by_ascii("g"), char.find_by_ascii("H")
+    local G_sz = fs:char_get_sz({size = physical, code = G.ncod})
+    local g_sz = fs:char_get_sz({size = physical, code = g.ncod})
+    local H_sz = fs:char_get_sz({size = physical, code = H.ncod})
+    return {x = H_sz.adv, y = g_sz.bl.y - G_sz.tr.y}
+end
+
+function mexpru.vert(fs, slots, sz)
+    local ret = mexpru.mexpr_merge_v(fs, slots, empty_cell_extent(fs, sz))
+    mexpru.u(ret).kind = "vert"
+    mexpru.u(ret).slots = slots
+    mexpru.u(ret).sz = sz
+    return ret
+end
+
 function mexpru.frac(fs, num, den, sz)
     -- sz is LOGICAL (u(ret).sz below) - the divider LINE's own real geometry (char.hline_basic)
     -- needs the current PHYSICAL size instead (mexpru.physical_sz()'s own comment).
@@ -469,19 +519,27 @@ function mexpru.frac(fs, num, den, sz)
     return ret
 end
 
---[[ Identity comparison. NOT `==` - mexpr_t never registered an __eq handler (math_expr_composer.h),
-and virt_composer's generic __eq dispatcher requires one to exist for BOTH operands' class id or it
-throws ("attempt to perform operation on incompatible vc objects") rather than falling back to any
-kind of default comparison - confirmed the hard way, this doesn't "just work" the way earlier
-comments here assumed. mexpr_t's own to_string() override DOES embed the real underlying C++
-pointer ("mexpr::mexpr_t[{ptr}] type: {}"), so comparing tostring() output is a legitimate,
-no-C++-changes-needed identity check instead. Also tolerates either side being nil (a supsub's own
-sup/sub can legitimately be absent). ]]
+--[[ Identity comparison: "these two handles name the same node". Plain `==`, which mexpr_t now
+registers a real handler for (math_expr_composer.h's mexpr_lua_eq, 2026-09-05) - one pointer
+comparison.
+
+It did NOT used to be. virt_composer's __eq dispatches to a per-class handler and raises "attempt to
+perform operation on incompatible vc objects" when neither operand's class has registered one, and
+mexpr_t hadn't - so this compared tostring() output instead, which contains the node's own pointer
+and was therefore correct, but reached it by running to_string()'s std::format over that pointer and
+interning the result as a Lua string, twice per call, on the path index_of() below walks in an O(n)
+loop. Kept working, so nothing forced the question again, and bracket peer-linking got built on top
+of it - the exact shape CLAUDE.md's Law 1 warns about, and the case it is written from.
+
+The nil guard stays explicit: an absent operand is a real case here (a supsub's sup/sub is
+legitimately nil), and "both absent" counts as the same absence. Lua never reaches __eq unless both
+sides are full userdata, so it would answer false rather than error - but false is the wrong answer
+for nil vs nil. ]]
 local function same(a, b)
     if a == nil or b == nil then
         return a == nil and b == nil
     end
-    return tostring(a) == tostring(b)
+    return a == b
 end
 mexpru.same = same
 
@@ -563,6 +621,19 @@ function mexpru.propagate_rebuild(fs, old_node, new_node)
             error("propagate_rebuild: old_node not found among parent frac's num/den")
         end
         rebuilt = mexpru.frac(fs, num, den, u.sz)
+    elseif kind == "vert" then
+        local u = mexpru.u(parent)
+        local slots = u.slots
+        -- index_of(), not get_parent_idx(): a vert's own slot list is the same Lua table the
+        -- caller may have just spliced (grow/shrink), so the C++ subobjs and this list can be out
+        -- of step - the same reason handle_input()'s cascade stopped trusting get_parent_idx()
+        -- after a table.remove().
+        local idx = mexpru.index_of(slots, old_node)
+        if not idx then
+            error("propagate_rebuild: old_node not found among parent vert's own slots")
+        end
+        slots[idx] = new_node
+        rebuilt = mexpru.vert(fs, slots, u.sz)
     else
         error("propagate_rebuild: don't know how to rebuild a '" .. tostring(kind) .. "' node")
     end
@@ -604,5 +675,32 @@ file's own vocabulary, not a Lua wrapper doing any real work of its own. ]]
 function mexpru.cut(node)
     vc.force_release(node)
 end
+
+--[[ Profiler instrumentation (prof.lua / perf_composer.h), applied here at the bottom rather than
+at each definition so the whole block can be lifted out in one go, and so no call site anywhere has
+to know about it. All no-ops while the profiler is off - see prof.wrap()'s own comment.
+
+These five are the ones worth watching: same()/index_of() are the hottest small functions in the
+codebase (index_of calls same() in an O(n) loop), u() is the most-CALLED of any - every tree walk
+hits it once per node, and each call is a Lua -> C++ -> Lua round trip - and propagate_rebuild/
+update_positions are the two that do real work per edit.
+
+u() is deliberately NOT wrapped. It is the most-called function here, and it is also one of the
+smallest - a single registry push - so the wrapper (two boundary crossings and a hash lookup) costs
+several times the callee and the reported figure describes the profiler rather than the code. It was
+wrapped once, reported 27us per call, and was removed on noticing that. Anything that needs to know
+how often u() runs should count the boundary crossings in cpp.* instead, which are real.
+
+NOTE the local aliases: same() and index_of() are ALSO held as file-locals (`local function same`,
+`local function index_of`) and every internal caller in this file goes through those, not through
+the mexpru table. Rebinding the table field therefore only instruments EXTERNAL callers. That is
+deliberate - it keeps the wrapper off this file's own tight internal loops, where the pcall would
+cost more than the thing being measured - but it does mean the reported counts are "calls from
+outside mexpru", not "calls in total". ]]
+local prof = require("prof")
+mexpru.same              = prof.wrap("lua.same", mexpru.same)
+mexpru.index_of          = prof.wrap("lua.index_of", mexpru.index_of)
+mexpru.propagate_rebuild = prof.wrap("lua.propagate_rebuild", mexpru.propagate_rebuild)
+mexpru.update_positions  = prof.wrap("lua.update_positions", mexpru.update_positions)
 
 return mexpru

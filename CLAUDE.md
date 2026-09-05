@@ -118,6 +118,14 @@ $proc = [System.Diagnostics.Process]::Start($psi)
   own top comment: "without touching the developer's actual input devices or stealing window
   focus"). If it's ever insufficient, extend it there, don't work around it externally.
 
+**End a headless run with the pipe's `quit` command, not `taskkill`.** `quit` raises the same signal
+the window's close button does, so the app unwinds through its NORMAL shutdown: `test_shutdown`
+writes `math_writer.save`, and the async log (`async_log_composer.h`) drains and joins its writer
+thread. A `taskkill` skips all of that - which is why `math_writer.save` used to need a
+`git checkout --` after every single test run. Escape does NOT work from the pipe: `main.cpp` polls
+it with `glfwGetKey()`, which reads the real OS keyboard, and a hidden window ignores `WM_CLOSE`
+too - `quit` (added 2026-09-05) is the only clean exit available headlessly.
+
 Driving input still goes through the same TCP pipe (127.0.0.1:47821, see `debug_input_pipe.cpp`
 for the line protocol) — `io.AddKeyEvent`/`AddInputCharacter`/etc. only ever touch this process's
 own ImGui state, never real OS-level input, so none of this ever reaches anything else running on

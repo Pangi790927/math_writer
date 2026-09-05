@@ -52,6 +52,10 @@ Whichever of these ends up changing the tree moves cursor_pos to name the newly-
 local vc = require("virt_composer")
 local char = require("char")
 local mexpru = require("mexpru")
+-- Profiler (prof.lua / perf_composer.h). Required at the TOP, not beside the instrumentation block
+-- at the bottom of this file: draw() calls prof.begin/stop directly, and a local declared below a
+-- function is not in that function's scope - it would read a nil global instead.
+local prof = require("prof")
 
 local mformula_new = {}
 
@@ -60,6 +64,45 @@ local CURSOR_COLOR = 0xff00ffff
 -- for the matching )/]/}". A visibly different hue (purple, vs. CURSOR_COLOR's yellow) rather than
 -- a blink-rate/shape change, so it reads at a glance without having to watch it blink first.
 local PENDING_BRACKET_CURSOR_COLOR = 0xffff00cc
+-- Translucent, drawn UNDER the glyphs, same idea as editor.lua's own plain-text selection.
+local SELECTION_COLOR = 0x553399ff
+--[[ A vert's own box, and the tick between each pair of its cells - both blue. ImGui packs colours
+ABGR (0xAABBGGRR), so blue is the HIGH byte pair, not the low one - writing it the RGBA way round
+gives red instead.
+
+Not full-strength blue: 0.75 of the way from it to the background the stack sits on, linearly
+interpolated per channel ("make the color 0.75 the way to the background, linear interpol",
+2026-09-05):
+
+    R = 0.25*0x00 + 0.75*0x40 = 48  (0x30)
+    G = 0.25*0x66 + 0.75*0x40 = 74  (0x4a)
+    B = 0.25*0xff + 0.75*0x40 = 112 (0x70)   ->  ABGR 0xff704a30
+
+Background here is 0x404040, the ImGui WINDOW's own grey - deliberately NOT the 0x666666 a formula
+box reads as on a screenshot. Everything drawn inside a box has content.lua's BOX_FILL_COLOR
+(0x33ffffff) composited OVER it afterwards, so every colour in this file renders one 20%-white veil
+lighter than it is written: CURSOR_COLOR's raw (255,255,0) shows up as (255,255,51), and the box's
+own black interior shows up as that 0x666666. Interpolating a RAW constant toward a VEILED
+background mixes the two spaces and lands ~0.55 of the way, not 0.75 - which is exactly what the
+first attempt at this did, caught by measuring the real framebuffer afterwards. Since the veil is
+affine it commutes with the blend, so doing it entirely in raw space (as here) and doing it entirely
+in on-screen space agree: both give (89,110,140) on screen, and that was checked against the actual
+pixels rather than assumed.
+
+The near-background GREY these briefly were (2026-09-05) was tried and reverted the same day - "no
+changed my mind on the color, keep the blue idea" - so this is a muted blue, not a grey again; the
+two are only a step apart numerically but the hue is the point. The cell separators went the same
+way: a full rule across the stack read as a table, so it is a short centred DASH instead ("without
+the complete lines between the elements, but just a smaller dash line between the two, something
+like 20% of the width of the vector") - enough to mark where one cell ends without boxing each one
+in. ]]
+local VERT_CONTOUR_COLOR = 0xff704a30
+-- Doubled from 1 (2026-09-05, "double their actual width") - the muted colour above needs the extra
+-- weight to stay legible against the fill it is now three-quarters of the way toward.
+local VERT_LINE_THICKNESS = 2
+-- Dash length, as a fraction of the stack's own width. Centred on it, so the same fraction of
+-- padding is left either side.
+local VERT_DIVIDER_FRACTION = 0.2
 
 -- How much smaller (in font-size-table steps) a sup/sub's own content renders, relative to its
 -- base - same trick, same constants as mformula.lua's own SUB_SIZE_DELTA/MAX_SIZE_INDEX: char.lua's
@@ -210,9 +253,16 @@ through the recursion), so measure() (called every frame, pass 1, before any rea
 draw()'s own returned total height (used instead for cursor_rect()/hit_test()'s wrap transforms,
 which need to know exactly which row real content landed on, not just how many rows exist). ]]
 local function content_extent(container, fontset, sz, wrap_width)
+    prof.begin("lua.ce.total")
+    prof.begin("lua.ce.get_bb")
     local raw_bb = vc.mexpr_get_bb(container.root)
+    prof.stop("lua.ce.get_bb")
+    prof.begin("lua.ce.baseline")
     local bb = to_baseline_frame(fontset, sz, raw_bb)
+    prof.stop("lua.ce.baseline")
+    prof.begin("lua.ce.min_extent")
     local min = min_extent(fontset, sz)
+    prof.stop("lua.ce.min_extent")
     local width = math.max(bb.br.x - bb.tl.x, min.width)
     local top = math.min(bb.tl.y, min.top)
     local bottom = math.max(bb.br.y, min.bottom)
@@ -227,6 +277,7 @@ local function content_extent(container, fontset, sz, wrap_width)
         end
     end
 
+    prof.stop("lua.ce.total")
     return {width = width, top = top, bottom = bottom}
 end
 
@@ -399,6 +450,88 @@ blinker through wrap_point() itself, so a glyph that visually wrapped to a lower
 caret down with it. (An earlier note here said the opposite - it described the state before that
 was wired up, and simply never got updated once it was. Corrected 2026-09-05 after checking the
 call actually passes wrap_edge.) ]]
+--[[ Every vert in `container`, as ROOT-RELATIVE geometry ready to draw: {x0,y0,x1,y1, edges}, with
+`edges` the y of each internal cell boundary. Cached against the tree, recomputed only when the tree
+actually changes.
+
+WHY CACHED. Finding the verts means recursing the whole tree - mexpru.u() per node just to test
+kind == "vert", plus anchor_len()/anchor_at() per child, each one a Lua -> C++ -> Lua crossing, so
+roughly 2N+1 crossings per formula. Doing that every frame to rediscover something that only changes
+on an edit made it the single largest item inside draw(): measured 2026-09-05 at 2.77ms of draw()'s
+own 4.46ms, for two formulas holding a dozen glyphs, against 0.43ms for the ENTIRE C++ layout and
+drawing path in the same frame. It also grew with document size, which is the shape of the reported
+"starts to lag". Nothing was being rebuilt per frame - this was pure rediscovery.
+
+WHAT IS AND ISN'T IN THE CACHE. Only tree-derived geometry, in root-relative coordinates. The wrap
+transform and draw_pos are deliberately left OUT and applied fresh at draw time, since those change
+with the window width and the scroll position without the tree changing at all - caching them would
+mean invalidating on things that aren't edits.
+
+THE KEY is version .. "/" .. tostring(root), and it needs both halves:
+  - version alone is not enough. rescale() (Ctrl+MouseWheel zoom) replaces the entire tree WITHOUT
+    bumping version - it is not an edit - and every cached rectangle would be at the old size.
+  - root identity alone would be relying on 15 separate `container.root = ...` sites all really
+    producing a new node.
+tostring() rather than holding the node: a string keeps no reference, so a cut tree is not pinned
+alive for a frame by the cache that superseded it - the same reasoning draw()'s own blink_key uses.
+The residual gap is the classic ABA one (same version AND a new root landing on the freed old root's
+exact address), which needs a tree replacement that does not bump version, i.e. rescale, in the same
+frame - noted rather than defended against, since the cost of being wrong is one frame of contours
+at stale positions. ]]
+-- Exported (same "for testability only" convention as make_supsub()/make_frac()/make_vert()): a
+-- stale cache draws contours at the wrong place, which is exactly the kind of bug a test should
+-- catch rather than a screenshot - and draw() itself can't be called without a live ImGui context.
+function mformula_new.vert_contours(container)
+    local key = tostring(container.version or 0) .. "/" .. tostring(container.root)
+    local cache = container._contour_cache
+    if cache and cache.key == key then
+        return cache.items
+    end
+
+    prof.begin("lua.draw.contour_build")
+    local items = {}
+
+    --[[ Where cell i ends, in the vert's own frame. NOT re-derived from the min_cell floor
+    (mexpru.vert()/mexpr_merge_v) - that would be a second copy of the layout rule, free to drift
+    from the real one. Instead it falls out of the two facts the C++ guarantees: cells are contiguous
+    starting at the stack's own top edge, and each row is CENTRED in its cell. So the padding above
+    row i is whatever sits between the previous boundary and that row's top, and the same amount sits
+    below it. Exact for uneven rows too (a cell holding a fraction is taller than its neighbours),
+    where any "midpoint between the two rows" guess would not be. ]]
+    local function cell_edges(node, u, origin_y)
+        local edges = {}
+        local edge = vc.mexpr_get_bb(node).tl.y -- the stack's own top, in its own frame
+        for i = 1, #u.slots - 1 do              -- the last cell's bottom edge IS the contour
+            local slot, off = table.unpack(node:anchor_at(i))
+            local sbb = vc.mexpr_get_bb(slot)
+            local pad = (off.y + sbb.tl.y) - edge
+            edge = (off.y + sbb.br.y) + pad
+            edges[i] = origin_y + edge -- stored root-relative, so drawing adds nothing but draw_pos
+        end
+        return edges
+    end
+
+    local function walk(node)
+        local u = mexpru.u(node)
+        if u and u.kind == "vert" and u.pos then
+            local bb = vc.mexpr_get_bb(node)
+            items[#items + 1] = {
+                x0 = u.pos.x + bb.tl.x, y0 = u.pos.y + bb.tl.y,
+                x1 = u.pos.x + bb.br.x, y1 = u.pos.y + bb.br.y,
+                edges = cell_edges(node, u, u.pos.y),
+            }
+        end
+        for i = 1, node:anchor_len() do
+            walk(node:anchor_at(i)[1])
+        end
+    end
+    walk(container.root)
+
+    container._contour_cache = {key = key, items = items}
+    prof.stop("lua.draw.contour_build")
+    return items
+end
+
 function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wireframe, wrap_edge)
     if show_cursor == nil then
         show_cursor = true
@@ -422,10 +555,53 @@ function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wirefr
     wrap count a real box can reach (1-3 rows), and 43px only at a degenerate 22px column forced to
     wrap 12 times. Real in principle, unreachable in practice; measuring it honestly would mean
     threading a max-bottom accumulator through mexpr_draw_rec, deliberately NOT done. ]]
+    --[[ Contour around every vert, plus a rule between each pair of its cells - drawn BEFORE the
+    glyphs so both sit under the text rather than over it. Requested 2026-09-05 ("draw under the
+    vector a conour of it"), to make a stack's real extent visible, since where one actually sits is
+    otherwise only inferrable from where its rows land; the dividers were asked for straight after,
+    to make the cell boundaries themselves visible rather than just the outer box.
+
+    See VERT_CONTOUR_COLOR/VERT_DIVIDER_FRACTION for the colour and the dash width, including what
+    each was tried as first.
+
+    Positions come from mexpru.u(_).pos (root-relative, cached by update_positions()) plus the
+    node's own tl/br, put through the SAME wrap transform mexpr_draw applies. The shift is taken
+    from the top-left corner and applied to every point of the same stack, so a stack that wrapped
+    moves as one box instead of being torn into an inside-out rectangle by transforming each corner
+    on its own. ]]
+    local contours = mformula_new.vert_contours(container)
+    if #contours > 0 then
+        local wrap_w = wrap_edge and (wrap_edge - draw_pos.x)
+        local skipy
+        if wrap_w then
+            local rbb = vc.mexpr_get_bb(container.root)
+            skipy = rbb.br.y - rbb.tl.y
+        end
+        for _, c in ipairs(contours) do
+            local wx0, wy0 = wrap_point(c.x0, c.y0, wrap_w, skipy)
+            local dx, dy = wx0 - c.x0, wy0 - c.y0
+            vc.ImGui_AddRect({x = draw_pos.x + c.x0 + dx, y = draw_pos.y + c.y0 + dy},
+                    {x = draw_pos.x + c.x1 + dx, y = draw_pos.y + c.y1 + dy},
+                    VERT_CONTOUR_COLOR, 2, VERT_LINE_THICKNESS)
+            local half = (c.x1 - c.x0) * VERT_DIVIDER_FRACTION / 2
+            local mid = (c.x0 + c.x1) / 2
+            for _, edge in ipairs(c.edges) do
+                local ey = draw_pos.y + edge + dy
+                vc.ImGui_AddLine({x = draw_pos.x + mid - half + dx, y = ey},
+                        {x = draw_pos.x + mid + half + dx, y = ey}, VERT_CONTOUR_COLOR,
+                        VERT_LINE_THICKNESS)
+            end
+        end
+    end
+
+    prof.begin("lua.draw.mexpr_draw")
     local drawn_h = vc.mexpr_draw(fontset, draw_pos, container.root, draw_wireframe or false,
             wrap_edge or math.huge)
+    prof.stop("lua.draw.mexpr_draw")
 
+    prof.begin("lua.draw.content_extent")
     local ext = content_extent(container, fontset, sz, wrap_width)
+    prof.stop("lua.draw.content_extent")
     if wrap_width then
         local drawn_bottom = ext.top + drawn_h
         if drawn_bottom > ext.bottom then
@@ -443,13 +619,44 @@ function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wirefr
     Done here, in draw(), rather than at each of the many places that assign cursor_pos (every mover,
     every insert, try_close_bracket, the backspace branches...) - one comparison catches all of them,
     including any added later, and cannot fall out of sync the way a dozen scattered resets would.
-    Keyed by node identity + version (tostring(), the same identity handle reachable_graph() uses -
-    mexpr_t has no __eq) so it costs nothing and holds no reference that would keep a cut node
-    alive. ]]
+    Keyed by node identity + version. tostring(), NOT the node itself and not `==` (which is a real
+    identity comparison since 2026-09-05, mexpru.same()'s own comment): a KEY has to be stable
+    across handles, and every tree walk hands back a fresh ref to the same node - as a table key
+    those would be distinct values, while tostring() is derived from the pointer and so is not.
+    It also holds no reference that would keep a cut node alive. Same reasoning as
+    reachable_graph()'s own keying below. ]]
     local blink_key = tostring(container.cursor_pos:get_obj()) .. "/" .. tostring(container.version or 0)
     if container._blink_key ~= blink_key then
         container._blink_key = blink_key
         container.frame = 0
+    end
+
+    --[[ Selection highlight: one rect per selected slot, spanning from the caret BEFORE it to the
+    caret after - the same cell-by-cell shape editor.lua paints for plain text, and for the same
+    reason. Going through cursor_rect() per slot rather than unioning raw bounding boxes means it
+    inherits wrap-awareness and the nested-size baseline correction for free, so a selection on a
+    row that wrapped highlights on the right rows.
+
+    A slot whose two carets landed on different wrap rows is the one case a single rect can't
+    describe; it gets a short stub, exactly as editor.lua does at a line break. Drawn before the
+    glyphs below so the text stays legible on top. ]]
+    do
+        local sel_horiz, sel_lo, sel_hi = mformula_new.selection_range(container)
+        if sel_horiz then
+            local saved_cursor = container.cursor_pos
+            local kids = mexpru.u(sel_horiz).children
+            local function caret_at(idx)
+                container.cursor_pos = vc.wref_mexpr(idx == 0 and sel_horiz or kids[idx])
+                return mformula_new.cursor_rect(container, pos, fontset, wrap_edge)
+            end
+            for slot = sel_lo + 1, sel_hi do
+                local a, b = caret_at(slot - 1), caret_at(slot)
+                local right = (math.abs(a.top - b.top) < 0.5) and b.x or (a.x + 8)
+                vc.ImGui_AddRectFilled({x = a.x, y = math.min(a.top, b.top)},
+                        {x = right, y = math.max(a.bottom, b.bottom)}, SELECTION_COLOR, 0)
+            end
+            container.cursor_pos = saved_cursor
+        end
     end
 
     container.frame = (container.frame or 0) + 1
@@ -484,6 +691,21 @@ horiz (so it can later grow into a real sequence, same as any other horiz). Retu
 (what cursor_pos should end up naming) and the horiz (what actually goes into a supsub's own
 sup/sub slot) - shared by make_supsub() and the "fill in the missing side" case in handle_input()
 below, since both need to build exactly this same shape. ]]
+--[[ How every tree edit announces itself: bump the version, and DROP any selection with it.
+
+A selection is a pair of positions in a particular arrangement of the tree; the moment that
+arrangement changes it no longer describes anything the user chose. Bumping the version is already
+how each edit says "something changed", so the two belong together - stated once here rather than at
+each of the eight edit sites, where the next one added would sooner or later forget.
+
+Reported live 2026-09-05: "sometimes space selects". An insert left the anchor untouched while the
+caret moved on to the newly typed glyph, so a range appeared between the two - a keystroke that
+should have cleared a selection conjured one instead. ]]
+local function mark_edited(container)
+    container.sel_anchor = nil
+    container.version = (container.version or 0) + 1
+end
+
 local function build_side(fontset, sz)
     local empty = build_empty_atom(fontset, sz)
     return empty, mexpru.horiz(fontset, {empty}, sz)
@@ -558,53 +780,7 @@ function mformula_new.make_supsub(container, fontset, slot)
     container.root = mexpru.propagate_rebuild(fontset, original_parent, rebuilt)
 
     container.cursor_pos = vc.wref_mexpr(new_empty)
-    container.version = (container.version or 0) + 1
-end
-
---[[ Ctrl+/ (mid-formula): inserts a fresh, empty fraction AT the cursor position and moves
-cursor_pos into its numerator. Unlike make_supsub(), never WRAPS whatever's already there - a
-fraction has no single preceding glyph that obviously belongs in either half (num/den are each a
-full horiz, built from nothing, not derived from an existing atom) - see this file's own top model
-comment and the 2026-09-04 fraction design discussion. Splices in exactly like a typed glyph does in
-handle_input() below: at the very start if cursor_pos is a horiz, otherwise right after whatever
-atom/compound cursor_pos currently names within its own container horiz (a frac or supsub node
-resting there is just another element of that list for this purpose, no different from an atom).
-Built at cursor_pos's own current size level (target_sz, matching make_supsub()'s own reasoning) -
-num/den render at that SAME size, not shrunk (mexpru.frac()'s own doc comment). Caller is
-responsible for the "on a supsub's own base" no-op check (see handle_input() below) - this function
-assumes it's always safe to insert, same division of responsibility as make_supsub()'s own call
-site handling the "already has this side" no-op instead of make_supsub() itself. ]]
--- Exported alongside make_supsub() above, same reasoning (2026-09-05) - directly testable without
--- real ImGui key-press simulation.
-function mformula_new.make_frac(container, fontset, target_sz)
-    local target = container.cursor_pos:get_obj()
-
-    local num_empty, num_horiz = build_side(fontset, target_sz)
-    local _, den_horiz = build_side(fontset, target_sz)
-    local frac_node = mexpru.frac(fontset, num_horiz, den_horiz, target_sz)
-
-    -- NOT is_horiz() - that helper (and is_supsub()/is_frac()) is declared further down this file,
-    -- after this function; a plain kind check does the same thing without a forward reference.
-    if mexpru.u(target).kind == "horiz" then
-        local children = mexpru.u(target).children
-        table.insert(children, 1, frac_node)
-        local rebuilt = mexpru.horiz(fontset, children, target_sz)
-        container.root = mexpru.propagate_rebuild(fontset, target, rebuilt)
-    else
-        local horiz = target:get_parent()
-        local children = mexpru.u(horiz).children
-        -- target:get_parent_idx() - safe here: unlike make_supsub() (where target ITSELF becomes
-        -- the new node's own base, reparenting it as a side effect - see that function's own
-        -- comment, fixed 2026-09-05 after get_parent_idx() was read AFTER that reparenting there),
-        -- frac_node is built entirely from fresh num_horiz/den_horiz - target is never passed to
-        -- mexpru.frac() at all, so its own ->parent never changes here.
-        table.insert(children, target:get_parent_idx() + 1, frac_node)
-        local rebuilt = mexpru.horiz(fontset, children, mexpru.u(horiz).sz)
-        container.root = mexpru.propagate_rebuild(fontset, horiz, rebuilt)
-    end
-
-    container.cursor_pos = vc.wref_mexpr(num_empty)
-    container.version = (container.version or 0) + 1
+    mark_edited(container)
 end
 
 --[[ Like mformula_new.new(), but root starts with a single, empty fraction node, cursor already in
@@ -670,6 +846,27 @@ function mformula_new.new_with_frac(fontset, sz)
     }
 end
 
+--[[ Ctrl+= pressed in plain text: a brand-new formula that is one single-slot stack, cursor already
+inside that slot - editor.lua's text-mode entry point, exactly parallel to new_with_frac() above for
+Ctrl+/ and mformula_new.new() for Ctrl+M ("make ctrl+ spawn the vector when in text mode same as the
+other containers", 2026-09-05). Starting at ONE slot matches what Ctrl+= does inside a formula: a
+stack is born with a single row and grows by pressing it again (make_vert()/test_vert.lua's own
+one-slot floor).
+
+Built inline rather than by calling make_vert(), the same reason new_with_frac() doesn't call
+make_frac(): both of those splice into an EXISTING container at an existing cursor_pos, and there is
+no container yet here for them to read one from. ]]
+function mformula_new.new_with_vert(fontset, sz)
+    local slot_empty, slot_horiz = build_side(fontset, sz)
+    local root = mexpru.horiz(fontset, {mexpru.vert(fontset, {slot_horiz}, sz)}, sz)
+    mexpru.update_positions(root)
+    return {
+        root = root,
+        cursor_pos = vc.wref_mexpr(slot_empty),
+        version = 0,
+    }
+end
+
 --[[ Arrow-key navigation. Cursor movement never bumps container.version (see editor.lua's own
 undo-coalescing comment: only real tree edits should count as an undo step, not pure cursor
 movement) - none of the functions below touch the tree at all, only container.cursor_pos.
@@ -701,6 +898,14 @@ end
 
 local function is_frac(node)
     return mexpru.u(node).kind == "frac"
+end
+
+--[[ A "vert" - N stacked slots, each a horiz (mexpru.vert()). Navigationally it behaves like a
+frac with an arbitrary number of rows instead of exactly two: Left/Right treat the whole stack as
+one atom, Up/Down step between its slots, and running off either end climbs out the same way a
+frac's own num/den do. ]]
+local function is_vert(node)
+    return mexpru.u(node).kind == "vert"
 end
 
 --[[ Is `node` (an atom) a supsub's own base? Returns that supsub too, or nil, nil if not - saves
@@ -761,7 +966,54 @@ local function insert_glyph_at_cursor(container, fontset, target, target_parent,
     end
 
     container.cursor_pos = vc.wref_mexpr(new_glyph)
-    container.version = (container.version or 0) + 1
+    mark_edited(container)
+end
+
+
+--[[ Splices a freshly built COMPOUND (a fraction, a stack) in at the cursor, then parks the cursor
+wherever the caller says - typically inside the compound's own first slot.
+
+Goes through insert_glyph_at_cursor() above rather than splicing by hand, because that function
+already knows all four things cursor_pos can be sitting on - and one of them was being missed: an
+EMPTY placeholder atom. make_frac()/make_vert() used to insert AFTER the cursor's atom
+unconditionally, so doing either on a brand-new formula - whose only content IS that placeholder -
+left the placeholder sitting to the compound's left, rendering as a blank gap that nothing could
+delete and nothing explained. Reported live 2026-09-05: "see how for no reason the vecotr has an
+empty space to it's left, why?". On an empty atom the right splice is to REPLACE it, which is
+exactly the case insert_glyph_at_cursor() already handles.
+
+Lives HERE, below insert_glyph_at_cursor(), not up beside make_supsub() where the other
+compound-builders used to sit - same forward-reference constraint make_vert() records further down.
+No mark_edited() of its own: insert_glyph_at_cursor() already did it. ]]
+local function insert_compound_at_cursor(container, fontset, node, target_sz, cursor_to)
+    local target = container.cursor_pos:get_obj()
+    local tp = target:get_parent()
+    local tp_u = tp and mexpru.u(tp)
+    insert_glyph_at_cursor(container, fontset, target, tp,
+            mexpru.u(target).kind == "horiz",
+            target.type == vc.MEXPR_TYPE_EMPTY_BOX,
+            tp_u ~= nil and tp_u.kind == "supsub" and mexpru.same(tp_u.base, target),
+            target_sz, node)
+    container.cursor_pos = vc.wref_mexpr(cursor_to)
+end
+
+--[[ Ctrl+/ (mid-formula): inserts a fresh, empty fraction AT the cursor position and moves
+cursor_pos into its numerator. Unlike make_supsub(), never WRAPS whatever's already there - a
+fraction has no single preceding glyph that obviously belongs in either half (num/den are each a
+full horiz, built from nothing, not derived from an existing atom) - see this file's own top model
+comment and the 2026-09-04 fraction design discussion. Built at cursor_pos's own current size level
+(target_sz, matching make_supsub()'s own reasoning) - num/den render at that SAME size, not shrunk
+(mexpru.frac()'s own doc comment). Caller is responsible for the "on a supsub's own base" no-op
+check (see handle_input() below) - this function assumes it's always safe to insert, same division
+of responsibility as make_supsub()'s own call site handling the "already has this side" no-op
+instead of make_supsub() itself. ]]
+-- Exported alongside make_supsub() above, same reasoning (2026-09-05) - directly testable without
+-- real ImGui key-press simulation.
+function mformula_new.make_frac(container, fontset, target_sz)
+    local num_empty, num_horiz = build_side(fontset, target_sz)
+    local _, den_horiz = build_side(fontset, target_sz)
+    insert_compound_at_cursor(container, fontset,
+            mexpru.frac(fontset, num_horiz, den_horiz, target_sz), target_sz, num_empty)
 end
 
 --[[ '(' / '[' / '{' typed (bracket_type = OPEN_BRACKETS[ch]): builds the placeholder open-bracket
@@ -1009,7 +1261,7 @@ local function try_close_bracket(container, fontset, bracket_type)
     -- there, it's the base inside the rebuilt supsub, so it's named directly rather than read back
     -- out of the list.
     container.cursor_pos = vc.wref_mexpr(close_idx and children[close_idx] or close_glyph)
-    container.version = (container.version or 0) + 1
+    mark_edited(container)
 end
 
 --[[ Rebuilds `node` (and everything beneath it) at the CURRENT global zoom (mexpru.get_zoom()/
@@ -1060,6 +1312,14 @@ local function rescale_node(fontset, node, cursor_target)
         local new_den, m2 = rescale_node(fontset, u.den, cursor_target)
         new_node = mexpru.frac(fontset, new_num, new_den, logical)
         mapped = m1 or m2
+    elseif u.kind == "vert" then
+        local new_slots = {}
+        for i, slot in ipairs(u.slots) do
+            local ns, m = rescale_node(fontset, slot, cursor_target)
+            new_slots[i] = ns
+            mapped = mapped or m
+        end
+        new_node = mexpru.vert(fontset, new_slots, logical)
     elseif u.bracket then
         local ascii = u.bracket.is_open and OPEN_BRACKET_ASCII[u.bracket.type]
                 or CLOSE_BRACKET_ASCII[u.bracket.type]
@@ -1100,6 +1360,38 @@ up the current zoom on its own - target_sz's own construction call, unchanged by
 Reassigns container.root/cursor_pos in place; the OLD root is mexpru.cut() loose the same way
 propagate_rebuild() already does for a superseded root (mexpru.cut()'s own comment - without this
 the whole OLD tree lingers on Lua's own collector schedule instead of letting go immediately). ]]
+--[[ An INDEPENDENT structural copy of `container` - fresh nodes throughout, sharing nothing with
+the original, cursor mapped onto the copy.
+
+Exists for undo. editor.lua snapshots state with deep_copy(), which copies Lua tables but hands
+userdata straight through - and an mexpr_t IS userdata, so a snapshot's `root` was the SAME node as
+the live one. propagate_rebuild() then cuts every superseded node including the old root (its own
+2026-09-04 comment), leaving the snapshot pointing at freed memory: Ctrl+Z after ANY formula-internal
+edit crashed with "Expected userdata at index 1", and kept crashing every frame after. undo_or_redo()
+already assumes what this restores - "the restored chars are a fresh copy with all-new row/formula
+tables" - which was true of the old row-based model and quietly stopped being true when this
+userdata-backed one replaced it.
+
+rescale_node() is the copy: it is already a 1:1 structural mirror built through the ordinary
+constructors, and unlike rescale() below it does not cut the original. Rebuilt at the current zoom
+from each node's own LOGICAL sz, so a snapshot restored at a different zoom comes back correctly
+sized rather than frozen at the size it was taken.
+
+pending_bracket and sel_anchor are deliberately NOT carried across: both are weak refs into the OLD
+tree, and a copy has no matching nodes to point them at. A half-typed bracket therefore comes back
+un-closeable rather than dangling - the honest degradation, and the alternative is a reference into
+a tree this copy doesn't own. ]]
+function mformula_new.clone(container, fontset)
+    local cursor_target = container.cursor_pos:get_obj()
+    local new_root, mapped_cursor = rescale_node(fontset, container.root, cursor_target)
+    mexpru.update_positions(new_root)
+    return {
+        root = new_root,
+        cursor_pos = vc.wref_mexpr(mapped_cursor or new_root),
+        version = container.version or 0,
+    }
+end
+
 function mformula_new.rescale(container, fontset)
     local cursor_target = container.cursor_pos:get_obj()
     local old_root = container.root
@@ -1145,7 +1437,9 @@ exit_horiz_leftward = function(container, horiz)
     local hp_u = mexpru.u(horiz_parent)
     if hp_u.kind == "supsub" then
         container.cursor_pos = vc.wref_mexpr(hp_u.base)
-    elseif hp_u.kind == "frac" then
+    elseif hp_u.kind == "frac" or hp_u.kind == "vert" then
+        -- Both have no base to reach toward, so leaving one leftward means leaving the WHOLE
+        -- compound - it occupies a single slot in its own container either way.
         move_left_within(container, horiz_parent:get_parent(), horiz_parent)
     end
 end
@@ -1378,6 +1672,13 @@ function mformula_new.move_down(container)
         return
     end
 
+    -- Mirror for a vert: Down enters the BOTTOMMOST slot, as it enters a frac's denominator.
+    if is_vert(target) then
+        local slots = mexpru.u(target).slots
+        container.cursor_pos = vc.wref_mexpr(enter_at_end(slots[#slots]))
+        return
+    end
+
     local base_owner = base_of(target)
     if base_owner then
         local sub = mexpru.u(base_owner).sub
@@ -1406,6 +1707,20 @@ function mformula_new.move_down(container)
     -- a horiz, in which case `horiz` above was set to target:get_parent() directly - a fresh,
     -- unmutated read.
     local is_last_element = (not is_horiz(target)) and target:get_parent_idx() == #horiz_children
+
+    if is_vert(horiz_parent) then
+        -- In a vert slot: Down steps to the slot below, and running off the LAST one climbs out
+        -- exactly as a denominator's own Down does. enter_at_start, matching the frac's own
+        -- num->den convention (a pure vertical jump, not an approach from either side).
+        local slots = hp_u.slots
+        local idx = mexpru.index_of(slots, horiz)
+        if idx and slots[idx + 1] then
+            container.cursor_pos = vc.wref_mexpr(enter_at_start(slots[idx + 1]))
+        else
+            apply_walk(container, horiz_parent, "sup")
+        end
+        return
+    end
 
     if mexpru.same(hp_u.sup, horiz) and is_last_element then
         container.cursor_pos = vc.wref_mexpr(horiz_parent)
@@ -1458,6 +1773,14 @@ function mformula_new.move_up(container)
         return
     end
 
+    -- A vert is the same idea with N rows instead of 2: Up enters the TOPMOST slot, exactly as it
+    -- enters a frac's numerator ("up, down climb to the topmost or downard most element, in the
+    -- same way as fractions").
+    if is_vert(target) then
+        container.cursor_pos = vc.wref_mexpr(enter_at_end(mexpru.u(target).slots[1]))
+        return
+    end
+
     local base_owner = base_of(target)
     if base_owner then
         local sup = mexpru.u(base_owner).sup
@@ -1481,6 +1804,19 @@ function mformula_new.move_up(container)
     -- target:get_parent_idx() - safe, same reasoning as move_down()'s own use above.
     local is_last_element = (not is_horiz(target)) and target:get_parent_idx() == #horiz_children
 
+    if is_vert(horiz_parent) then
+        -- Mirror of move_down()'s own vert branch: Up steps to the slot above, and running off the
+        -- FIRST one climbs out the way a numerator's own Up does.
+        local slots = hp_u.slots
+        local idx = mexpru.index_of(slots, horiz)
+        if idx and idx > 1 and slots[idx - 1] then
+            container.cursor_pos = vc.wref_mexpr(enter_at_start(slots[idx - 1]))
+        else
+            apply_walk(container, horiz_parent, "sub")
+        end
+        return
+    end
+
     if mexpru.same(hp_u.sub, horiz) and is_last_element then
         container.cursor_pos = vc.wref_mexpr(horiz_parent)
     elseif mexpru.same(hp_u.sup, horiz) then
@@ -1499,6 +1835,85 @@ function mformula_new.move_up(container)
         -- resolves to "c" the same way going Down from "b" resolves to it.
         apply_walk(container, horiz_parent, "sub")
     end
+end
+
+--[[ Which slot of a vert this cursor position is in: the vert, and the 1-based slot index. nil
+when the position isn't inside a vert at all. Same "immediate enclosing horiz only" reading the
+frac branches use, so all the vertical rules agree about where the cursor IS.
+
+Lives here, below the navigation helpers, rather than up beside make_frac(): it needs is_vert()
+and enter_at_start(), and make_frac()'s own comment records what happens to anything declared above
+those - a silent forward reference to a nil global. ]]
+local function vert_slot_of(target)
+    local horiz = is_horiz(target) and target or target:get_parent()
+    if not horiz then
+        return nil
+    end
+    local vp = horiz:get_parent()
+    if not vp or not is_vert(vp) then
+        return nil
+    end
+    return vp, mexpru.index_of(mexpru.u(vp).slots, horiz)
+end
+
+--[[ Ctrl+= : make a vert here, or - if the cursor is already inside one - give it one more slot.
+
+A vert starts as a SINGLE slot ("it starts with a single element"), which looks like nothing more
+than the content itself; pressing Ctrl+= again stacks another row under it. Growing inserts the new
+slot directly BELOW the one the cursor is in, rather than always at the end, so building a stack
+downward is just Ctrl+= repeatedly - and the cursor follows into the new row, which is where you'd
+type next.
+
+Ctrl+- is the inverse, and refuses at one slot: a zero-slot vert cannot be drawn (mexpr_merge_v
+throws on an empty list) and, more to the point, "needs delete to disappear" - shrinking is for
+resizing a stack, removing it is Backspace/Delete's job, and quietly having the two mean the same
+thing at n=1 would make the stack vanish under a keystroke aimed at its contents. ]]
+function mformula_new.make_vert(container, fontset, target_sz)
+    local target = container.cursor_pos:get_obj()
+
+    -- Already in a stack? Grow it instead of nesting another one inside it.
+    local vert, idx = vert_slot_of(target)
+    if vert and idx then
+        local u = mexpru.u(vert)
+        local slots = u.slots
+        local new_empty, new_horiz = build_side(fontset, u.sz)
+        table.insert(slots, idx + 1, new_horiz)
+        local rebuilt = mexpru.vert(fontset, slots, u.sz)
+        container.root = mexpru.propagate_rebuild(fontset, vert, rebuilt)
+        container.cursor_pos = vc.wref_mexpr(new_empty)
+        mark_edited(container)
+        return
+    end
+
+    -- Otherwise a brand-new one-slot stack, spliced in through the exact same helper make_frac()
+    -- uses - including its replace-an-empty-placeholder case, which is what stopped a fresh stack
+    -- from being born with a blank gap to its left.
+    local slot_empty, slot_horiz = build_side(fontset, target_sz)
+    insert_compound_at_cursor(container, fontset,
+            mexpru.vert(fontset, {slot_horiz}, target_sz), target_sz, slot_empty)
+end
+
+--[[ Ctrl+- : drop the slot the cursor is in. Refuses at one slot (see make_vert() above) and does
+nothing at all outside a vert. The cursor lands in the slot that took the removed one's place -
+the one below, or the new last one if the bottom row was the one removed. ]]
+function mformula_new.shrink_vert(container, fontset)
+    local vert, idx = vert_slot_of(container.cursor_pos:get_obj())
+    if not vert or not idx then
+        return
+    end
+    local u = mexpru.u(vert)
+    local slots = u.slots
+    if #slots <= 1 then
+        print("mformula_new: a vert always keeps at least one slot - use Delete to remove the stack")
+        return
+    end
+
+    local removed = table.remove(slots, idx)
+    local rebuilt = mexpru.vert(fontset, slots, u.sz)
+    container.root = mexpru.propagate_rebuild(fontset, vert, rebuilt)
+    container.cursor_pos = vc.wref_mexpr(enter_at_start(slots[math.min(idx, #slots)]))
+    mexpru.cut(removed)     -- after propagate_rebuild, same ordering rule as every other removal
+    mark_edited(container)
 end
 
 --[[ The frac whose own `slot` ("num"/"den") horiz directly holds `target` - nil if target isn't
@@ -1536,7 +1951,8 @@ sup/sub round-trips too - which is why "any navigation besides fraction one is o
 is no non-reciprocal road to reverse, these fall through to the plain move rather than doing
 nothing, so Alt+arrow is never a dead key. ]]
 function mformula_new.move_down_reverse(container)
-    local owner = frac_slot_owner(container.cursor_pos:get_obj(), "num")
+    local target = container.cursor_pos:get_obj()
+    local owner = frac_slot_owner(target, "num") or (select(1, vert_slot_of(target)))
     if owner then
         container.cursor_pos = vc.wref_mexpr(owner)
         return
@@ -1545,12 +1961,30 @@ function mformula_new.move_down_reverse(container)
 end
 
 function mformula_new.move_up_reverse(container)
-    local owner = frac_slot_owner(container.cursor_pos:get_obj(), "den")
+    local target = container.cursor_pos:get_obj()
+    local owner = frac_slot_owner(target, "den") or (select(1, vert_slot_of(target)))
     if owner then
         container.cursor_pos = vc.wref_mexpr(owner)
         return
     end
     mformula_new.move_up(container)
+end
+
+--[[ Shift+Up / Shift+Down inside a vert - the vertical half of the sprint: straight to the topmost
+or bottommost slot rather than one row at a time ("shift sprints to upermost or botom most").
+Returns false anywhere else, so Shift+Up/Down keeps its plain meaning outside a stack. ]]
+local function sprint_vertical(container, dir)
+    local vert, idx = vert_slot_of(container.cursor_pos:get_obj())
+    if not vert or not idx then
+        return false
+    end
+    local slots = mexpru.u(vert).slots
+    local goal = (dir > 0) and #slots or 1
+    if goal == idx then
+        return false            -- already there: let the plain move climb out of the stack
+    end
+    container.cursor_pos = vc.wref_mexpr(enter_at_start(slots[goal]))
+    return true
 end
 
 --[[ Shift+Left / Shift+Right - the "sprint": get around a long row quickly by jumping between
@@ -1577,17 +2011,176 @@ is; add to it and the sprint picks the new stop up with no other change. ]]
 local SPRINT_LANDMARK_ASCII = {"=", ";"}
 local sprint_landmark_ncod = nil
 
-local function is_sprint_landmark(node)
-    --[[ Look THROUGH a supsub to its own base, exactly as mexpru.bracket_delta() does and for the
-    same reason: "(a)^{2}" keeps its ")" as the supsub's BASE, so the row itself holds only the
-    supsub - scanning siblings alone sees no bracket there and sprints straight past the whole
-    group. Reported live 2026-09-05: "shift doesn't stop at )". A flat "( a )" was never the problem
-    (its brackets ARE siblings); every bracket that carries an exponent was. ]]
-    local u = mexpru.u(node)
-    local probe = node
-    if not u.bracket and u.kind == "supsub" and u.base then
-        probe = u.base
+--[[ SELECTION - deliberately confined to ONE horiz.
+
+Ruled 2026-09-05: "selecting in a formula can work in horiz limited zone, so you can select the
+things in a row in a horiz, but going down with your selection or up a sup is not allowed". That
+constraint is what makes this tractable at all: a horiz is already a flat list, so a selection is
+just an index range in it and never has to reason about what a partial sup/sub or half a fraction
+would even mean.
+
+container.sel_anchor is a wref to the atom the selection was started from; the selection runs
+between that atom's slot and the cursor's. Both ends are ROW SLOTS, in the same 0..#children
+numbering the cursor already uses (0 = resting on the horiz itself, "before everything"), so the
+selected children are exactly lo+1..hi. ]]
+
+--[[ Which row slot a cursor position occupies: its horiz and its index there. A supsub's own BASE
+reads as its supsub's slot (base_of()'s established convention, the same one try_close_bracket()
+uses), so selecting across "(a)^{2}" treats that whole compound as the one slot it visually is.
+nil when the position isn't in a horiz at all. ]]
+local function slot_of(node)
+    local owner = base_of(node)
+    if owner then
+        node = owner
     end
+    if is_horiz(node) then
+        return node, 0
+    end
+    local h = node:get_parent()
+    if not h or not is_horiz(h) then
+        return nil, nil
+    end
+    return h, node:get_parent_idx()
+end
+
+--[[ The live selection as (horiz, lo, hi) - children lo+1..hi are selected - or nil when there
+isn't one. Returns nil rather than an empty range when the two ends have collapsed onto the same
+slot, so callers can treat "no selection" and "an empty one" identically. Also nil if the anchor has
+been cut from the tree, or somehow ended up in a different horiz than the cursor - neither should
+happen, but a selection spanning two rows is exactly the thing this feature is defined not to do. ]]
+function mformula_new.selection_range(container)
+    if not container.sel_anchor then
+        return nil
+    end
+    local anchor = container.sel_anchor:get_obj()
+    if not anchor then
+        return nil
+    end
+    local a_horiz, a_idx = slot_of(anchor)
+    local c_horiz, c_idx = slot_of(container.cursor_pos:get_obj())
+    if not a_horiz or not c_horiz or not mexpru.same(a_horiz, c_horiz) or a_idx == c_idx then
+        return nil
+    end
+    return a_horiz, math.min(a_idx, c_idx), math.max(a_idx, c_idx)
+end
+
+--[[ Ctrl+Shift+Left/Right. Moves the cursor one slot along WITHIN its own horiz - never the
+ordinary move_left()/move_right(), which would descend into a sup/sub or climb out of the row
+entirely, both of which this feature exists to forbid. Clamped at both ends, so running into the
+edge of the row simply stops rather than escaping it. ]]
+local function extend_selection(container, dir)
+    local cursor = container.cursor_pos:get_obj()
+    local horiz, idx = slot_of(cursor)
+    if not horiz then
+        return
+    end
+    if not container.sel_anchor then
+        container.sel_anchor = vc.wref_mexpr(cursor)
+    end
+    local children = mexpru.u(horiz).children
+    local next_idx = idx + dir
+    if next_idx < 0 or next_idx > #children then
+        return
+    end
+    container.cursor_pos = vc.wref_mexpr(next_idx == 0 and horiz or children[next_idx])
+end
+
+--[[ Removes the selected run, if there is one. Returns true when the keypress was CONSUMED - which
+includes the refusal below, since silently falling through to an ordinary backspace after declining
+to delete a selection would delete something the user never pointed at.
+
+Refuses a run whose brackets don't balance on their own: taking "(a" out of "(a)" would leave a
+close with no partner, which is precisely the state the counter rule exists to make unreachable.
+Selecting a whole "(a)" and deleting it is fine, since that run balances.
+
+The emptied-span check mirrors the ordinary backspace path's: removing everything between a pair
+leaves resolve_bracket_pairs() with a span it errors loudly on, so a fresh empty atom fills the gap
+the same way it does there. ]]
+local function delete_selection(container, fontset)
+    local horiz, lo, hi = mformula_new.selection_range(container)
+    if not horiz then
+        return false
+    end
+    local children = mexpru.u(horiz).children
+    local horiz_sz = mexpru.u(horiz).sz
+
+    local run = {}
+    for i = lo + 1, hi do
+        run[#run + 1] = children[i]
+    end
+    if not mexpru.brackets_balanced(run) then
+        print("mformula_new: refusing to delete a selection that would split a bracket pair")
+        return true
+    end
+
+    local cut = {}
+    for i = hi, lo + 1, -1 do
+        cut[#cut + 1] = table.remove(children, i)
+    end
+
+    -- Did that empty out an enclosing pair? (mexpru.peer_slot(), not a hand-rolled adjacency test.)
+    local before = children[lo]
+    local before_br = before and mexpru.u(before).bracket
+    if before_br and before_br.is_open and before_br.peer
+            and mexpru.peer_slot(children, before) == lo + 1 then
+        table.insert(children, lo + 1, build_empty_atom(fontset, horiz_sz))
+    end
+
+    local cursor_node
+    if #children == 0 then
+        -- A horiz can never be left with nothing in it (mexpr_merge_h needs at least one child) -
+        -- same single-empty-atom fallback the ordinary backspace uses.
+        cursor_node = build_empty_atom(fontset, horiz_sz)
+        children[1] = cursor_node
+    end
+
+    local rebuilt = mexpru.horiz(fontset, children, horiz_sz)
+    container.root = mexpru.propagate_rebuild(fontset, horiz, rebuilt)
+    -- Cursor lands where the run began - "before what was removed", the same convention every other
+    -- deletion here follows. lo == 0 means the run started the row, so rest on the horiz itself.
+    container.cursor_pos = vc.wref_mexpr(cursor_node or (lo > 0 and children[lo]) or rebuilt)
+
+    -- Cutting waits until AFTER propagate_rebuild(), same ordering requirement as the ordinary
+    -- cascade (the old ancestor chain still references these until then).
+    for _, node in ipairs(cut) do
+        mexpru.cut(node)
+    end
+    mark_edited(container)      -- drops the (now removed) selection along with the version bump
+    return true
+end
+
+--[[ Typing over a selection replaces it, the way it does in any editor. Shared by the character
+loop and by Space (which has its own branch and so never reaches that loop).
+
+Returns the cursor's target and its four flags, re-derived AFTER the removal since that moves the
+cursor - or nil when there is nothing to insert into, which happens when delete_selection() declined
+the removal (an unbalanced run). Declining the delete has to decline the insert too: typing into the
+middle of a run the editor just refused to remove would be a worse outcome than doing nothing. ]]
+local function replace_selection_before_insert(container, fontset, target, target_parent,
+        target_is_horiz, target_is_empty, target_is_supsub_base)
+    if not mformula_new.selection_range(container) then
+        return target, target_parent, target_is_horiz, target_is_empty, target_is_supsub_base
+    end
+    if not delete_selection(container, fontset) or mformula_new.selection_range(container) then
+        return nil
+    end
+    local t = container.cursor_pos:get_obj()
+    local tp = t:get_parent()
+    local tp_u = tp and mexpru.u(tp)
+    return t, tp,
+            mexpru.u(t).kind == "horiz",
+            t.type == vc.MEXPR_TYPE_EMPTY_BOX,
+            tp_u ~= nil and tp_u.kind == "supsub" and mexpru.same(tp_u.base, t)
+end
+
+-- Exported for testability only (same reason make_supsub()/make_frac() are - handle_input() itself
+-- is keypress-driven and can't be called headless).
+function mformula_new.is_sprint_landmark(node)
+    -- mexpru.slot_atom(): what this row slot actually carries, looking through a supsub to its own
+    -- base. "(a)^{2}" keeps its ")" as the BASE, so a scan of siblings alone sees no bracket there
+    -- and sprints past the whole group - reported live 2026-09-05, "shift doesn't stop at )". See
+    -- slot_atom()'s own comment for the other three places that same blind spot surfaced.
+    local probe = mexpru.slot_atom(node)
 
     if mexpru.u(probe).bracket then
         return true
@@ -1621,7 +2214,7 @@ local function sprint_horizontal(container, dir)
 
     local first, last = (dir > 0) and idx + 1 or idx - 1, (dir > 0) and #children or 1
     for i = first, last, dir do
-        if is_sprint_landmark(children[i]) then
+        if mformula_new.is_sprint_landmark(children[i]) then
             container.cursor_pos = vc.wref_mexpr(children[i])
             return true
         end
@@ -1642,15 +2235,33 @@ end
 confinement every cursor move goes through (cursor_pos_forbidden()'s own comment). Returns true when
 a key was actually consumed. Left/Right take no Alt variant (a plain reciprocal chain, nothing to
 reverse); Up/Down take no Shift variant (see sprint_horizontal()). ]]
-local function handle_arrows(container, alt, sprint)
+local function handle_arrows(container, alt, sprint, selecting)
     local function go(move)
         local before = container.cursor_pos
+        -- Any ordinary movement drops the selection - it only survives the gesture that builds it.
+        if not selecting then
+            container.sel_anchor = nil
+        end
         move(container)
         if cursor_pos_forbidden(container, container.cursor_pos:get_obj()) then
             container.cursor_pos = before
         end
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_LeftArrow", true) then
+
+    -- Ctrl+Shift+Left/Right EXTENDS instead of moving. Only horizontally: a selection may never
+    -- leave its row (see the SELECTION comment above), so Up/Down keep their plain meaning and
+    -- simply drop the selection like any other move.
+    if selecting then
+        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, true) then
+            go(function(c) extend_selection(c, -1) end)
+            return true
+        end
+        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, true) then
+            go(function(c) extend_selection(c, 1) end)
+            return true
+        end
+    end
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, true) then
         go(function(c)
             if not (sprint and sprint_horizontal(c, -1)) then
                 mformula_new.move_left(c)
@@ -1658,7 +2269,7 @@ local function handle_arrows(container, alt, sprint)
         end)
         return true
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_RightArrow", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, true) then
         go(function(c)
             if not (sprint and sprint_horizontal(c, 1)) then
                 mformula_new.move_right(c)
@@ -1666,12 +2277,24 @@ local function handle_arrows(container, alt, sprint)
         end)
         return true
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_UpArrow", true) then
-        go(alt and mformula_new.move_up_reverse or mformula_new.move_up)
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_UpArrow, true) then
+        go(function(c)
+            if alt then
+                mformula_new.move_up_reverse(c)
+            elseif not (sprint and sprint_vertical(c, -1)) then
+                mformula_new.move_up(c)
+            end
+        end)
         return true
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_DownArrow", true) then
-        go(alt and mformula_new.move_down_reverse or mformula_new.move_down)
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_DownArrow, true) then
+        go(function(c)
+            if alt then
+                mformula_new.move_down_reverse(c)
+            elseif not (sprint and sprint_vertical(c, 1)) then
+                mformula_new.move_down(c)
+            end
+        end)
         return true
     end
     return false
@@ -1729,12 +2352,12 @@ function mformula_new.handle_input(container, fontset, sz)
     -- instead: a real structural change (the supsub's own bb changes - an empty side still reserves
     -- real layout space, per math_expr_composer.h), so it goes through the same
     -- rebuild-and-propagate-up path as every other edit, not treated as a lighter-weight operation.
-    local ctrl_down = vc.ImGui_IsKeyDown("ImGuiKey_LeftCtrl") or vc.ImGui_IsKeyDown("ImGuiKey_RightCtrl")
-    local shift_down = vc.ImGui_IsKeyDown("ImGuiKey_LeftShift") or vc.ImGui_IsKeyDown("ImGuiKey_RightShift")
-    local alt_down = vc.ImGui_IsKeyDown("ImGuiKey_LeftAlt") or vc.ImGui_IsKeyDown("ImGuiKey_RightAlt")
+    local ctrl_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
+    local shift_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
+    local alt_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftAlt) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightAlt)
     if ctrl_down and shift_down and not target_is_horiz then
-        local sup_pressed = vc.ImGui_IsKeyPressed("ImGuiKey_Equal", false)
-        local sub_pressed = vc.ImGui_IsKeyPressed("ImGuiKey_Minus", false)
+        local sup_pressed = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Equal, false)
+        local sub_pressed = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Minus, false)
         if sup_pressed or sub_pressed then
             if target_is_supsub_base then
                 local supsub_node = target_parent
@@ -1752,7 +2375,7 @@ function mformula_new.handle_input(container, fontset, sz)
                     end
                     container.root = mexpru.propagate_rebuild(fontset, supsub_node, rebuilt_supsub)
                     container.cursor_pos = vc.wref_mexpr(new_empty)
-                    container.version = (container.version or 0) + 1
+                    mark_edited(container)
                 end
             elseif mexpru.u(target).bracket and mexpru.u(target).bracket.is_open then
                 --[[ An OPEN bracket never becomes a supsub's base - a CLOSE one is a different
@@ -1800,7 +2423,31 @@ function mformula_new.handle_input(container, fontset, sz)
     was copied from. Each node then goes through insert_glyph_at_cursor() in turn - the same splice
     ordinary typing uses, so all four cursor cases (empty atom, horiz, supsub base, plain sibling)
     behave exactly as they already do, and the pasted run chains left-to-right after the first. ]]
-    if ctrl_down and not shift_down and vc.ImGui_IsKeyPressed("ImGuiKey_V", false) then
+    --[[ Ctrl+C / Ctrl+X on a selection. Copied as "$$...$$" - the same wrapper editor.lua's own
+    selection_to_text() uses for a whole formula embed - so one fragment round-trips BOTH ways: back
+    into a formula (the paste path below unwraps it) and out into plain text, where "$$...$$" is
+    already what becomes an embed. Cut refuses exactly where delete does, and for the same reason. ]]
+    if ctrl_down and not shift_down then
+        local copy = vc.ImGui_IsKeyPressed(vc.ImGuiKey_C, false)
+        local cut = vc.ImGui_IsKeyPressed(vc.ImGuiKey_X, false)
+        if copy or cut then
+            local horiz, lo, hi = mformula_new.selection_range(container)
+            if horiz then
+                local children = mexpru.u(horiz).children
+                local run = {}
+                for i = lo + 1, hi do
+                    run[#run + 1] = children[i]
+                end
+                vc.ImGui_SetClipboardText("$$" .. mformula_new.nodes_to_latex(run) .. "$$")
+                if cut then
+                    delete_selection(container, fontset)
+                end
+            end
+            return
+        end
+    end
+
+    if ctrl_down and not shift_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_V, false) then
         local text = vc.ImGui_GetClipboardText()
         local body = text and (text:match("^%s*%$%$(.*)%$%$%s*$") or text)
         if not body or body == "" then
@@ -1842,7 +2489,23 @@ function mformula_new.handle_input(container, fontset, sz)
     -- no notion of a base to attach to at all (this file's own top model comment / 2026-09-04
     -- fraction design discussion), so there's no "fill in" alternative the way Ctrl+Shift+=/- has;
     -- it just doesn't apply there.
-    if ctrl_down and not shift_down and vc.ImGui_IsKeyPressed("ImGuiKey_Slash", false) then
+    --[[ Ctrl+= / Ctrl+- : make a vert, grow it, shrink it (see make_vert()/shrink_vert()).
+    Deliberately WITHOUT Shift - Ctrl+Shift+= and Ctrl+Shift+- are already superscript and
+    subscript, and on a US layout "+" IS Shift+Equal, so the literal reading of "ctrl+'+'" collides
+    with the sup binding outright. Ruled 2026-09-05 in favour of the plain Equal/Minus keys, which
+    were free and read as the same family as the sup/sub pair. ]]
+    if ctrl_down and not shift_down then
+        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Equal, false) then
+            mformula_new.make_vert(container, fontset, target_sz)
+            return
+        end
+        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Minus, false) then
+            mformula_new.shrink_vert(container, fontset)
+            return
+        end
+    end
+
+    if ctrl_down and not shift_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Slash, false) then
         if target_is_supsub_base then
             print("mformula_new: ignoring Ctrl+/ on a supsub's own base - fractions have no base to attach to")
         else
@@ -1863,7 +2526,8 @@ function mformula_new.handle_input(container, fontset, sz)
     -- Arrows, before the Alt branch below: that branch returns unconditionally (Alt is otherwise
     -- entirely about Greek letters), which used to make every Alt+arrow a dead key. Handled here in
     -- one place for both, so plain and Alt-reversed movement can't drift apart.
-    if handle_arrows(container, alt_down, shift_down) then
+    if handle_arrows(container, alt_down, shift_down and not ctrl_down,
+            ctrl_down and shift_down) then
         return
     end
 
@@ -1873,21 +2537,28 @@ function mformula_new.handle_input(container, fontset, sz)
     typed inside a formula at all - "a", Space, "b" came out "ab" (measured 2026-09-05, porting
     audit). Inserted as an ordinary glyph like any other character; slot_markers() is what keeps it
     visible despite having no ink of its own. ]]
-    if not ctrl_down and not alt_down and vc.ImGui_IsKeyPressed("ImGuiKey_Space", true) then
+    if not ctrl_down and not alt_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Space, true) then
         local entry = char.find_by_ascii(" ")
         if entry then
+            -- A space is typing, so it REPLACES a selection like any other character does. Its own
+            -- branch (see above) means it doesn't reach the char loop's replace, so it does it here.
+            local t, tp, t_horiz, t_empty, t_base = replace_selection_before_insert(container, fontset,
+                    target, target_parent, target_is_horiz, target_is_empty, target_is_supsub_base)
+            if not t then
+                return
+            end
             local new_glyph = mexpru.mexpr_symbol(fontset,
                     {size = mexpru.physical_sz(target_sz), code = entry.ncod}, true)
             mexpru.u(new_glyph).sz = target_sz
-            insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
-                    target_is_empty, target_is_supsub_base, target_sz, new_glyph)
+            insert_glyph_at_cursor(container, fontset, t, tp, t_horiz, t_empty, t_base,
+                    target_sz, new_glyph)
         end
         return
     end
 
     if alt_down then
-        for key_name, letter in pairs(char.greek_keys) do
-            if vc.ImGui_IsKeyPressed(key_name, true) then
+        for key_id, letter in pairs(char.greek_key_ids) do
+            if vc.ImGui_IsKeyPressed(key_id, true) then
                 local desc = shift_down and char.greek_alt_shift[letter] or char.greek_alt[letter]
                 local entry = desc and char.find_by_desc(desc)
                 if not entry then
@@ -1911,6 +2582,13 @@ function mformula_new.handle_input(container, fontset, sz)
     for _, cp in ipairs(vc.ImGui_input_queue_chars()) do
         if cp > 32 and cp < 256 then
             local ch = string.char(cp)
+            -- Typing over a selection replaces it (see replace_selection_before_insert()).
+            target, target_parent, target_is_horiz, target_is_empty, target_is_supsub_base =
+                    replace_selection_before_insert(container, fontset, target, target_parent,
+                            target_is_horiz, target_is_empty, target_is_supsub_base)
+            if not target then
+                return
+            end
 
             -- '(' / '[' / '{' and ')' / ']' / '}' are intercepted here, ahead of the ordinary
             -- char.find_by_ascii() path below - see open_bracket()'s/try_close_bracket()'s own
@@ -1961,8 +2639,14 @@ function mformula_new.handle_input(container, fontset, sz)
     -- Backspace removes the atom cursor_pos itself names; Delete removes whichever atom comes
     -- right after it. Neither does anything while cursor_pos is on a horiz or an empty atom (see
     -- this file's own model comment) - there's no atom AT that position for either key to act on.
-    local backspace = vc.ImGui_IsKeyPressed("ImGuiKey_Backspace", true)
-    local fwd_delete = vc.ImGui_IsKeyPressed("ImGuiKey_Delete", true)
+    local backspace = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Backspace, true)
+    local fwd_delete = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Delete, true)
+    -- A selection takes precedence over either key's ordinary meaning, and BEFORE the horiz/empty
+    -- guard below: a selection can legitimately start at slot 0 (cursor resting on the horiz), which
+    -- that guard would otherwise turn into a no-op.
+    if (backspace or fwd_delete) and delete_selection(container, fontset) then
+        return
+    end
     if (not (backspace or fwd_delete)) or target_is_horiz or target_is_empty then
         return
     end
@@ -1994,13 +2678,13 @@ function mformula_new.handle_input(container, fontset, sz)
         -- ever look at - found via scan_bracket() starting from the SUPSUB's own position (the slot
         -- the bracket atom itself used to occupy), not target:get_parent_idx() (which would answer
         -- target's index WITHIN the supsub - always 1 - not its peer's real position out here).
-        -- mexpru.peer_index() - a direct .peer identity read, for the same reason the ordinary
+        -- mexpru.peer_slot() - a direct .peer identity read, for the same reason the ordinary
         -- cascade below uses it: `target` here is a BASE, so it isn't in outer_children at all and
         -- a depth walk from the supsub's slot has no way to tell its real partner from the next
         -- unmatched bracket it happens to meet. Its peer, though, IS an ordinary sibling out here,
         -- so looking it up by identity is both exact and simpler.
         local target_br = mexpru.u(target).bracket
-        local peer_idx = mexpru.peer_index(outer_children, target)
+        local peer_idx = mexpru.peer_slot(outer_children, target)
 
         --[[ ...and the sibling about to be pulled IN can be a bracket atom too. An OPEN one must
         never become a base (same rule as the Ctrl+Shift+=/- guard above, and for the same reasons);
@@ -2056,7 +2740,7 @@ function mformula_new.handle_input(container, fontset, sz)
         -- ancestors it splices OUT of (only the final root, and whatever a caller explicitly cuts
         -- itself - see propagate_rebuild()'s own comment), and this branch never did either.
         if cut_peer then mexpru.cut(cut_peer) end
-        container.version = (container.version or 0) + 1
+        mark_edited(container)
         return
     end
 
@@ -2086,7 +2770,7 @@ function mformula_new.handle_input(container, fontset, sz)
     -- once it runs on it, is what makes container.pending_bracket (a weak ref) correctly read back
     -- nil from then on - no separate bookkeeping needed for that specific field, or for any other
     -- weak ref anywhere that might also point at this same node.
-    --[[ mexpru.peer_index() - a direct .peer identity read, NOT mexpru.scan_bracket(). This used to
+    --[[ mexpru.peer_slot() - a direct .peer identity read, NOT mexpru.scan_bracket(). This used to
     walk by depth, which is what scan_bracket() is for (finding the pair enclosing an ORDINARY
     position, per its own doc comment) and expressly not how a bracket's own partner is meant to be
     found. The difference only shows once a peer can sit somewhere the walk cannot see: a resolved
@@ -2095,32 +2779,19 @@ function mformula_new.handle_input(container, fontset, sz)
     never partners - leaving the real peer orphaned. Reported live 2026-09-05 ("reached an invalid
     state"): backspacing in "((A)^{N})" deleted the outer ")" together with the INNER "(", leaving
     the unbalanced "((A)".
-    peer_base_owner_idx covers the other half of the same shape - the peer IS the base of one of
-    these siblings - and is handled just below, since removing it means giving that supsub a new
-    base rather than splicing anything out of `children`. ]]
+
+    mexpru.slot_atom() on the victim covers the mirror case in the same breath: the victim may not BE
+    a bracket and still carry one off with it, since deleting a whole supsub takes its base along and
+    that base can be half of a real pair. "Removing anything that CONTAINS half a pair takes the
+    other half with it" - not merely "removing a bracket takes its peer". Both readings are now the
+    one lookup rather than three chained attempts. ]]
     local victim_br = mexpru.u(victim).bracket
-    local peer_idx = mexpru.peer_index(children, victim)
-    local peer_base_owner_idx = (peer_idx == nil) and mexpru.peer_base_owner_index(children, victim)
-            or nil
-
-    --[[ The victim may not BE a bracket and still be carrying one off with it: deleting a whole
-    supsub takes its base along, and that base can be the ")" of a real pair ("(a)^{N}" - the
-    close-onto-a-base shape). Its partner has to come down too, exactly as if the bracket itself had
-    been the victim, or the pair is silently halved.
-
-    Third and last place the same invariant had to be stated - "removing anything that CONTAINS one
-    half of a pair takes the other half with it", not just "removing a bracket takes its peer". Found
-    by dumping the live peer map frame by frame: backspacing with the cursor resting on the whole
-    "(a)^{N}" compound left "((A)" behind, the leading "(" pointing at a partner that no longer
-    existed anywhere. ]]
-    if not victim_br and not peer_idx then
-        local vu = mexpru.u(victim)
-        if vu.kind == "supsub" and vu.base then
-            local base_br = mexpru.u(vu.base).bracket
-            if base_br and base_br.peer then
-                peer_idx = mexpru.peer_index(children, vu.base)
-            end
-        end
+    local peer_idx, peer_is_base = mexpru.peer_slot(children, mexpru.slot_atom(victim))
+    -- A peer sitting in somebody's BASE can't be spliced out of the row - that slot needs a new
+    -- base instead, which is the branch below.
+    local peer_base_owner_idx = peer_is_base and peer_idx or nil
+    if peer_base_owner_idx then
+        peer_idx = nil
     end
 
     -- Only table.remove() here - NOT mexpru.cut() yet. Cutting has to wait until AFTER
@@ -2255,7 +2926,7 @@ function mformula_new.handle_input(container, fontset, sz)
         if cut_hi then mexpru.cut(cut_hi) end
         mexpru.cut(cut_lo)
     end
-    container.version = (container.version or 0) + 1
+    mark_edited(container)
 end
 
 --[[ Root-relative bounding box for any mexpr_t node (horiz, supsub, or atom), for hit_test()'s own
@@ -2378,6 +3049,26 @@ local function hit_test_node(fontset, node, click)
         return node
     end
 
+    if is_vert(node) then
+        -- Same descent a frac gets, over N slots instead of two: into whichever row was clicked,
+        -- and otherwise onto the nearest one by vertical distance so a click in the gap between
+        -- rows still lands somewhere sensible rather than on the stack itself.
+        local slots = mexpru.u(node).slots
+        local best, best_dist
+        for _, slot in ipairs(slots) do
+            local bb = node_bbox(fontset, slot)
+            if point_in_bbox(click, bb) then
+                return hit_test_node(fontset, slot, click)
+            end
+            local mid = (bb.top + bb.bottom) / 2
+            local dist = math.abs(click.y - mid)
+            if not best_dist or dist < best_dist then
+                best, best_dist = slot, dist
+            end
+        end
+        return best and hit_test_node(fontset, best, click) or node
+    end
+
     if is_frac(node) then
         local u = mexpru.u(node)
         if point_in_bbox(click, node_bbox(fontset, u.num)) then
@@ -2424,14 +3115,36 @@ wrap_width (2026-09-05, RELATIVE - editor.lua's own cached wrap_edge minus its o
 unwrap_point()'s own reverse of vc.mexpr_draw's wrap: a click that visually landed on some wrapped
 row needs mapping back to "formula space" BEFORE hit_test_node()'s descent, which only ever knows
 about unwrapped positions. nil means "never wraps", same convention as everywhere else here. ]]
-function mformula_new.hit_test(container, fontset, sz, click, wrap_width)
+function mformula_new.hit_test(container, fontset, sz, click, wrap_width, extend)
     local raw_click = {x = click.x, y = click.y - baseline_correction(fontset, sz)}
     if wrap_width then
         local raw_bb = vc.mexpr_get_bb(container.root)
         local skipy = raw_bb.br.y - raw_bb.tl.y
         raw_click.x, raw_click.y = unwrap_point(raw_click.x, raw_click.y, wrap_width, skipy, raw_bb.tl.y)
     end
-    container.cursor_pos = vc.wref_mexpr(hit_test_node(fontset, container.root, raw_click))
+    local hit = hit_test_node(fontset, container.root, raw_click)
+
+    --[[ `extend` is a drag in progress (editor.lua holds the button state): keep the anchor and move
+    only the far end, so sweeping the mouse grows a selection. Clamped to the anchor's OWN horiz -
+    dragging up into a superscript or down into a denominator lands outside the row the selection
+    started in, which this feature is defined not to allow, so such a hit is simply ignored and the
+    selection stays where it was rather than silently jumping slots.
+    Without `extend` (a fresh click) any selection is dropped, which is what clicking should do. ]]
+    if extend then
+        local anchor = container.sel_anchor and container.sel_anchor:get_obj()
+        if not anchor then
+            container.sel_anchor = vc.wref_mexpr(container.cursor_pos:get_obj())
+            anchor = container.sel_anchor:get_obj()
+        end
+        local a_horiz = select(1, slot_of(anchor))
+        local h_horiz = select(1, slot_of(hit))
+        if not a_horiz or not h_horiz or not mexpru.same(a_horiz, h_horiz) then
+            return
+        end
+    else
+        container.sel_anchor = nil
+    end
+    container.cursor_pos = vc.wref_mexpr(hit)
 end
 
 --[[ mformula.lua's reachable_graph() debug-overlay contract: {nodes, edges} - ported 2026-09-05
@@ -2440,8 +3153,11 @@ was honest about why it couldn't do this before, not a stand-in pretending there
 
 BFS from container's own CURRENT cursor_pos, trying all 4 movers at every position reached, same
 algorithm as mformula.lua's own version - only the node identity/positioning underneath differs:
-nodes are keyed by mexpru.same() (tostring() identity, since mexpr_t never registered __eq) instead
-of a {row,pos} pair, and a node's own screen position comes from mformula_new.cursor_rect() itself
+nodes are keyed by tostring() identity instead of a {row,pos} pair - a string derived from the
+node's own pointer, chosen over the node itself because a table KEY must be stable across the fresh
+handles every walk produces (see draw()'s own blink_key comment; this is a keying question, not the
+comparison question mexpr_t's __eq settled in 2026-09-05), and a node's own screen position comes
+from mformula_new.cursor_rect() itself
 (called with pos={x=0,y=0} so the result stays root-relative, wrap-adjusted the same way the real
 blinker is if wrap_edge is given) rather than a separate get_layout() position cache - mexpr_t has
 no equivalent to port, and cursor_rect() already does the one thing needed (a node's own on-screen
@@ -2572,5 +3288,27 @@ end
 local mformula_latex = require("mformula_latex")
 mformula_new.to_latex = mformula_latex.to_latex
 mformula_new.from_latex = mformula_latex.from_latex
+mformula_new.nodes_to_latex = mformula_latex.nodes_to_latex
+
+--[[ Profiler instrumentation (prof.lua / perf_composer.h) - same bottom-of-file placement and same
+reasoning as mexpru.lua's own block: one place to lift out, no call site needs to know.
+
+These are the per-frame phases. content.lua/editor.lua call draw()/measure()/cursor_rect() once per
+formula per frame and reachable_graph()/slot_markers() when their overlays are on, so this is where
+"cost per frame scales with how much is on screen" would show up. handle_input()/rescale()/clone()
+are per-EVENT rather than per-frame, and separating those two groups in the report is most of the
+diagnosis: a spike that lands in the first group is a drawing cost, one that lands in the second is
+an edit doing too much work. ]]
+mformula_new.draw            = prof.wrap("lua.mformula.draw", mformula_new.draw)
+mformula_new.measure         = prof.wrap("lua.mformula.measure", mformula_new.measure)
+mformula_new.cursor_rect     = prof.wrap("lua.mformula.cursor_rect", mformula_new.cursor_rect)
+mformula_new.hit_test        = prof.wrap("lua.mformula.hit_test", mformula_new.hit_test)
+mformula_new.reachable_graph = prof.wrap("lua.mformula.reachable_graph", mformula_new.reachable_graph)
+mformula_new.slot_markers    = prof.wrap("lua.mformula.slot_markers", mformula_new.slot_markers)
+mformula_new.handle_input    = prof.wrap("lua.mformula.handle_input", mformula_new.handle_input)
+mformula_new.rescale         = prof.wrap("lua.mformula.rescale", mformula_new.rescale)
+mformula_new.clone           = prof.wrap("lua.mformula.clone", mformula_new.clone)
+mformula_new.to_latex        = prof.wrap("lua.mformula.to_latex", mformula_new.to_latex)
+mformula_new.from_latex      = prof.wrap("lua.mformula.from_latex", mformula_new.from_latex)
 
 return mformula_new

@@ -195,6 +195,16 @@ ImGuiKey key_from_name(const std::string& name) {
  *    screenshot <path>       - captures the current framebuffer to `path` as a BMP (see
  *                               capture_screenshot() - works even if the window is hidden/never
  *                               shown, e.g. under VC_WINDOW_STAY_HIDDEN)
+ *    quit                    - asks the main loop to exit, exactly as closing the window would:
+ *                               the app then runs its NORMAL shutdown (test_shutdown saves the
+ *                               document, the async log drains and joins its writer). The only way
+ *                               to end a headless run cleanly - main.cpp checks Escape via
+ *                               glfwGetKey(), which reads the real OS keyboard and so is
+ *                               unreachable from this pipe (io.AddKeyEvent only touches this
+ *                               process's own ImGui state), and a hidden window does not answer
+ *                               WM_CLOSE either. Without it every test run had to end in a
+ *                               taskkill, which skips shutdown entirely and left math_writer.save
+ *                               to be restored by hand after each one.
  * Unknown/malformed lines are ignored (DBG-logged) - this is a debug tool, not a protocol to be
  * strict about.
  *
@@ -261,6 +271,13 @@ void dispatch_line(const std::string& line) {
         float x = 0, y = 0;
         iss >> x >> y;
         io.AddMouseWheelEvent(x, y);
+    }
+    else if (cmd == "quit") {
+        /* Same signal the window's own close button raises - the loop notices on its next
+        iteration and unwinds through the ordinary shutdown path. Deliberately NOT exit(): the whole
+        point is to exercise that path, not to bypass it. */
+        DBG("debug_input_pipe: 'quit' - asking the main loop to close");
+        glfwSetWindowShouldClose(imgui_window, GLFW_TRUE);
     }
     else if (cmd == "screenshot") {
         std::string path;

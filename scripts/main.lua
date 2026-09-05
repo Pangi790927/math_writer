@@ -7,6 +7,7 @@ local mexpr = require("mexpr")
 local editor = require("editor")
 local content = require("content")
 local input_recorder = require("input_recorder")
+local prof = require("prof")
 
 local fontset = nil
 local content_state = nil
@@ -36,6 +37,28 @@ local function write_file(path, text)
     f:close()
 end
 
+--[[ Generational GC rather than Lua's default incremental collector.
+
+Measured 2026-09-05, same scenario three times (type into a formula, then eight Ctrl+Shift+Right
+selections, then idle), counting frames whose WORK exceeded 25ms:
+
+    incremental (default)   63 spikes
+    collectgarbage("stop")   3
+    generational             3
+
+The 63 were a ~50ms stall arriving every ~20 frames like clockwork, landing in a different scope
+each time and continuing long after input had stopped and the app was idle - the signature of a
+collector pause, not of any function. Stopping the GC confirmed it and generational mode fixes it
+without the leak, by doing many small collections of young objects instead of occasionally walking
+everything. This app allocates a short-lived table for practically every drawing call ({x=,y=} per
+AddText/AddRect/AddLine) and per mexpru.u() access, which is precisely the churn generational mode
+is designed for: almost all of it dies within the frame that made it.
+
+The 3 that survive in every mode are real work, not GC - structural edits, where mformula.clone()
+snapshots the tree for undo (~19-33ms). Those are the next thing to look at, and they are visible
+now only because this noise is gone. ]]
+collectgarbage("generational")
+
 function test_init()
     fontset = char.load_font_set()
     local saved = read_file(SAVE_PATH)
@@ -53,10 +76,16 @@ message itself) instead of just vanishing into virt_composer's own C++-side DBG 
 file's own comment on why this doesn't (and can't) prevent whatever the process does about the error
 itself, only makes it inspectable afterward. ]]
 function test_draw()
+    prof.begin("lua.input_recorder.poll")
     input_recorder.poll()
+    prof.stop("lua.input_recorder.poll")
     local ok, err = pcall(function()
+        prof.begin("lua.handle_input")
         content.handle_input(content_state, fontset, {x=20, y=30})
+        prof.stop("lua.handle_input")
+        prof.begin("lua.draw")
         content.draw(content_state, fontset, {x=20, y=30})
+        prof.stop("lua.draw")
     end)
     if not ok then
         input_recorder.log_error(err)
@@ -68,6 +97,9 @@ writes every box's content back out in the same $$LaTeX$$ format Ctrl+C already 
 this produces is exactly what "select all, copy" across every box would have given you. ]]
 function test_shutdown()
     write_file(SAVE_PATH, content.serialize(content_state))
+    -- Flush and close the flight recorder explicitly rather than leaving it to the Lua state's own
+    -- teardown to finalize the file handle (input_recorder.close()'s own comment).
+    input_recorder.close()
 end
 
 --[[ TODO: Add the ast into this and make functions that will let us draw the ast ]]

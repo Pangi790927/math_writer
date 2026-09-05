@@ -10,6 +10,7 @@
 #include <algorithm>
 
 #include "char_draw_composer.h"
+#include "perf_composer.h"
 #include "misc_utils.h"
 #include "debug.h"
 
@@ -400,7 +401,8 @@ inline mexpr_p mexpr_bracket_right(vc::ref_t<charc::fontset_t> fs, mexpr_p expr,
 inline mexpr_p mexpr_unarexpr(vc::ref_t<charc::fontset_t> fs, char_t op, mexpr_p b);
 inline mexpr_p mexpr_binexpr(vc::ref_t<charc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b);
 inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes);
-inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes);
+inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes,
+        ImVec2 min_cell = ImVec2(0, 0));
 
 /* TODO: matrix stuff */
 
@@ -408,8 +410,35 @@ inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p
  * =================================================================================================
  */
 
+/*! `a == b` between two mexpr nodes: IDENTITY - "these two handles name the same node" - not
+structural equality. Two separate Lua userdata can wrap the same underlying mexpr_t, so the raw
+pointer behind the ref is what identity means here.
+
+Registered 2026-09-05, closing the gap that CLAUDE.md's Law 1 is written from. The shared metatable
+always installed `__eq`, but it routes through luaw_binary_operator_dispatch<VC_OPERATOR_EQ>, which
+looks for a handler registered against either operand's class id and raises "attempt to perform
+operation on incompatible vc objects" when neither has one. mexpr_t never registered this, so `a ==
+b` THREW - and mexpru.same() worked around it by comparing tostring() output instead, i.e. by
+running to_string()'s std::format over this very pointer, interning the result as a Lua string, and
+doing that twice per comparison, on a path index_of() walks in an O(n) loop. It was always
+comparing the identifier; it was just spelling it as a string first.
+
+A plain lua_CFunction rather than a wrapped member function, per set_class_operator()'s own doc
+comment: an operator's operands can be any mix of vc objects and plain Lua values, so there is no
+one C++ signature to template over. Lua only consults `__eq` when BOTH sides are full userdata, so
+`node == nil` stays an ordinary false and never reaches here - but same() keeps its explicit nil
+guard anyway, since a nil there is a real case (a supsub's sup/sub is legitimately absent). */
+static int mexpr_lua_eq(lua_State *L) {
+    auto *a = vc::get_object_from_lua(L, 1);
+    auto *b = vc::get_object_from_lua(L, 2);
+    lua_pushboolean(L, a != nullptr && a == b);
+    return 1;
+}
+
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
+
+    vc::set_class_operator(vs, mexpr_t::type_id_static(), vc::VC_OPERATOR_EQ, &mexpr_lua_eq);
 
     VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, type);
     VC_REGISTER_MEMBER_OBJECT(vs, mexpr_t, color);
@@ -471,8 +500,10 @@ inline int register_meta(vc::virt_state_t *vs) {
         { "mexpr_merge_h", vc::luaw_function_wrapper<mexpr_merge_h,
                 vc::ref_t<charc::fontset_t>, std::vector<mexpr_p>>
         },
+        /* The min_cell default argument is NOT visible through this wrapper - luaw_function_wrapper
+        enumerates the parameter types it binds, so Lua must always pass all three. */
         { "mexpr_merge_v", vc::luaw_function_wrapper<mexpr_merge_v,
-                vc::ref_t<charc::fontset_t>, std::vector<mexpr_p>>
+                vc::ref_t<charc::fontset_t>, std::vector<mexpr_p>, ImVec2>
         },
         { "mexpr_get_bb", vc::luaw_function_wrapper<mexpr_get_bb, mexpr_p>
         },
@@ -527,6 +558,7 @@ degenerate/misconfigured edge_x) falls back to 0 wraps rather than dividing by a
 number. */
 inline float mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, bool draw_bb,
         float edge_x) {
+    PROF_SCOPE("cpp.mexpr_draw");
     float skipy = m->br.y - m->tl.y;
     draw_info_t di {
         .startx = pos.x,
@@ -652,6 +684,7 @@ inline mexpr_p mexpr_empty(vc::ref_t<charc::fontset_t> fs, float x, float y, flo
 }
 
 inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_char) {
+    PROF_SCOPE("cpp.mexpr_symbol");
     auto [tl, br] = fs->char_get_bb(sym);
 
     /* A glyph with no INK at all - a space - has X0 == X1, so char_get_bb() hands back an empty box
@@ -660,8 +693,10 @@ inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_
     "a", Space, "b" came out as "ab". Every extent in this file is an ink box by design, which is
     right for everything that HAS ink; a space's width lives only in the font's own advance, so
     that is what gets used when there is no ink to measure. Width only - the vertical extent stays
-    empty, since a space should never make a line taller. */
-    if (br.x - tl.x <= 0.0f)
+    empty, since a space should never make a line taller (and see the second half of this fix,
+    after symb_off is applied below, for what "empty" has to mean for that to actually hold). */
+    bool no_ink = (br.x - tl.x <= 0.0f);
+    if (no_ink)
         br.x = tl.x + fs->char_get_sz(sym).adv;
 
     auto ret = mexpr_t::create(MEXPR_TYPE_SYMBOL);
@@ -678,6 +713,22 @@ inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_
     }
     ret->tl = tl + ret->symb_off;
     ret->br = br + ret->symb_off;
+
+    /* An inkless glyph's box has to be empty ON THE BASELINE - not a zero-height box left wherever
+    the 'a'-centring symb_off above happens to put it, which at size 12 is y = -21.5, a full 12
+    units ABOVE the top of the tallest ordinary glyph. Parked up there it unions into its row and
+    drags the row's top edge with it: "1" alone is a 17-unit row, "1" plus a space a 29-unit one,
+    lopsided entirely above the digit. Inside a vert - whose rows are centred in their cells
+    (mexpr_merge_v) - that pushes the "1" visibly DOWN by half the difference; everywhere else it
+    silently wastes the same space instead of moving anything, which is why it went unnoticed until
+    a stack made it move. Reported live 2026-09-05: "after adding space the 1 seems to go down for
+    some reason... it is a posibility that space may be malformed" - it was.
+
+    y = 0 is the centre line every glyph's own box already straddles (that is what symb_off puts it
+    on), so an empty box there contributes nothing to any union containing real ink. */
+    if (no_ink)
+        ret->tl.y = ret->br.y = 0.0f;
+
     return ret;
 }
 
@@ -740,6 +791,7 @@ inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs,
 inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs,
         mexpr_p above, mexpr_p bellow, char_t divline)
 {
+    PROF_SCOPE("cpp.mexpr_frac");
     /* OBS: 1. divline is not actually used, only it's height
             2. a random distance is used to calc the distance from the line and additional 
                width of the fraction line */
@@ -798,6 +850,7 @@ Mirrored for subscripts.
 inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs,
         mexpr_p base, mexpr_p sup, mexpr_p sub)
 {
+    PROF_SCOPE("cpp.mexpr_supsub");
     /* OBS: 1. the y placement of sub/sup are chosen at random */
     if (!base)
         throw vc::except_t("can't use mexpr_supsub without a base");
@@ -877,6 +930,7 @@ positioning) - sets each node's own ->parent to the returned node as it's placed
 old 2-arg version never did (parent was only added after this function already existed). Throws if
 `nodes` is empty - nothing sensible to merge. */
 inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes) {
+    PROF_SCOPE("cpp.mexpr_merge_h");
     if (nodes.empty())
         throw vc::except_t("can't use mexpr_merge_h without at least one node");
 
@@ -894,26 +948,64 @@ inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p
     return ret;
 }
 
-/*! Stacks `nodes` top to bottom - each one placed so its own top edge sits exactly at the previous
-node's own bottom edge (the N-way generalization of the old 2-arg version's "u's bottom meets d's
-top at y=0" positioning), and sets each node's own ->parent to the returned node as it's placed.
-Throws if `nodes` is empty. */
-inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes) {
+/*! Stacks `nodes` top to bottom, each in a CELL of at least `min_cell` and centred inside it, and
+sets each node's own ->parent to the returned node as it's placed. With the default min_cell of
+{0,0} every cell is exactly its row's own box, i.e. each row's top edge sits exactly at the previous
+row's bottom edge - the N-way generalization of the old 2-arg version's "u's bottom meets d's top at
+y=0" positioning, and what this did before min_cell existed. Throws if `nodes` is empty. */
+/* min_cell's default lives on the forward declaration above, not here - C++ allows it in exactly
+one of the two. */
+inline mexpr_p mexpr_merge_v(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes,
+        ImVec2 min_cell) {
+    PROF_SCOPE("cpp.mexpr_merge_v");
     if (nodes.empty())
         throw vc::except_t("can't use mexpr_merge_v without at least one node");
 
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
     ret->subobjs.reserve(nodes.size());
 
-    float y = 0;
-    for (size_t i = 0; i < nodes.size(); i++) {
-        mexpr_p n = nodes[i];
-        y = (i == 0) ? -n->br.y : y + nodes[i - 1]->br.y - n->tl.y;
-        ret->subobjs.push_back({ .obj = n, .pos = ImVec2(0, y) });
+    /* Every row is centred against the widest one, the same way mexpr_frac centres its own
+    above/bellow against the fraction's width. Rows all pinned to x=0 come out ragged-left the
+    moment they differ in width, which for a stack of expressions is essentially always. */
+    float widest = min_cell.x;
+    for (mexpr_p n : nodes)
+        widest = std::max(widest, calc_sz(n).x);
+
+    /* A row's box is otherwise exactly its own ink, so a cell visibly SHRINKS the moment anything
+    is typed into it - an empty slot is a full cursor line tall, a typed "x" only its own ~17px, and
+    the rows then pack together with no leading at all. Requested live 2026-09-05: "the cell should
+    stay the size that it started with, at least, similar to how paranthesis scale". Same rule
+    mformula_new.lua's min_extent() already states for a formula as a whole ("never shrinks below
+    empty-atom size"), applied per row here instead of once at the top. */
+    float y = 0; /* top edge of the next cell */
+    for (mexpr_p n : nodes) {
+        float h = n->br.y - n->tl.y;
+        float cell = std::max(h, min_cell.y);
+        ret->subobjs.push_back({ .obj = n,
+                .pos = ImVec2((widest - calc_sz(n).x) / 2.f, y + (cell - h) / 2.f - n->tl.y) });
+        y += cell;
         n->parent = ret.get();
     }
 
-    std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
+    /* tl/br span the full stacked CELLS - NOT calc_bb(subobjs), which is the union of the rows' own
+    ink and would trim the first and last cell's padding straight back off again, leaving the floor
+    visible only BETWEEN rows and not around the stack. */
+    ret->tl = ImVec2(0, 0);
+    ret->br = ImVec2(widest, y);
+
+    /* ...and the stack as a whole is centred ON the baseline. The loop above anchors it by the
+    FIRST cell's own top, which leaves the whole stack hanging BELOW the line instead of straddling
+    it - obvious the moment one sits beside ordinary text (reported live 2026-09-05: "the vector is
+    not sized corectly after creation, it's location seems mesed up"). Shifting so the combined
+    extent's middle lands on 0 is the same convention mexpr_frac gets from putting its divider at
+    y=0, and that mexpr_symbol uses for a non-char glyph. tl/br are shifted directly rather than
+    re-derived with calc_bb() for the same reason they were set by hand just above. */
+    float shift = -(ret->tl.y + ret->br.y) / 2.f;
+    for (auto &anch : ret->subobjs)
+        anch.pos.y += shift;
+    ret->tl.y += shift;
+    ret->br.y += shift;
+
     return ret;
 }
 
@@ -959,6 +1051,7 @@ shift, each in their own single-anchor wrapper, since a raw glyph/LINE_STRIP com
 of its own to carry that shift). */
 inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket,
         bool is_left) {
+    PROF_SCOPE("cpp.mexpr_bracket_side");
     auto sym_h = [&](char_t sym) {
         return fs->char_get_bb(sym).a_max.y - fs->char_get_bb(sym).a_min.y;
     };

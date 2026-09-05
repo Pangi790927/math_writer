@@ -152,6 +152,18 @@ local function node_to_latex(node)
         -- rather than being dropped.
         local u = mexpru.u(node)
         return "\\frac{" .. node_to_latex(u.num) .. "}{" .. node_to_latex(u.den) .. "}"
+    elseif mexpru.u(node).kind == "vert" then
+        --[[ "\stack{a}{b}{c}" - one brace group per slot, however many there are. A custom macro
+        rather than a real LaTeX environment because this parser has none (no \begin/\end at all),
+        and because a bare vertical stack has no established LaTeX spelling to borrow - it isn't a
+        matrix and it isn't a cases block. Named \stack rather than \vert because \vert already
+        means a vertical BAR in real LaTeX, and text leaving this editor shouldn't claim to be
+        something it isn't. ]]
+        local parts = {"\\stack"}
+        for _, slot in ipairs(mexpru.u(node).slots) do
+            parts[#parts + 1] = "{" .. node_to_latex(slot) .. "}"
+        end
+        return table.concat(parts)
     elseif node.type == vc.MEXPR_TYPE_EMPTY_BOX then
         return ""
     end
@@ -206,6 +218,18 @@ for sup/sub, \frac{...}{...} - nothing fancier (big-op layout tweaks) since noth
 builds those yet either. ]]
 function mformula_latex.to_latex(container)
     return node_to_latex(container.root)
+end
+
+--[[ The same rendering for a RUN of sibling nodes rather than a whole tree - what copying a
+selection inside a formula needs (mformula_new's own selection is always a contiguous slice of one
+horiz's children, so this is exactly the shape it has to serialise). Concatenated with no separator,
+identically to how node_to_latex() already walks a horiz's own children. ]]
+function mformula_latex.nodes_to_latex(nodes)
+    local parts = {}
+    for _, node in ipairs(nodes) do
+        parts[#parts + 1] = node_to_latex(node)
+    end
+    return table.concat(parts)
 end
 
 --[[ Parses LaTeX-subset content starting at 1-based `pos` into a flat array of sibling mexpr_t
@@ -341,6 +365,28 @@ local function parse_latex_children(fontset, s, pos, sz)
                     local num_horiz = parse_brace_group()
                     local den_horiz = parse_brace_group()
                     children[#children + 1] = mexpru.frac(fontset, num_horiz, den_horiz, sz)
+                elseif name == "stack" then
+                    --[[ "\stack{a}{b}{c}" - a vert, one brace group per slot (node_to_latex()'s own
+                    comment on the spelling). Reads groups until the braces run out, since a stack
+                    has no fixed arity the way \frac does; always ends up with at least one, so a
+                    malformed "\stack" with no groups still parses into the one-slot stack the
+                    editor's own Ctrl+= would have made rather than throwing. ]]
+                    local slots = {}
+                    while s:sub(pos, pos) == "{" do
+                        local grp_children
+                        grp_children, pos = parse_latex_children(fontset, s, pos + 1, sz)
+                        if s:sub(pos, pos) == "}" then
+                            pos = pos + 1
+                        end
+                        if #grp_children == 0 then
+                            grp_children = {build_empty_atom(fontset, sz)}
+                        end
+                        slots[#slots + 1] = mexpru.horiz(fontset, grp_children, sz)
+                    end
+                    if #slots == 0 then
+                        slots[1] = mexpru.horiz(fontset, {build_empty_atom(fontset, sz)}, sz)
+                    end
+                    children[#children + 1] = mexpru.vert(fontset, slots, sz)
                 else
                     local entry = char.find_by_desc("\\" .. name)
                     if entry then

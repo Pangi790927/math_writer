@@ -24,6 +24,7 @@ local vc = require("virt_composer")
 local char = require("char")
 local mexpru = require("mexpru")
 local mformula = require("mformula_new") -- TEMP: swapped in for a live look, see CLAUDE.md/chat
+local prof = require("prof")
 
 local editor = {}
 
@@ -309,9 +310,26 @@ local function deep_copy(t, seen)
     return copy
 end
 
+--[[ deep_copy() alone is NOT enough for a formula embed: it copies Lua tables but passes userdata
+straight through, and an mexpr_t is userdata - so a snapshot's formula shared the LIVE tree, which
+propagate_rebuild() then cuts out from under it (mformula_new.clone()'s own comment). Every formula
+item therefore gets a real, independent copy here, which is exactly what undo_or_redo() below
+already claims to be restoring.
+
+`fontset` comes off state._fontset, stashed by handle_input each frame: snapshot() is reached from
+a dozen push_undo() call sites that have no reason to know about fonts, and deep_copy() skips
+"_"-prefixed keys, so parking it there costs nothing and can't leak into a snapshot. ]]
 local function snapshot(state)
+    local chars = deep_copy(state.chars)
+    if state._fontset then
+        for _, item in ipairs(chars) do
+            if item.formula then
+                item.formula = mformula.clone(item.formula, state._fontset)
+            end
+        end
+    end
     return {
-        chars = deep_copy(state.chars),
+        chars = chars,
         cursor_pos = state.cursor_pos,
         selection_anchor = state.selection_anchor,
     }
@@ -326,6 +344,10 @@ every keystroke inside a formula is its own step). Any real edit clears the redo
 valid for redoing exactly what was just undone, not a copy of the past made stale by a genuinely
 new edit branching off from it. ]]
 local function commit_undo(state, snap, coalesce_key)
+    -- Any real edit outdates the cached pre-edit snapshot (see its own comment in handle_input) -
+    -- invalidated here rather than at each call site, since this is the one place every edit passes
+    -- through.
+    state._undo_baseline = nil
     if coalesce_key and coalesce_key == state.undo_coalesce_key then
         return
     end
@@ -342,6 +364,13 @@ that needs to know whether an edit actually happened BEFORE deciding to commit (
 case in handle_input, keyed off mformula's own state.version) builds the snapshot up front instead
 and calls commit_undo() directly. ]]
 local function push_undo(state, coalesce_key)
+    --[[ Every mutating action in this file funnels through here, which makes it the one place worth
+    tagging the frame from (prof.lua / perf_composer.h). A spike frame's report then reads
+    "events: edit:backspace" instead of leaving the cause to be inferred from the timings - which is
+    the entire difference between "draw took 40ms" and knowing what to go and look at. The
+    coalesce_key already names the action for undo's own purposes; nil means one of the structural
+    edits that never coalesces. ]]
+    prof.event("edit:" .. (coalesce_key or "structural"))
     commit_undo(state, snapshot(state), coalesce_key)
 end
 
@@ -362,6 +391,7 @@ local function undo_or_redo(state, is_redo)
     state.selection_anchor = snap.selection_anchor
     state.active_formula = nil
     state.undo_coalesce_key = nil
+    state._undo_baseline = nil      -- the state just changed wholesale; any cached one is stale
 end
 
 -- #################################################################################################
@@ -372,12 +402,15 @@ end
 before: hit-testing a click against an active formula's own drawn geometry (mformula.hit_test()
 has to rebuild/measure rows to know where they land on screen, same as draw() does). ]]
 function editor.handle_input(state, fontset, sz)
+    -- Parked for snapshot()'s benefit (see its own comment) - "_"-prefixed, so deep_copy() never
+    -- carries it into a snapshot.
+    state._fontset = fontset
     -- Ctrl+Z/Ctrl+Shift+Z: checked first, ahead of even the active-formula dispatch below, so
     -- undo/redo works the same way regardless of whether a formula currently owns input - see
     -- undo_or_redo()'s own comment on why it always exits back to plain editing on restore.
-    if (vc.ImGui_IsKeyDown("ImGuiKey_LeftCtrl") or vc.ImGui_IsKeyDown("ImGuiKey_RightCtrl"))
-            and vc.ImGui_IsKeyPressed("ImGuiKey_Z", false) then
-        undo_or_redo(state, vc.ImGui_IsKeyDown("ImGuiKey_LeftShift") or vc.ImGui_IsKeyDown("ImGuiKey_RightShift"))
+    if (vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl))
+            and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Z, false) then
+        undo_or_redo(state, vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift))
         return
     end
 
@@ -390,14 +423,18 @@ function editor.handle_input(state, fontset, sz)
     -- moves ITS cursor there - see mformula.hit_test()'s comment for how "which glyph" is
     -- decided. -----------------------------------------------------------------------
     if state.active_formula then
-        local ctrl_down = vc.ImGui_IsKeyDown("ImGuiKey_LeftCtrl") or vc.ImGui_IsKeyDown("ImGuiKey_RightCtrl")
-        local escaped = vc.ImGui_IsKeyPressed("ImGuiKey_Escape", false)
+        local ctrl_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
+        local escaped = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Escape, false)
         -- Ctrl+Left/Right always leave the formula, regardless of where the cursor is inside it -
         -- plain Left/Right staying parked at the formula's own start/end (mformula.lua's move_left/
         -- move_right do nothing further once there) is intentional, not something arrow keys
         -- should escape on their own.
-        local ctrl_left = ctrl_down and vc.ImGui_IsKeyPressed("ImGuiKey_LeftArrow", false)
-        local ctrl_right = ctrl_down and vc.ImGui_IsKeyPressed("ImGuiKey_RightArrow", false)
+        -- ...but NOT with Shift also held: Ctrl+Shift+Left/Right is the formula's own selection
+        -- gesture (mformula_new's own extend_selection()), so intercepting it here would exit the
+        -- formula on the very first attempt to select inside one.
+        local shift_here = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
+        local ctrl_left = ctrl_down and not shift_here and vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, false)
+        local ctrl_right = ctrl_down and not shift_here and vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, false)
         local ctrl_arrow_exit = ctrl_left or ctrl_right
         local clicked_outside, clicked_inside_fb = false, nil
         if vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false) then
@@ -436,28 +473,55 @@ function editor.handle_input(state, fontset, sz)
                 return
             end
         else
-            if clicked_inside_fb then
+            --[[ A fresh click places the caret; HOLDING the button and moving drags a selection out
+            of it (mformula's own hit_test(extend) keeps the anchor and moves only the far end,
+            clamped to the row the drag started in). Tracked with the same click/hold/release shape
+            state.mouse_selecting already uses for plain text, just aimed at the active formula. ]]
+            local dragging_here = state.formula_dragging
+                    and vc.ImGui_IsMouseDown("ImGuiMouseButton_Left")
+            if clicked_inside_fb or dragging_here then
+                local fb = clicked_inside_fb or state.formula_dragging
                 local mpos = vc.ImGui_GetMousePos()
-                local local_click = {x = mpos.x - clicked_inside_fb.draw_x, y = mpos.y - clicked_inside_fb.draw_y}
-                -- RELATIVE (hit_test()'s own wrap_width comment) - clicked_inside_fb.wrap_edge is
-                -- ABSOLUTE (draw()'s own cache, above), same conversion cursor_rect()/draw() do
-                -- internally, done here since hit_test() never receives draw_x itself (local_click
-                -- is already draw_x-relative by the time it gets there).
-                local wrap_width = clicked_inside_fb.wrap_edge
-                        and (clicked_inside_fb.wrap_edge - clicked_inside_fb.draw_x)
+                local local_click = {x = mpos.x - fb.draw_x, y = mpos.y - fb.draw_y}
+                -- RELATIVE (hit_test()'s own wrap_width comment) - fb.wrap_edge is ABSOLUTE
+                -- (draw()'s own cache, above), same conversion cursor_rect()/draw() do internally,
+                -- done here since hit_test() never receives draw_x itself (local_click is already
+                -- draw_x-relative by the time it gets there).
+                local wrap_width = fb.wrap_edge and (fb.wrap_edge - fb.draw_x)
                 -- TEMP: mformula_new's hit_test() mutates cursor_pos directly (same convention as
                 -- move_*) rather than returning a value - mformula.lua's own hit_test() returned
                 -- {row=,pos=} for the caller to assign into state.cursor instead.
-                mformula.hit_test(state.active_formula, fontset, sz, local_click, wrap_width)
+                mformula.hit_test(state.active_formula, fontset, sz, local_click, wrap_width,
+                        dragging_here and not clicked_inside_fb)
+                state.formula_dragging = fb
+            end
+            if not vc.ImGui_IsMouseDown("ImGuiMouseButton_Left") then
+                state.formula_dragging = nil
             end
             -- One undo step per keystroke INSIDE a formula (not coalesced, unlike plain typing
             -- outside one) - but only when this keystroke actually changed the tree, not for pure
             -- cursor movement (Left/Right/Up/Down, or the click above) - mformula's own
             -- state.version (bumped by every real tree edit) is exactly that signal, so there's
             -- no need to re-derive "was this an edit" by hand here.
+            --[[ The pre-edit snapshot is CACHED (state._undo_baseline), not rebuilt each frame.
+            An undo step has to be captured before the edit that it undoes, but this branch runs on
+            every frame a formula is active - so taking one unconditionally meant snapshotting
+            continuously, ~60 times a second, to throw all but a handful away.
+
+            That was merely wasteful while a snapshot was a shallow deep_copy; once snapshot() began
+            cloning each formula's whole tree (it had to - see mformula_new.clone()) it became a
+            full structural rebuild of every formula, every frame, and the editor visibly lagged.
+            Reported live 2026-09-05: "it lags a lot".
+
+            A baseline stays valid until something actually changes the state, so it is invalidated
+            in commit_undo() and undo_or_redo() - the two places that ever do. The cost is back to
+            about one clone per edit instead of one per frame. ]]
             local formula = state.active_formula
             local pre_version = formula.version
-            local pre_snapshot = snapshot(state)
+            if not state._undo_baseline then
+                state._undo_baseline = snapshot(state)
+            end
+            local pre_snapshot = state._undo_baseline
             mformula.handle_input(formula, fontset, sz) -- TEMP: mformula_new needs these, mformula didn't
             if formula.version ~= pre_version then
                 commit_undo(state, pre_snapshot, nil)
@@ -475,12 +539,12 @@ function editor.handle_input(state, fontset, sz)
         state.cursor_pos = state.cursor_pos + 1
     end
 
-    local is_ctrl = vc.ImGui_IsKeyDown("ImGuiKey_LeftCtrl") or vc.ImGui_IsKeyDown("ImGuiKey_RightCtrl")
-    local is_alt = vc.ImGui_IsKeyDown("ImGuiKey_LeftAlt") or vc.ImGui_IsKeyDown("ImGuiKey_RightAlt")
-    local is_shift = vc.ImGui_IsKeyDown("ImGuiKey_LeftShift") or vc.ImGui_IsKeyDown("ImGuiKey_RightShift")
+    local is_ctrl = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
+    local is_alt = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftAlt) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightAlt)
+    local is_shift = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
 
     -- Ctrl+M: insert a new formula embed at the cursor and enter it straight away. -------------
-    if is_ctrl and vc.ImGui_IsKeyPressed("ImGuiKey_M", false) then
+    if is_ctrl and vc.ImGui_IsKeyPressed(vc.ImGuiKey_M, false) then
         push_undo(state, nil)
         -- mexpru.DEFAULT_SIZE (a fixed LOGICAL baseline), NOT the live `sz` - `sz` is content.lua's
         -- CURRENT, possibly-already-zoomed state.font_size; baking that in directly here would
@@ -498,10 +562,26 @@ function editor.handle_input(state, fontset, sz)
     -- Ctrl+/: insert a new formula embed here, already containing an empty fraction, and enter
     -- it - mirrors Ctrl+M above, just starting with a frac instead of a blank formula (see
     -- mformula.new_with_frac()'s own comment for why it doesn't wrap anything). -------------
-    if is_ctrl and not is_shift and vc.ImGui_IsKeyPressed("ImGuiKey_Slash", false) then
+    if is_ctrl and not is_shift and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Slash, false) then
         push_undo(state, nil)
         -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M just above.
         local formula = mformula.new_with_frac(fontset, mexpru.DEFAULT_SIZE)
+        table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
+        state.cursor_pos = state.cursor_pos + 1
+        state.active_formula = formula
+        return
+    end
+
+    -- Ctrl+=: the same again for a stack - a new formula embed already holding a one-slot vert,
+    -- cursor inside it. The third of the three containers reachable straight from plain text
+    -- (Ctrl+M blank, Ctrl+/ fraction, Ctrl+= stack); asked for 2026-09-05 precisely so the stack
+    -- stops being the odd one out that needs a Ctrl+M first. Ctrl+SHIFT+= is superscript and is
+    -- handled in the block below - the `not is_shift` guard here is what keeps the two apart, the
+    -- same split mformula_new.handle_input() makes for these keys INSIDE a formula. -------------
+    if is_ctrl and not is_shift and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Equal, false) then
+        push_undo(state, nil)
+        -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M/Ctrl+/ above.
+        local formula = mformula.new_with_vert(fontset, mexpru.DEFAULT_SIZE)
         table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
         state.cursor_pos = state.cursor_pos + 1
         state.active_formula = formula
@@ -516,9 +596,9 @@ function editor.handle_input(state, fontset, sz)
     -- of text, or it's a newline/another formula) still works - the base is just left empty. -----
     if is_ctrl and is_shift then
         local slot = nil
-        if vc.ImGui_IsKeyPressed("ImGuiKey_Minus", false) then
+        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Minus, false) then
             slot = "sub"
-        elseif vc.ImGui_IsKeyPressed("ImGuiKey_Equal", false) then
+        elseif vc.ImGui_IsKeyPressed(vc.ImGuiKey_Equal, false) then
             slot = "sup"
         end
         if slot then
@@ -543,12 +623,12 @@ function editor.handle_input(state, fontset, sz)
 
     -- Ctrl+A/C/X/V: select all, copy, cut, paste -----------------------------------------------
     if is_ctrl then
-        if vc.ImGui_IsKeyPressed("ImGuiKey_A", false) then
+        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_A, false) then
             state.selection_anchor = 0
             state.cursor_pos = #state.chars
         end
-        local copy = vc.ImGui_IsKeyPressed("ImGuiKey_C", false)
-        local cut = vc.ImGui_IsKeyPressed("ImGuiKey_X", false)
+        local copy = vc.ImGui_IsKeyPressed(vc.ImGuiKey_C, false)
+        local cut = vc.ImGui_IsKeyPressed(vc.ImGuiKey_X, false)
         if copy or cut then
             local lo, hi = selection_range(state)
             if lo then
@@ -559,7 +639,7 @@ function editor.handle_input(state, fontset, sz)
                 end
             end
         end
-        if vc.ImGui_IsKeyPressed("ImGuiKey_V", false) then
+        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_V, false) then
             local text = vc.ImGui_GetClipboardText()
             if selection_range(state) or (text and #text > 0) then
                 push_undo(state, nil)
@@ -573,7 +653,7 @@ function editor.handle_input(state, fontset, sz)
 
     -- Space, handled explicitly rather than trusting it to show up via
     -- vc.ImGui_input_queue_chars() below (it doesn't always). ------------------------------------
-    if not is_ctrl and vc.ImGui_IsKeyPressed("ImGuiKey_Space", true) then
+    if not is_ctrl and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Space, true) then
         push_undo(state, "type")
         delete_selection(state)
         insert_ncod(char.find_by_ascii(" ").ncod)
@@ -581,8 +661,8 @@ function editor.handle_input(state, fontset, sz)
 
     -- Typing -------------------------------------------------------------------------------------
     if is_alt then
-        for key_name, letter in pairs(char.greek_keys) do
-            if vc.ImGui_IsKeyPressed(key_name, true) then
+        for key_id, letter in pairs(char.greek_key_ids) do
+            if vc.ImGui_IsKeyPressed(key_id, true) then
                 local desc = is_shift and char.greek_alt_shift[letter] or char.greek_alt[letter]
                 local entry = desc and char.find_by_desc(desc)
                 if not entry then
@@ -614,7 +694,7 @@ function editor.handle_input(state, fontset, sz)
     end
 
     -- Deletion -------------------------------------------------------------------------------------
-    if vc.ImGui_IsKeyPressed("ImGuiKey_Backspace", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Backspace, true) then
         -- Consecutive backspaces coalesce into one undo step (deleting a whole word this way
         -- comes back in one Ctrl+Z), but not with typing before them - a plain key mismatch
         -- against "type" already ensures that, no extra bookkeeping needed.
@@ -626,7 +706,7 @@ function editor.handle_input(state, fontset, sz)
             state.cursor_pos = state.cursor_pos - 1
         end
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_Delete", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Delete, true) then
         if selection_range(state) or state.cursor_pos < #state.chars then
             push_undo(state, "delete")
         end
@@ -636,7 +716,7 @@ function editor.handle_input(state, fontset, sz)
     end
 
     -- Enter ----------------------------------------------------------------------------------------
-    if vc.ImGui_IsKeyPressed("ImGuiKey_Enter", true) or vc.ImGui_IsKeyPressed("ImGuiKey_KeypadEnter", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Enter, true) or vc.ImGui_IsKeyPressed(vc.ImGuiKey_KeypadEnter, true) then
         push_undo(state, nil)
         delete_selection(state)
         table.insert(state.chars, state.cursor_pos + 1, {newline=true})
@@ -646,7 +726,7 @@ function editor.handle_input(state, fontset, sz)
     -- Left/Right, with Ctrl word-skip (port of old/comments.h's whitespace-then-alnum scan).
     -- A plain (non-shift) arrow with an active selection collapses to that selection's edge,
     -- same as most editors, instead of moving one char from the current cursor. -----------------
-    if vc.ImGui_IsKeyPressed("ImGuiKey_LeftArrow", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, true) then
         local lo = selection_range(state)
         local adjacent_formula = state.cursor_pos > 0 and state.chars[state.cursor_pos].formula
         if lo and not is_shift then
@@ -675,7 +755,7 @@ function editor.handle_input(state, fontset, sz)
             end
         end
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_RightArrow", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, true) then
         local _, hi = selection_range(state)
         local adjacent_formula = state.cursor_pos < #state.chars and state.chars[state.cursor_pos+1].formula
         if hi and not is_shift then
@@ -704,13 +784,13 @@ function editor.handle_input(state, fontset, sz)
     end
 
     -- Home/End (not in old, cheap to add) -----------------------------------------------------------
-    if vc.ImGui_IsKeyPressed("ImGuiKey_Home", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Home, true) then
         update_selection_for_move(state, is_shift)
         while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
             state.cursor_pos = state.cursor_pos - 1
         end
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_End", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_End, true) then
         update_selection_for_move(state, is_shift)
         while state.cursor_pos ~= #state.chars and not is_newline(state.chars[state.cursor_pos+1]) do
             state.cursor_pos = state.cursor_pos + 1
@@ -719,7 +799,7 @@ function editor.handle_input(state, fontset, sz)
 
     -- Up/Down: preserve column distance across the nearest newline markers (port of
     -- old/comments.h's algorithm) ----------------------------------------------------------------
-    if vc.ImGui_IsKeyPressed("ImGuiKey_UpArrow", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_UpArrow, true) then
         update_selection_for_move(state, is_shift)
         local dist = 0
         while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
@@ -736,7 +816,7 @@ function editor.handle_input(state, fontset, sz)
         end
         state.cursor_pos = state.cursor_pos + math.min(dist, maxdist)
     end
-    if vc.ImGui_IsKeyPressed("ImGuiKey_DownArrow", true) then
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_DownArrow, true) then
         update_selection_for_move(state, is_shift)
         local dist = 0
         while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
@@ -1220,6 +1300,18 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
     end
 
     return (line_top - pos.y) + m.line_height + (line_extra_bottom[line_idx] or 0), max_x - pos.x
+end
+
+--[[ Profiler instrumentation - same bottom-of-file placement as mexpru.lua/mformula_new.lua.
+editor.draw()/handle_input() are the per-BOX phases sitting between content.lua's per-frame totals
+and mformula_new's per-formula ones, which is what makes "cost grows with the number of boxes"
+distinguishable from "cost grows with what is in one box". rescale_all() is per zoom step and
+rebuilds every formula in the document, so it is a prime suspect for a one-frame spike. ]]
+local prof_ = require("prof")
+editor.draw         = prof_.wrap("lua.editor.draw", editor.draw)
+editor.handle_input = prof_.wrap("lua.editor.handle_input", editor.handle_input)
+if editor.rescale_all then
+    editor.rescale_all = prof_.wrap("lua.editor.rescale_all", editor.rescale_all)
 end
 
 return editor

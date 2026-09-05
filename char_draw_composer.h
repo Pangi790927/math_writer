@@ -2,6 +2,7 @@
 #define DRAW_COMPOSER_H
 
 #include "virt_composer.h"
+#include "perf_composer.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_internal.h"
@@ -166,6 +167,11 @@ struct fontset_t : public vc::object_t {
     }
 
     char_sz_t char_get_sz(char_t c) {
+        /* Instrumented for its COUNT above all: this is the one call every glyph metric in the
+        whole app funnels through, it memoizes nothing, and cursor_metrics()/min_extent() re-query
+        it on every single call. The timer's own overhead is significant relative to one lookup, so
+        read the count as exact and the milliseconds as an upper bound. */
+        PROF_SCOPE("cpp.char_get_sz");
         check_char(c);
         auto glyph = fonts[c.size-1][code_to_font_loc[c.code].font-1]
                 ->GetFontBaked(font_sizes[c.size-1])->FindGlyphNoFallback(code_to_font_loc[c.code].fcode);
@@ -189,6 +195,7 @@ struct fontset_t : public vc::object_t {
     }
 
     void char_draw(char_t c, ImVec2 pos, uint32_t color, bool draw_bb, uint32_t bb_color) {
+        PROF_SCOPE("cpp.char_draw");
         auto ssz = char_get_sz(c);
 
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
