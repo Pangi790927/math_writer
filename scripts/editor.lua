@@ -1116,8 +1116,27 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                 -- others. show_graph (content.lua's own graph-toggle button, 2026-09-05, same
                 -- pattern as show_wireframe) gates this specifically - ported live from the old
                 -- (row-based) mformula.lua, off by default so it doesn't clutter ordinary editing.
+                --[[ The cursor highlight, FIRST - before the graph, which is itself before the
+                formula, so this ends up beneath everything: graph, vert contours, glyphs, blinker
+                ("under walk graph and under the mexpr drawing and under the blinker and anything
+                else"). Draw order is the only thing that makes that true, which is why this sits
+                here rather than inside mformula.draw() - anything drawn in there is already on top
+                of the graph.
+
+                Active formula only: a soft pulse under every box's cursor at once would read as
+                clutter, and only one of them is where you are actually typing. mformula.cursor_box()
+                returns the rect relative to the same {content_x, y} origin the formula is drawn at,
+                with wrapping and baseline correction already applied. ]]
                 local markers = nil
                 if is_active_formula then
+                    -- A list, outermost/faintest first - drawn in order, the overlap is what
+                    -- feathers the edge (cursor_box()'s own comment; ImGui has no blur).
+                    for _, hl in ipairs(mformula.cursor_box(item.formula, fontset, sz,
+                            wrap_edge and (wrap_edge - content_x))) do
+                        vc.ImGui_AddRectFilled({x = content_x + hl.x, y = y + hl.y},
+                                {x = content_x + hl.x + hl.w, y = y + hl.y + hl.h},
+                                hl.color, hl.rounding)
+                    end
                     if show_graph then
                         -- RELATIVE width, not the absolute wrap_edge: the graph is built in the
                         -- formula's own root-relative frame (its nodes are added to content_x/y

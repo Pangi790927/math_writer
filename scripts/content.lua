@@ -47,10 +47,22 @@ local WIREFRAME_ON_COLOR  = 0xff66ccff
 
 local SCROLL_SPEED = 44 -- pixels per wheel notch
 
--- Spike recording (Ctrl+F3, prof.lua / perf_composer.h). 25ms is a frame and a half at 60Hz - past
--- the point where a stall stops being a dropped frame and becomes something you can see.
-local PROF_SPIKE_PATH = "perf_spikes.log"
-local PROF_SPIKE_MS   = 25.0
+--[[ Spike recording (Ctrl+F3, prof.lua / perf_composer.h).
+
+8ms, and it is a WORK threshold, not a wall-clock one (perf_composer.h's PROF_IDLE_SCOPE): half the
+16.7ms budget at 60Hz, i.e. the point at which a frame is at real risk of missing its vsync. It was
+25ms while the threshold still measured wall time, where anything smaller just counted frames that
+had already missed a vsync and were sitting idle waiting for the next one.
+
+For reference, measured 2026-09-05 with page heap off (see below): the app does a whole keystroke,
+including the undo clone, in ~0.5ms of work - about 3% of the budget - so this should fire only when
+something is genuinely wrong.
+
+If it fires on EVERY frame, check Windows Page Heap before believing it. It was enabled for main.exe
+via Image File Execution Options on this machine, which made every allocation ~8us and inflated
+every measurement here by roughly 100x (clone: 22ms with it, 0.92ms without). ]]
+local PROF_SPIKE_PATH = ((vc.app_data_prefix and vc.app_data_prefix()) or "") .. "perf_spikes.log"
+local PROF_SPIKE_MS   = 8.0
 
 -- #################################################################################################
 -- Model
@@ -451,7 +463,7 @@ local HELP_LINES = {
     "  Mouse wheel              Scroll",
     "  Ctrl+Mouse wheel          Zoom text size in / out",
     "  F3 / Shift+F3             Profiler overlay on-off / clear its worst frame",
-    "  Ctrl+F3                   Record frames slower than 25ms to perf_spikes.log",
+    "  Ctrl+F3                   Record frames slower than 8ms to perf_spikes.log",
     "  Buttons above a box       Graph / wireframe overlays, and close",
     "",
     "Plain text",
@@ -477,6 +489,7 @@ local HELP_LINES = {
     "    Left / Right                Walk through it, including sup/sub bases",
     "    Up / Down                  Jump into/between superscript & subscript, or numerator & denominator",
     "    Shift+Left/Right            Sprint: jump to the next ( ) = ; or to the slot's edge",
+    "    Ctrl+Shift+Left/Right       Select within the row (click-drag also selects)",
     "    Alt+Up / Alt+Down           Go back the way you came in - from a numerator or",
     "                               denominator, back onto the fraction itself",
     "    Ctrl+Shift+= / Ctrl+Shift+-   Superscript / subscript on the character before the cursor",
@@ -492,6 +505,7 @@ local HELP_LINES = {
     "  Ctrl+C / Ctrl+X            Copy / cut (a formula becomes $$LaTeX$$)",
     "  Ctrl+V                   Paste ($$...$$ spans become formulas)",
     "  Ctrl+Z / Ctrl+Shift+Z      Undo / redo",
+    "  Ctrl+S                   Save everything to math_writer.save",
 }
 
 local HELP_LINE_HEIGHT = 17

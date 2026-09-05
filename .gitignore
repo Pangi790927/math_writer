@@ -8,3 +8,7 @@
 *.pdb
 *.obj
 *.exe
+
+# Everything the TESTING instance (main.exe --test) writes - see app_mode.h. Its own document,
+# logs and ImGui state, kept out of the way of the presentation instance and out of git.
+test_run/

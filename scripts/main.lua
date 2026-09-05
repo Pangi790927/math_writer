@@ -12,7 +12,13 @@ local prof = require("prof")
 local fontset = nil
 local content_state = nil
 
-local SAVE_PATH = "math_writer.save"
+--[[ Prefixed by app_mode.h: "" in presentation mode, "test_run/" under --test. A testing instance
+must never touch the real document - before this existed, a headless run would overwrite
+math_writer.save with whatever the test had typed, and nearly every run had to be followed by a
+`git checkout --` to rescue it (2026-09-05). Falls back to no prefix if app_mode was not registered,
+so a harness that only loads part of the app still works. ]]
+local DATA_PREFIX = (vc.app_data_prefix and vc.app_data_prefix()) or ""
+local SAVE_PATH = DATA_PREFIX .. "math_writer.save"
 
 --[[ Whole-file read via Lua's own io library (enabled per-project in the makefiles -
 VIRT_COMPOSER_ENABLE_LUA_IO - rather than a custom C++ binding, since io.* already does exactly
@@ -59,6 +65,16 @@ snapshots the tree for undo (~19-33ms). Those are the next thing to look at, and
 now only because this noise is gone. ]]
 collectgarbage("generational")
 
+--[[ Lets mformula_new report a recovered dangling cursor into the flight recorder without
+requiring input_recorder itself (that would be a require cycle through char/prof). ]]
+if mformula_new_warn_sink == nil then
+    local ok, mf = pcall(require, "mformula_new")
+    if ok and mf.set_warn_sink then
+        mf.set_warn_sink(function(msg) input_recorder.log_event("WARN " .. msg) end)
+    end
+    mformula_new_warn_sink = true
+end
+
 function test_init()
     fontset = char.load_font_set()
     local saved = read_file(SAVE_PATH)
@@ -75,10 +91,37 @@ Lua exception here gets logged (frame number + every recent action already on di
 message itself) instead of just vanishing into virt_composer's own C++-side DBG log - see that
 file's own comment on why this doesn't (and can't) prevent whatever the process does about the error
 itself, only makes it inspectable afterward. ]]
+
+
+--[[ Writes the whole document to SAVE_PATH. The ONE place that does - Ctrl+S below and
+test_shutdown() both come through here, so an explicit save and an exit-save can never write
+different things or drift apart as the format changes. ]]
+local function save_document()
+    write_file(SAVE_PATH, content.serialize(content_state))
+    -- Goes in the flight recorder too: a save is a real user action, and when reading a session
+    -- log back it matters whether a save happened before whatever came next.
+    input_recorder.log_event("saved " .. SAVE_PATH)
+end
+
 function test_draw()
     prof.begin("lua.input_recorder.poll")
     input_recorder.poll()
     prof.stop("lua.input_recorder.poll")
+
+    --[[ Ctrl+S - handled HERE rather than in content.lua because this is where SAVE_PATH,
+    write_file() and content_state all live, and where the exit-save already happens; routing it
+    through content.lua would mean handing that file a save callback for one keybinding.
+
+    Before content.handle_input(), but NOT consuming the key: nothing downstream binds Ctrl+S (the
+    editor's Ctrl set is A/C/X/V/Z/M//,= and the plain-typing path filters codepoints below 32, so
+    Ctrl+S never reaches it as text), and Alt+S is sigma, which is a different modifier entirely.
+    Integer key constants, not the "ImGuiKey_S" string form - see char.lua's greek_key_ids comment
+    for why (180us vs 0.22us per call). ]]
+    local ctrl = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
+    if ctrl and vc.ImGui_IsKeyPressed(vc.ImGuiKey_S, false) then
+        save_document()
+    end
+
     local ok, err = pcall(function()
         prof.begin("lua.handle_input")
         content.handle_input(content_state, fontset, {x=20, y=30})
@@ -96,7 +139,7 @@ end
 writes every box's content back out in the same $$LaTeX$$ format Ctrl+C already uses, so the file
 this produces is exactly what "select all, copy" across every box would have given you. ]]
 function test_shutdown()
-    write_file(SAVE_PATH, content.serialize(content_state))
+    save_document()
     -- Flush and close the flight recorder explicitly rather than leaving it to the Lua state's own
     -- teardown to finalize the file handle (input_recorder.close()'s own comment).
     input_recorder.close()

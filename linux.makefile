@@ -1,5 +1,8 @@
 CXX       := g++
-CXX_FLAGS := -std=c++2a -g -export-dynamic -Wno-format-security
+# -O3, the counterpart of windows.makefile's /O2 (which is as far as MSVC's ladder goes - it has no
+# /O3). This file had no -O at all either, so gcc was defaulting to -O0. -g stays, same trade as
+# there: optimised frames are less precise in a backtrace.
+CXX_FLAGS := -std=c++2a -O3 -g -export-dynamic -Wno-format-security
 CXX_FLAGS += -DVIRT_COMPOSER_ENABLE_LUA_IO=1
 # CXX_FLAGS += -Wl,--verbose
 LIBS      := -lpthread -ldl -lglfw -lGL -lbacktrace

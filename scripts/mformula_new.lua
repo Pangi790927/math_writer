@@ -52,12 +52,19 @@ Whichever of these ends up changing the tree moves cursor_pos to name the newly-
 local vc = require("virt_composer")
 local char = require("char")
 local mexpru = require("mexpru")
+
+-- Set by main.lua to input_recorder.log_event, so live_cursor() can report a recovery without this
+-- file depending on the recorder (which would be a require cycle through char/prof). The local is
+-- declared here, above every user; the setter lives just below mformula_new itself.
+local input_recorder_warn = nil
 -- Profiler (prof.lua / perf_composer.h). Required at the TOP, not beside the instrumentation block
 -- at the bottom of this file: draw() calls prof.begin/stop directly, and a local declared below a
 -- function is not in that function's scope - it would read a nil global instead.
 local prof = require("prof")
 
 local mformula_new = {}
+
+function mformula_new.set_warn_sink(fn) input_recorder_warn = fn end
 
 local CURSOR_COLOR = 0xff00ffff
 -- Cursor color while container.pending_bracket is set - "you're in bracket-closing mode, waiting
@@ -532,6 +539,66 @@ function mformula_new.vert_contours(container)
     return items
 end
 
+--[[ One node's own box, in the frame draw() works in: relative to the `pos` draw() is given, with
+the wrap transform and baseline_correction already applied, so a caller adds nothing but pos. nil
+when the node has no position yet or no extent worth drawing (an inkless glyph).
+
+Shared by the selection highlight and cursor_box() - the two things that need to know where a node
+actually IS on screen, as opposed to where its caret goes. Keeping it in one place matters because
+the wrap handling is the fiddly part: wrap_point() is applied to the TOP-LEFT only and the same
+delta moved to both corners, so a node that wrapped moves as one rectangle rather than being turned
+inside out by transforming each corner independently. ]]
+local function node_box(node, fontset, sz, wrap_width, root)
+    local u = node and mexpru.u(node)
+    if not u or not u.pos then
+        return nil
+    end
+    local bb = vc.mexpr_get_bb(node)
+    local x0, y0 = u.pos.x + bb.tl.x, u.pos.y + bb.tl.y
+    local x1, y1 = u.pos.x + bb.br.x, u.pos.y + bb.br.y
+    if x1 - x0 <= 0 or y1 - y0 <= 0 then
+        return nil
+    end
+    local skipy
+    if wrap_width then
+        local rbb = vc.mexpr_get_bb(root)
+        skipy = rbb.br.y - rbb.tl.y
+    end
+    local wx0, wy0 = wrap_point(x0, y0, wrap_width, skipy)
+    local dx, dy = wx0 - x0, wy0 - y0
+    return {x = x0 + dx, y = baseline_correction(fontset, sz) + y0 + dy,
+            w = x1 - x0, h = y1 - y0}
+end
+
+--[[ Makes sure container.cursor_pos still names a live node, and puts it somewhere sane if it does
+not. Returns the node.
+
+cursor_pos is a WEAK ref (vc.wref_mexpr), so it CAN legitimately come back nil - that is what weak
+means - and mexpru.cut() force-releases a superseded node even while shared_ptrs to it remain, so a
+rebuild that forgets to move the cursor leaves it dangling rather than merely stale. Every per-frame
+reader used to dereference it without checking, which turned a single missed reassignment into a
+permanent, unrecoverable state: slot_markers() threw on `node.type`, main.lua's pcall caught it, and
+the SAME throw repeated every frame forever. The app stayed alive and responsive but drew nothing
+new - indistinguishable from a freeze - and filled the flight recorder with over a thousand identical
+lines. Seen in a real session 2026-09-05 (Ctrl+Shift+Left x3, Ctrl+C, Right x6, Ctrl+V, then
+"attempt to index a nil value (local 'node')" from frame 4420 to the end of the session).
+
+Recovering to the root is a deliberately dull choice: the root always exists, cursor_pos on a horiz
+is a position this file already handles everywhere ("before everything in it"), and the worst case
+is a cursor that jumped somewhere unexpected - which is enormously better than an editor that has to
+be killed. Logged ONCE per occurrence so the cause is visible without burying the log. ]]
+local function live_cursor(container)
+    local node = container.cursor_pos and container.cursor_pos:get_obj()
+    if node then
+        return node
+    end
+    container.cursor_pos = vc.wref_mexpr(container.root)
+    if input_recorder_warn then
+        input_recorder_warn("cursor_pos was dangling - recovered to the formula root")
+    end
+    return container.root
+end
+
 function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wireframe, wrap_edge)
     if show_cursor == nil then
         show_cursor = true
@@ -625,7 +692,7 @@ function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wirefr
     those would be distinct values, while tostring() is derived from the pointer and so is not.
     It also holds no reference that would keep a cut node alive. Same reasoning as
     reachable_graph()'s own keying below. ]]
-    local blink_key = tostring(container.cursor_pos:get_obj()) .. "/" .. tostring(container.version or 0)
+    local blink_key = tostring(live_cursor(container)) .. "/" .. tostring(container.version or 0)
     if container._blink_key ~= blink_key then
         container._blink_key = blink_key
         container.frame = 0
@@ -652,8 +719,24 @@ function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wirefr
             for slot = sel_lo + 1, sel_hi do
                 local a, b = caret_at(slot - 1), caret_at(slot)
                 local right = (math.abs(a.top - b.top) < 0.5) and b.x or (a.x + 8)
-                vc.ImGui_AddRectFilled({x = a.x, y = math.min(a.top, b.top)},
-                        {x = right, y = math.max(a.bottom, b.bottom)}, SELECTION_COLOR, 0)
+                --[[ HEIGHT comes from the selected element's own box, not from the caret band.
+                The two carets only know the cursor's line height (cursor_metrics()' G-to-g span),
+                which is the same for every slot - so a selected fraction, stack or superscript got
+                exactly the same short rectangle as a selected "x", and the highlight said nothing
+                about what was actually selected ("for now it's heigh is irelevant of the selected
+                items", 2026-09-05).
+
+                WIDTH still comes from the carets: caret-to-caret spans the glyph's advance, where
+                the ink box alone would leave unhighlighted gaps between letters and read as a row
+                of separate blocks rather than one selection.
+
+                Falls back to the caret band when the element has no box of its own - an empty
+                placeholder, or a zero-ink glyph - since something has to be drawn there. ]]
+                local nb = node_box(kids[slot], fontset, sz, wrap_width, container.root)
+                local top = nb and (pos.y + nb.y) or math.min(a.top, b.top)
+                local bottom = nb and (pos.y + nb.y + nb.h) or math.max(a.bottom, b.bottom)
+                vc.ImGui_AddRectFilled({x = a.x, y = top},
+                        {x = right, y = bottom}, SELECTION_COLOR, 0)
             end
             container.cursor_pos = saved_cursor
         end
@@ -2315,33 +2398,43 @@ mexpru.propagate_rebuild() to ripple that change up to the root and refresh the 
 see this file's own model comment for exactly which splice each (node kind x key) combination does,
 and mexpru.propagate_rebuild()'s own comment for how the upward ripple works. ]]
 
-function mformula_new.handle_input(container, fontset, sz)
-    local target = container.cursor_pos:get_obj()
+--[[ Everything handle_input() needs to know about where the cursor currently IS, derived fresh from
+container.cursor_pos. Factored out because the typing loop has to re-derive it after EVERY inserted
+character: an insert rebuilds the spine and moves the cursor, so `target` and its four companions are
+stale the moment one goes in.
+
+Returns, in order: the node the cursor names, its parent, whether it is a horiz, whether it is the
+empty placeholder, whether it is a supsub's own BASE, and the size level to build at.
+
+  - supsub base: parent is a supsub AND that supsub's own .base IS target (not .sup/.sub - a base is
+    a bare atom directly under the supsub, see make_supsub()), which is the only way to tell them
+    apart.
+  - size comes off cursor_pos's own node, never the outer `sz` (that is the whole formula's size and
+    would be wrong for anything typed inside a smaller sup/sub). Falls back to the base's size when
+    target is a bare supsub node - its own resting spot after move_left()/move_right(), and a supsub
+    carries no u(_).sz of its own. Ctrl+/ pressed exactly there used to crash on a nil size
+    (2026-09-04). ]]
+local function cursor_state(container)
+    -- live_cursor(), not a raw get_obj(): a dangling weak ref recovers to the root instead of
+    -- returning nil and dead-ending every branch below it (see live_cursor()'s own comment).
+    local target = live_cursor(container)
+    if not target then
+        return nil
+    end
     local target_parent = target:get_parent()
-    local target_is_horiz = (mexpru.u(target).kind == "horiz")
-    local target_is_empty = (target.type == vc.MEXPR_TYPE_EMPTY_BOX)
-    -- target is a supsub's own base atom when its parent is a supsub AND that supsub's own .base
-    -- IS target (not its .sup or .sub - a base is a bare atom directly under the supsub, see
-    -- make_supsub()'s own comment, so this is the only way to tell base apart from anything else).
-    local target_is_supsub_base = target_parent ~= nil and mexpru.u(target_parent).kind == "supsub"
-            and mexpru.same(mexpru.u(target_parent).base, target)
-    -- The size level to build/rebuild AT is always read off cursor_pos's own node (mexpru.horiz()/
-    -- build_empty_atom() tag every node with its own u(_).sz) - NOT the outer `sz` parameter, which
-    -- is only ever the top-level formula's own size (editor.lua's constant FONT_SZ) and would be
-    -- wrong for anything typed inside a smaller-rendered sup/sub. `sz` itself only still matters
-    -- here as the fallback for the Ctrl+Shift+-/+ check below (make_supsub() reads its own base
-    -- size off cursor_pos the same way, so it doesn't need `sz` passed in either).
-    --
-    -- Falls back to base's own sz (same trick cursor_target() already uses) when target is a bare
-    -- supsub node itself ("after the whole compound" - move_left()/move_right()'s own resting spot,
-    -- e.g. cursor_pos landing there by default at the end of freshly-loaded content that ends in a
-    -- sup/sub - mformula_latex.from_latex()'s own comment) - a supsub never carries its own u(_).sz
-    -- (mexpru.supsub()'s own comment: it spans several sizes at once, none uniquely "its own").
-    -- Found 2026-09-04 (fraction design/build): Ctrl+/ pressed in exactly that resting spot crashed
-    -- (mexpru.frac() -> char.hline_basic(nil) -> invalid char size) before this fallback existed -
-    -- same latent gap already existed for Ctrl+Shift+=/- there too (make_supsub()'s OWN internal
-    -- base_sz read, fixed the same way, below).
-    local target_sz = mexpru.u(target).sz or (is_supsub(target) and mexpru.u(mexpru.u(target).base).sz)
+    return target,
+           target_parent,
+           (mexpru.u(target).kind == "horiz"),
+           (target.type == vc.MEXPR_TYPE_EMPTY_BOX),
+           (target_parent ~= nil and mexpru.u(target_parent).kind == "supsub"
+                   and mexpru.same(mexpru.u(target_parent).base, target)),
+           mexpru.u(target).sz or (is_supsub(target) and mexpru.u(mexpru.u(target).base).sz)
+end
+
+function mformula_new.handle_input(container, fontset, sz)
+    -- cursor_state() above derives all six; the typing loop below re-derives them per character.
+    local target, target_parent, target_is_horiz, target_is_empty, target_is_supsub_base,
+            target_sz = cursor_state(container)
 
     -- Checked ahead of plain typing, same as mformula.lua's own Ctrl+Shift+-/+ handling - a no-op
     -- while cursor_pos is on a horiz (nothing specific to wrap yet - see this file's own model
@@ -2579,9 +2672,26 @@ function mformula_new.handle_input(container, fontset, sz)
         return
     end
 
+    --[[ EVERY character in the queue, not just the first.
+
+    Each branch below used to `return`, so exactly one character per frame was inserted and the rest
+    of that frame's queue was dropped on the floor - ImGui clears the queue each frame regardless of
+    how much of it was read. Invisible at human typing speed on a frame that never drops, which is
+    why it survived; it bites whenever characters arrive in a burst - an OS key-repeat burst, a
+    frame that ran long, an IME committing several at once. Found 2026-09-05 by sending 13 characters
+    in one frame over the debug pipe: the recorder logged all 13, the document got the first.
+
+    The whole cursor state has to be re-derived per character (cursor_state()), because inserting
+    one rebuilds the spine and moves the cursor - `target` and its companions are stale immediately
+    after. That is the entire reason this could not just have its `return`s deleted. ]]
     for _, cp in ipairs(vc.ImGui_input_queue_chars()) do
         if cp > 32 and cp < 256 then
             local ch = string.char(cp)
+            target, target_parent, target_is_horiz, target_is_empty, target_is_supsub_base,
+                    target_sz = cursor_state(container)
+            if not target then
+                return
+            end
             -- Typing over a selection replaces it (see replace_selection_before_insert()).
             target, target_parent, target_is_horiz, target_is_empty, target_is_supsub_base =
                     replace_selection_before_insert(container, fontset, target, target_parent,
@@ -2618,20 +2728,17 @@ function mformula_new.handle_input(container, fontset, sz)
                             target_is_empty, target_is_supsub_base, target_sz, OPEN_BRACKETS[ch])
                 else
                 end
-                return
             elseif CLOSE_BRACKETS[ch] then
                 try_close_bracket(container, fontset, CLOSE_BRACKETS[ch])
-                return
-            end
-
-            local entry = char.find_by_ascii(ch)
-            if entry then
-                -- target_sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
-                local new_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(target_sz), code = entry.ncod}, true)
-                mexpru.u(new_glyph).sz = target_sz
-                insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
-                        target_is_empty, target_is_supsub_base, target_sz, new_glyph)
-                return
+            else
+                local entry = char.find_by_ascii(ch)
+                if entry then
+                    -- target_sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
+                    local new_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(target_sz), code = entry.ncod}, true)
+                    mexpru.u(new_glyph).sz = target_sz
+                    insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
+                            target_is_empty, target_is_supsub_base, target_sz, new_glyph)
+                end
             end
         end
     end
@@ -3272,8 +3379,83 @@ marker there would draw an empty-atom-shaped outline right next to it, reading a
 empty box here" even though the tree itself has already moved on. `sz` (the outer/base level) isn't
 actually used here anymore - the marker's own size comes from the NAMED node's own u(node).sz (see
 cursor_target()'s comment on why), kept only for parity with the rest of this contract's signatures. ]]
+--[[ The box of whatever sits under the cursor, for editor.lua to paint a soft highlight behind -
+"highlight what is underneath the cursor... under walk graph and under the mexpr drawing and under
+the blinker and anything else" (2026-09-05).
+
+Returns {x, y, w, h, color} relative to the SAME `pos` that draw() is given, or nil when there is
+nothing to highlight. Geometry only: the caller draws it, and the caller alone decides when - which
+is the whole point here, because "underneath everything" is a draw-ORDER property and this function
+cannot enforce it. editor.lua issues it before the reachable graph, which is itself drawn before the
+formula, so the layering ends up highlight -> graph -> vert contours -> glyphs -> blinker.
+
+Skips a horiz: the cursor resting on one means "before everything in it", a position rather than a
+thing, and painting the whole row would be nothing like highlighting a character. Everything else
+that cursor_pos can name gets its own box - a glyph, the empty placeholder (the cell you are about
+to type into), or a whole supsub when the cursor rests after the compound.
+
+The y comes back with baseline_correction() already folded in, because draw() applies it internally
+(draw_pos) and a caller working from the raw `pos` would otherwise be off by it. Wrapping is the
+same transform the vert contour uses - wrap_point() on the top-left, then the same delta applied to
+the whole box, so a highlighted glyph that wrapped moves as one rectangle instead of being torn
+across two rows.
+
+RESONATING, not static: the alpha breathes on a ~2s sine off container.frame (the counter draw()
+already keeps for the caret blink). A constant wash reads as a selection - which the editor already
+uses a solid colour for - whereas a slow pulse reads as "here", and stays legible under the graph
+and the glyphs without competing with either. ]]
+local CURSOR_HL_R, CURSOR_HL_G, CURSOR_HL_B = 0x78, 0xBE, 0xFF -- a light blue
+--[[ STATIC, at what the pulse used to rest on. It breathed on a sine when first built; asked to
+stop, "stop at the idle of the animation" (2026-09-05), so this is the MIDPOINT of that old
+oscillation (0x16..0x4E) - the value it spent most of its time near and the one the eye had already
+settled on, rather than either extreme.
+
+Spread across CURSOR_HL_FEATHER + 1 nested rectangles instead of painted as one, which is what makes
+the edge soft: ImGui has no blur, but N translucent rounded rects, each a pixel wider and fainter than
+the one inside it, composite into a gradient falloff. The per-layer alpha is chosen so the layers
+build back up to the same centre opacity a single 0x32 rectangle would have had:
+1 - (1 - a)^N = 0x32/255, which for N = 4 (feather 3) gives a = 0x0E. So the middle looks exactly as
+it did and only the boundary changes - re-derive this alpha if the feather ever changes. ]]
+local CURSOR_HL_LAYER_ALPHA = 0x0E
+local CURSOR_HL_FEATHER = 3   -- px the outermost layer extends past the glyph box
+
+--[[ Returns a LIST of rectangles, outermost/faintest first, all sharing the geometry below - the
+caller draws them in order and the overlap does the feathering. Empty list when there is nothing to
+highlight. ]]
+function mformula_new.cursor_box(container, fontset, sz, wrap_width)
+    local node = container.cursor_pos and container.cursor_pos:get_obj()
+    if not node or is_horiz(node) then
+        return {}
+    end
+    -- Same geometry the selection highlight uses - node_box() owns the wrap/baseline handling.
+    local box = node_box(node, fontset, sz, wrap_width, container.root)
+    if not box then
+        return {} -- no position yet, or a zero-extent node (an inkless glyph)
+    end
+
+    -- ImGui packs ABGR (0xAABBGGRR) - blue is the HIGH byte pair. Written the RGBA way round this
+    -- comes out orange, which is exactly what happened to SELECTION_COLOR once already.
+    local color = (CURSOR_HL_LAYER_ALPHA << 24) | (CURSOR_HL_B << 16)
+            | (CURSOR_HL_G << 8) | CURSOR_HL_R
+
+    local bx, by, bw, bh = box.x, box.y, box.w, box.h
+
+    local layers = {}
+    for i = CURSOR_HL_FEATHER, 0, -1 do -- outermost (widest, drawn first) to innermost
+        layers[#layers + 1] = {
+            x = bx - i, y = by - i, w = bw + 2 * i, h = bh + 2 * i,
+            color = color,
+            -- Rounding grows with the inset so the outer layers are rounder than the inner ones,
+            -- which softens the corners as well as the sides - a stack of equally-square rects
+            -- feathers the edges but leaves four hard corners.
+            rounding = i + 1,
+        }
+    end
+    return layers
+end
+
 function mformula_new.slot_markers(container, fontset, sz)
-    local node = container.cursor_pos:get_obj()
+    local node = live_cursor(container)
     if node.type ~= vc.MEXPR_TYPE_EMPTY_BOX and mexpru.u(node).kind ~= "horiz" then
         return {}
     end

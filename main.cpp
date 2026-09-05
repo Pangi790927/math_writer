@@ -3,6 +3,8 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
 
 #include "imgui_helpers.h"
 #include "imgui_internal.h"
@@ -11,6 +13,7 @@
 #include "char_draw_composer.h"
 #include "math_expr_composer.h"
 #include "imgui_composer.h"
+#include "app_mode.h"
 #include "perf_composer.h"
 #include "async_log_composer.h"
 #include "virt_composer_end.h"
@@ -81,13 +84,49 @@ namespace charc = char_draw_composer;
 namespace mexpr = math_expr_composer;
 namespace imgc = imgui_composer;
 namespace perfc = perf_composer;
+namespace appm = app_mode;
 namespace alogc = async_log_composer;
 
 int main(int argc, char const *argv[])
 {
+    /*  PRESENTATION (no arguments) vs TESTING ("--test") - see app_mode.h for what each is and why
+    they are kept apart. This block runs before ANYTHING else in main(): logger_init() only takes
+    effect if nothing has logged yet (logger_log_autoinit() auto-inits on first use and then keeps
+    that path forever), and hide_console() below is already a DBG-ing call. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--test") == 0)
+            appm::set_testing(true);
+        else
+            printf("ignoring unknown argument: %s\n", argv[i]);
+    }
+
+    std::string ini_path = "imgui.ini";
+    if (appm::app_is_testing()) {
+        std::error_code ec;
+        std::filesystem::create_directories(appm::TESTING_PREFIX, ec);
+        logger_init((std::string(appm::TESTING_PREFIX) + "logfile").c_str());
+        ini_path = std::string(appm::TESTING_PREFIX) + "imgui.ini";
+
+        /*  --test implies a window that is never shown. The env vars remain the mechanism (they are
+        read inside utils, by imgui_helpers.h and debug_input_pipe.cpp), but defaulting them here
+        means a test instance cannot appear on screen just because a launcher forgot to set them -
+        which is the one failure mode that actually costs the developer something. Set only if
+        absent, so an explicit env var still wins. */
+#if defined(_WIN32)
+        if (!getenv("VC_WINDOW_START_HIDDEN")) _putenv_s("VC_WINDOW_START_HIDDEN", "1");
+        if (!getenv("VC_WINDOW_STAY_HIDDEN"))  _putenv_s("VC_WINDOW_STAY_HIDDEN", "1");
+#else
+        setenv("VC_WINDOW_START_HIDDEN", "1", 0);
+        setenv("VC_WINDOW_STAY_HIDDEN", "1", 0);
+#endif
+    }
+
     debug_input_pipe::hide_console();
 
     imgui_init();
+    /*  Per-mode ImGui state, so a hidden test window cannot rewrite the layout of the real one.
+    ImGui keeps the pointer rather than a copy, hence the long-lived std::string above. */
+    ImGui::GetIO().IniFilename = ini_path.c_str();
     debug_input_pipe::reveal_window();
 
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
@@ -106,6 +145,7 @@ int main(int argc, char const *argv[])
     ASSERT_FN(mexpr::register_meta(vs.get()));
     ASSERT_FN(imgc::register_meta(vs.get()));
     ASSERT_FN(perfc::register_meta(vs.get()));
+    ASSERT_FN(appm::register_meta(vs.get()));
     ASSERT_FN(alogc::register_meta(vs.get()));
     ASSERT_FN(vc::parse_config(vs.get(), "math_writer.yaml"));
 
@@ -117,8 +157,12 @@ int main(int argc, char const *argv[])
     ASSERT_FN(err);
 
     /* DEBUG-ONLY: lets an external controller drive keyboard/mouse via a local socket instead of
-     * the real OS input devices - see debug_input_pipe.h. */
-    debug_input_pipe::init();
+     * the real OS input devices - see debug_input_pipe.h. TESTING MODE ONLY: the presentation
+     * instance must not listen at all. Two reasons, both real - its fixed port (47821) can only be
+     * bound once, so whichever instance starts first silently disables the other's pipe; and a
+     * person's own editor should not be accepting remote input in the first place. */
+    if (appm::app_is_testing())
+        debug_input_pipe::init();
 
     while (!glfwWindowShouldClose(imgui_window)) {
         /* The four things the frame is made of besides Lua. Added 2026-09-05 after the spike log
@@ -132,7 +176,7 @@ int main(int argc, char const *argv[])
             continue ;
         }
 
-        { PROF_SCOPE("cpp.input_pipe_pump");
+        if (appm::app_is_testing()) { PROF_SCOPE("cpp.input_pipe_pump");
         debug_input_pipe::pump(); }
         { PROF_SCOPE("cpp.imgui_prepare");
         imgui_prepare_render(); }
@@ -181,7 +225,8 @@ int main(int argc, char const *argv[])
     detached writer thread outliving main() is a far worse outcome than one redundant no-op call. */
     alogc::alog_close();
 
-    debug_input_pipe::uninit();
+    if (appm::app_is_testing())
+        debug_input_pipe::uninit();
     imgui_uninit();
     return 0;
 }

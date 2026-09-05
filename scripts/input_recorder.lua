@@ -47,8 +47,11 @@ local char = require("char")
 
 local input_recorder = {}
 
-local LOG_PATH = "input_history.log"
-local OLD_LOG_PATH = "input_history.old.log"
+-- Prefixed per instance (app_mode.h / main.lua's own DATA_PREFIX): a test run's flight recorder
+-- must not overwrite the record of what the developer was doing in the real app.
+local DATA_PREFIX = (vc.app_data_prefix and vc.app_data_prefix()) or ""
+local LOG_PATH = DATA_PREFIX .. "input_history.log"
+local OLD_LOG_PATH = DATA_PREFIX .. "input_history.old.log"
 
 local log_open = false
 local frame = 0
@@ -93,6 +96,22 @@ local function write_line(line)
         return
     end
     vc.alog_write(line)
+end
+
+--[[ Consecutive IDENTICAL errors collapse into one line plus a count.
+
+A failure that leaves the app in a bad state throws again every single frame (see this file's own
+top comment), and unfiltered that buries the events which caused it under thousands of copies - a
+real session on 2026-09-05 logged the same line 1140 times, and the six keystrokes that actually
+mattered were the ones just above it. The first occurrence is written immediately, as always; the
+repeats are counted and summarised when something else finally happens. ]]
+local last_err, last_err_count = nil, 0
+
+local function flush_repeat()
+    if last_err_count > 1 then
+        write_line(frame .. " *** ERROR *** (repeated " .. last_err_count .. " times)")
+    end
+    last_err, last_err_count = nil, 0
 end
 
 --[[ Rotates the previous session's log to input_history.old.log (overwriting whatever was there
@@ -153,6 +172,7 @@ function input_recorder.poll()
     prof.begin("lua.recorder.key_scan")
     for i, key in ipairs(WATCHED_KEYS) do
         if vc.ImGui_IsKeyPressed(key, false) then
+            flush_repeat()
             -- The NAME for the log comes from the parallel list, since `key` is now an integer.
             write_line(frame .. " key " .. mods .. WATCHED_KEY_NAMES[i]:gsub("^ImGuiKey_", ""))
         end
@@ -183,10 +203,25 @@ end
 
 --[[ Call from main.lua's own pcall wrapper around the real per-frame logic, with the error value
 pcall itself returned, whenever that call fails. ]]
+--[[ Records something the app itself did, as opposed to an input event this module observed - a
+save, say. Same line format and same frame number, so it interleaves with the keystrokes that led to
+it when the log is read back. ]]
+function input_recorder.log_event(text)
+    flush_repeat()
+    write_line(frame .. " " .. tostring(text))
+end
+
 --[[ No special flush handling any more: the writer thread flushes every line it writes, so an error
 is durable as soon as the writer reaches it, the same as any other line. ]]
 function input_recorder.log_error(err)
-    write_line(frame .. " *** ERROR *** " .. tostring(err))
+    local text = tostring(err)
+    if text == last_err then
+        last_err_count = last_err_count + 1
+        return
+    end
+    flush_repeat()
+    last_err, last_err_count = text, 1
+    write_line(frame .. " *** ERROR *** " .. text)
 end
 
 return input_recorder

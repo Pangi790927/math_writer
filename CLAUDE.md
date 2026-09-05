@@ -87,15 +87,24 @@ of this section described an elaborate `SetWinEventHook`-based scheme to catch a
 windows after the fact — **that whole approach is obsolete, don't use it.** The app already has a
 proper, built-in headless mode (`debug_input_pipe.cpp`/`.h`, `imgui_helpers.h`) — use that instead.
 
-**The correct way to launch it, always:**
+**Always launch with `--test`.** Two modes exist (`app_mode.h`, 2026-09-05): no arguments is
+PRESENTATION - the instance the developer runs, visible window, no debug pipe, files where they
+always were. `--test` is the instance a session drives: window never shown, debug pipe listening,
+and every file it touches moved under `test_run/` (its own `math_writer.save`, `logfile.log`,
+`input_history.log`, `perf_spikes.log`, `imgui.ini`). The two no longer share anything, so a test
+run cannot overwrite the developer's document and the two cannot fight over the pipe's fixed port.
+
+`--test` sets `VC_WINDOW_START_HIDDEN`/`VC_WINDOW_STAY_HIDDEN` itself if they are unset, so the
+window cannot appear just because a launcher forgot them. Passing them explicitly still works and
+still wins.
+
 ```powershell
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = "C:\Users\apangratie\workspace\math_writer\main.exe"
+$psi.Arguments = "--test"
 $psi.WorkingDirectory = "C:\Users\apangratie\workspace\math_writer"
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true
-$psi.EnvironmentVariables["VC_WINDOW_START_HIDDEN"] = "1"
-$psi.EnvironmentVariables["VC_WINDOW_STAY_HIDDEN"] = "1"
 $proc = [System.Diagnostics.Process]::Start($psi)
 ```
 - `VC_WINDOW_START_HIDDEN=1` creates the GLFW window with `GLFW_VISIBLE=false` from the start (no
@@ -120,9 +129,10 @@ $proc = [System.Diagnostics.Process]::Start($psi)
 
 **End a headless run with the pipe's `quit` command, not `taskkill`.** `quit` raises the same signal
 the window's close button does, so the app unwinds through its NORMAL shutdown: `test_shutdown`
-writes `math_writer.save`, and the async log (`async_log_composer.h`) drains and joins its writer
-thread. A `taskkill` skips all of that - which is why `math_writer.save` used to need a
-`git checkout --` after every single test run. Escape does NOT work from the pipe: `main.cpp` polls
+writes `test_run/math_writer.save`, and the async log (`async_log_composer.h`) drains and joins its writer
+thread. A `taskkill` skips all of that. (It used to also mean
+`math_writer.save` needed a `git checkout --` after every run; the `--test` split fixed that at the
+root - a test instance no longer writes the real document at all.) Escape does NOT work from the pipe: `main.cpp` polls
 it with `glfwGetKey()`, which reads the real OS keyboard, and a hidden window ignores `WM_CLOSE`
 too - `quit` (added 2026-09-05) is the only clean exit available headlessly.
 

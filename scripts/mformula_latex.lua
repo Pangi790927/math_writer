@@ -200,6 +200,17 @@ local function node_to_latex(node)
         if not entry then
             return ""
         end
+        --[[ A SPACE is written as "\\ " (a LaTeX control space), never as a bare " ". A literal
+        space in LaTeX source is not content - it separates tokens and terminates macro names -
+        so the parser skips it, and a space glyph written plainly simply vanished on the next
+        load. Reported 2026-09-05: "save does not save spaces".
+
+        "\\ " is real LaTeX for exactly this, and it needs nothing new on the read side: the
+        parser's escaped-literal branch already resolves backslash-plus-non-letter through
+        find_by_ascii(), and the space glyph's own acod IS ' '. ]]
+        if entry.acod == ' ' then
+            return "\\ "
+        end
         if entry.acod ~= '\0' then
             return latex_escape_char(entry.acod)
         end
@@ -437,13 +448,16 @@ local function parse_latex_children(fontset, s, pos, sz)
                 pos = pos + 1
             end
         else
-            -- Same cp > 32 and cp < 256 range mformula_new.lua's own typing loop already restricts
-            -- to (see its own comment) - a literal space or control character in the source is
-            -- silently skipped rather than becoming a glyph that editor could never have typed.
-            -- (A space glyph would have zero width - math_expr_composer.h's mexpr_symbol sizes
-            -- every glyph from its own ink bounding box, and space has none - so mexpr_merge_h's
-            -- own "x += n->br.x" advance treats it as taking up no room at all. Reverted 2026-09-04,
-            -- not worth a math_expr_composer.h change right now.)
+            --[[ A literal space in the source is still skipped, but for a LATEX reason rather
+            than a layout one: there it is a token separator, not content, and to_latex() emits
+            one after every macro name. A real space GLYPH is written as "\\ " and read back
+            by the escaped-literal branch above.
+
+            The reason previously recorded here - that a space glyph would be zero-width, since
+            mexpr_symbol sizes every glyph from its ink box and a space has none - stopped being
+            true on 2026-09-05, when mexpr_symbol gained a fallback to the font advance for an
+            inkless glyph. Spaces occupy real width now, which is what made saving them worth
+            fixing. Control characters below 32 stay skipped: nothing can type them. ]]
             local cp = c:byte()
             local entry = (cp and cp > 32 and cp < 256) and char.find_by_ascii(c) or nil
             if entry then
