@@ -531,7 +531,9 @@ function editor.handle_input(state, fontset, sz)
                 table.remove(state.chars, state.cursor_pos)
                 state.cursor_pos = state.cursor_pos - 1
             end
-            local formula = mformula.new_from_base(base_item, slot)
+            -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M/Ctrl+/ above: a
+            -- fixed LOGICAL baseline, never content.lua's already-zoomed state.font_size.
+            local formula = mformula.new_from_base(fontset, mexpru.DEFAULT_SIZE, base_item, slot)
             table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
             state.cursor_pos = state.cursor_pos + 1
             state.active_formula = formula
@@ -862,10 +864,13 @@ caret is only drawn when `show_cursor` is true (or omitted) - a caller managing 
 `show_wireframe` (default false) is forwarded to every inline formula's own mformula.draw() - the
 debug bounding-box overlay (vc.mexpr_draw's draw_bb), off by default so it's only on when actually
 visually debugging (content.lua's own wireframe-toggle button, 2026-09-04).
+`show_graph` (default false) gates the ACTIVE formula's own reachable-position graph (mformula.
+reachable_graph() - ported 2026-09-05 from the old row-based mformula.lua) - off by default, same
+reasoning as show_wireframe, content.lua's own graph-toggle button flips it on.
 @return the total content height in pixels (bottom of the last line, relative to pos.y), and the
 widest any single line's own content actually reached (relative to pos.x - may exceed width_limit,
 see max_x's own comment below) - lets a caller (e.g. content.lua's boxes) size itself to fit both. ]]
-function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wireframe)
+function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wireframe, show_graph)
     if show_cursor == nil then
         show_cursor = true
     end
@@ -895,7 +900,11 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                     -- an ESTIMATE of how much room this formula will actually have once pass 2 gets
                     -- to it, so measure()'s own wrap-aware height (content_extent()'s own comment)
                     -- already reserves enough line height in THIS pass, not one frame late.
-                    local wrap_width = width_limit and (width_limit - lx - FORMULA_MARGIN)
+                    -- 2 * margin, not one: pass 2 reserves a margin on EACH side of the box, and
+                    -- its final advance adds the trailing one - so a formula allowed the full
+                    -- width_limit - lx - margin ends up occupying width_limit + margin once that
+                    -- advance lands. See pass 2's own wrap_edge comment for why that mattered.
+                    local wrap_width = width_limit and (width_limit - lx - 2 * FORMULA_MARGIN)
                     local box = mformula.measure(item.formula, fontset, sz, wrap_width)
                     local extra_top = math.max(0, m.baseline_shift - box.top)
                     local extra_bottom = math.max(0, box.bottom - (m.baseline_shift + m.line_height))
@@ -996,6 +1005,25 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                 -- box.width, not the margin around it.
                 local content_x = x + margin
 
+                -- ABSOLUTE x (mformula.draw()'s own wrap_edge comment) - the box's own right edge,
+                -- not this formula's own content_x, so a formula starting partway through a line
+                -- (after preceding plain text) correctly gets LESS room, same as plain glyphs'
+                -- own width_limit check just above already gives it. Computed here (not just below,
+                -- by mformula.draw()'s own call site) since reachable_graph() now needs it too, to
+                -- place its own nodes on whichever wrapped row they actually land on.
+                --[[ -margin: the right edge a formula's CONTENT may reach, which is a margin short
+                of the column's own edge, because the advance just below adds a trailing margin on
+                top of whatever the content occupies. Without that subtraction a wrapped formula
+                filled the column exactly and then advanced one margin PAST it, so max_x came back
+                as width_limit + margin - i.e. asking for a wider box than it was just given, every
+                single time. content.lua then granted it, and the whole thing repeated: a width
+                demand that grew by one margin per round and only ever stopped at the max-width cap.
+                That is the "converging in steps" resize reported live 2026-09-05 - it was never
+                converging at all, just creeping until it hit the cap. With this, a wrapped formula
+                plus BOTH its margins fits inside width_limit, so the width is a real fixed point
+                and content.lua's own measure loop settles on the first round. ]]
+                local wrap_edge = width_limit and (pos.x + width_limit - FORMULA_MARGIN)
+
                 -- Debug: a graph of every position ANY navigation key can reach - Left/Right
                 -- within a row, Up/Down into a node's sup/sub - so navigation fixes can be
                 -- checked by eye, not just the left-right chain. Drawn through the text itself
@@ -1005,17 +1033,58 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                 -- a separate strip underneath. Drawn BEFORE the formula itself so the glyphs (and
                 -- the real blinker, also drawn by mformula.draw below) layer on top of the track,
                 -- not the other way around. Active formula only - it'd just be clutter for the
-                -- others.
+                -- others. show_graph (content.lua's own graph-toggle button, 2026-09-05, same
+                -- pattern as show_wireframe) gates this specifically - ported live from the old
+                -- (row-based) mformula.lua, off by default so it doesn't clutter ordinary editing.
                 local markers = nil
                 if is_active_formula then
-                    local graph = mformula.reachable_graph(item.formula, fontset, sz)
-                    for _, e in ipairs(graph.edges) do
-                        local na, nb = graph.nodes[e.a], graph.nodes[e.b]
-                        vc.ImGui_AddLine({x = content_x + na.x, y = y + na.y},
-                                {x = content_x + nb.x, y = y + nb.y}, CURSOR_TRACK_COLOR, 2)
-                    end
-                    for _, n in ipairs(graph.nodes) do
-                        vc.ImGui_AddCircleFilled({x = content_x + n.x, y = y + n.y}, 4, CURSOR_TRACK_COLOR)
+                    if show_graph then
+                        -- RELATIVE width, not the absolute wrap_edge: the graph is built in the
+                        -- formula's own root-relative frame (its nodes are added to content_x/y
+                        -- below), so it needs the usable column, not a screen coordinate - see
+                        -- reachable_graph()'s own comment on the two frames.
+                        local graph = mformula.reachable_graph(item.formula, fontset, sz,
+                                wrap_edge and (wrap_edge - content_x))
+                        --[[ Only an edge whose two ends really wrapped onto DIFFERENT rows gets
+                        split - a stub off the right edge of the earlier row, another entering at
+                        the left edge of the later one, the way a text selection spanning a line
+                        break reads. Everything else is the plain straight line it always was.
+
+                        The test is the nodes' own wrap ROW (reachable_graph() carries it, from the
+                        same wrap_point() call that placed them), NOT their y. Keying off y instead
+                        was flatly wrong: a superscript sits at a different y from its own base on
+                        the SAME row, so every base<->sup edge - each "2", both integral limits -
+                        was treated as a row crossing and shot a stub out to the column edge.
+                        Reported live 2026-09-05: "lines that wouldn't normaly intersect the edge now
+                        pass through to the edge".
+
+                        The column is [content_x, wrap_edge] - the same startx/edge the C++ wrap loop
+                        uses, since mformula.draw() is handed exactly this content_x as its origin.
+                        Without wrapping every node has row 0 and only the straight branch runs. ]]
+                        local col_l = content_x
+                        local col_r = wrap_edge or (content_x + max_x)
+                        for _, e in ipairs(graph.edges) do
+                            local na, nb = graph.nodes[e.a], graph.nodes[e.b]
+                            -- Earlier ROW first, so the stubs read in reading order.
+                            local a, b = na, nb
+                            if (b.row or 0) < (a.row or 0) then a, b = b, a end
+                            if (a.row or 0) == (b.row or 0) then
+                                vc.ImGui_AddLine({x = content_x + a.x, y = y + a.y},
+                                        {x = content_x + b.x, y = y + b.y}, CURSOR_TRACK_COLOR, 2)
+                            else
+                                -- Two ends of one connection, each clamped to its own row.
+                                -- Intermediate rows are deliberately not filled: these edges only
+                                -- ever join positions adjacent in reading order, at most one row
+                                -- apart.
+                                vc.ImGui_AddLine({x = content_x + a.x, y = y + a.y},
+                                        {x = col_r, y = y + a.y}, CURSOR_TRACK_COLOR, 2)
+                                vc.ImGui_AddLine({x = col_l, y = y + b.y},
+                                        {x = content_x + b.x, y = y + b.y}, CURSOR_TRACK_COLOR, 2)
+                            end
+                        end
+                        for _, n in ipairs(graph.nodes) do
+                            vc.ImGui_AddCircleFilled({x = content_x + n.x, y = y + n.y}, 4, CURSOR_TRACK_COLOR)
+                        end
                     end
 
                     -- Every row (root included - "after A_B", past the whole formula, needs a
@@ -1033,11 +1102,6 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                     end
                 end
 
-                -- ABSOLUTE x (mformula.draw()'s own wrap_edge comment) - the box's own right edge,
-                -- not this formula's own content_x, so a formula starting partway through a line
-                -- (after preceding plain text) correctly gets LESS room, same as plain glyphs'
-                -- own width_limit check just above already gives it.
-                local wrap_edge = width_limit and (pos.x + width_limit)
                 local box = mformula.draw(item.formula, fontset, {x=content_x, y=y}, sz,
                         is_active_formula, show_wireframe, wrap_edge)
                 if is_active_formula and box.cursor_top then
@@ -1096,6 +1160,16 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
     state.last_positions = positions
     state.last_formula_boxes = formula_boxes
     state.last_line_height = m.line_height
+
+    -- Restart the blink cycle whenever the caret moves (or the buffer changes under it) so it is ON
+    -- immediately and you can see where it landed, rather than possibly arriving mid-dark-phase.
+    -- Same reasoning, and the same one-place-catches-every-path approach, as mformula_new.draw()'s
+    -- own blink reset - see its comment.
+    local blink_key = state.cursor_pos .. "/" .. #state.chars
+    if state.blink_key ~= blink_key then
+        state.blink_key = blink_key
+        state.frame = 0
+    end
     state.frame = state.frame + 1
 
     -- Where the caret ACTUALLY is right now, screen-space, regardless of which of the two carets

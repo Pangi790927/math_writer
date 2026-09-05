@@ -6,6 +6,7 @@ local ast = require("ast")
 local mexpr = require("mexpr")
 local editor = require("editor")
 local content = require("content")
+local input_recorder = require("input_recorder")
 
 local fontset = nil
 local content_state = nil
@@ -41,11 +42,25 @@ function test_init()
     -- content.new()'s own single-empty-box default is exactly the right fallback when there's
     -- nothing to load yet - not a special case.
     content_state = saved and content.deserialize(saved, fontset) or content.new()
+    input_recorder.init()
 end
 
+--[[ input_recorder.poll() runs UNCONDITIONALLY, first, before the real per-frame logic - so
+whatever the user just did is already flushed to disk even if it goes on to error out below in this
+SAME frame (input_recorder.lua's own top comment). The real logic is wrapped in its own pcall so a
+Lua exception here gets logged (frame number + every recent action already on disk, plus the error
+message itself) instead of just vanishing into virt_composer's own C++-side DBG log - see that
+file's own comment on why this doesn't (and can't) prevent whatever the process does about the error
+itself, only makes it inspectable afterward. ]]
 function test_draw()
-    content.handle_input(content_state, fontset, {x=20, y=30})
-    content.draw(content_state, fontset, {x=20, y=30})
+    input_recorder.poll()
+    local ok, err = pcall(function()
+        content.handle_input(content_state, fontset, {x=20, y=30})
+        content.draw(content_state, fontset, {x=20, y=30})
+    end)
+    if not ok then
+        input_recorder.log_error(err)
+    end
 end
 
 --[[ Called once, after the main loop exits but before the window actually closes (see main.cpp) -

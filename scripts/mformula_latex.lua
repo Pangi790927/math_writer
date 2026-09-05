@@ -30,6 +30,28 @@ local SUB_SIZE_DELTA = 1
 -- Defers to mexpru's own canonical copy (2026-09-04's Ctrl+MouseWheel zoom levels).
 local MAX_SIZE_INDEX = mexpru.MAX_SIZE_INDEX
 
+-- "(" / "[" and ")" / "]" - mirrors mformula_new.lua's own OPEN_BRACKETS/CLOSE_BRACKETS (2026-09-05,
+-- own small copy here rather than a require() - this file's own top comment on staying self-
+-- sufficient). Curly braces are deliberately NOT here - "{"/"}" are ALWAYS structural in this
+-- parser (group delimiters for ^{...}/_{...}/\frac{...}{...} - parse_latex_children() itself stops
+-- at a bare "}"), never a literal glyph, so a curly MATH bracket can't round-trip through this
+-- LaTeX subset at all - a pre-existing, separate gap from the one this fixes.
+local OPEN_BRACKETS = { ["("] = vc.MEXPR_BRACKET_ROUND, ["["] = vc.MEXPR_BRACKET_SQUARE }
+local CLOSE_BRACKETS = { [")"] = vc.MEXPR_BRACKET_ROUND, ["]"] = vc.MEXPR_BRACKET_SQUARE }
+
+-- The reverse direction, for node_to_latex() below - curly included here (unlike the two tables
+-- above, which drive PARSING, where "{"/"}" are always structural group delimiters in this subset
+-- and so can never be read back as content): a curly bracket atom that already exists in a tree
+-- still has to serialize as SOMETHING, and latex_escape_char() turns it into "\{" / "\}", which
+-- the parser does read back as a literal typed brace (just an unpaired plain glyph, same as it
+-- already treats any brace).
+local OPEN_BRACKET_ASCII = {
+    [vc.MEXPR_BRACKET_ROUND] = "(", [vc.MEXPR_BRACKET_SQUARE] = "[", [vc.MEXPR_BRACKET_CURLY] = "{",
+}
+local CLOSE_BRACKET_ASCII = {
+    [vc.MEXPR_BRACKET_ROUND] = ")", [vc.MEXPR_BRACKET_SQUARE] = "]", [vc.MEXPR_BRACKET_CURLY] = "}",
+}
+
 local function is_horiz(node)
     return mexpru.u(node).kind == "horiz"
 end
@@ -132,7 +154,36 @@ local function node_to_latex(node)
         return "\\frac{" .. node_to_latex(u.num) .. "}{" .. node_to_latex(u.den) .. "}"
     elseif node.type == vc.MEXPR_TYPE_EMPTY_BOX then
         return ""
-    else -- MEXPR_TYPE_SYMBOL - node.symb.code is exactly the ncod mexpr_symbol() was built with.
+    end
+
+    --[[ A bracket atom serializes from its OWN semantic tag (u(_).bracket's is_open/type - set by
+    open_bracket()/try_close_bracket()/resolve_bracket_pairs(), mformula_new.lua and mexpru.lua),
+    NEVER by reverse-mapping its glyph below.
+
+    Reported live 2026-09-05 ("reached an invalid state and reproduced it in a separate box"):
+    resolve_bracket_pairs() only keeps the plain typed "(" glyph while the pair's content is short
+    enough for one (its own 2026-09-05 pixel-identical sizing rule) - the moment that content grows
+    taller (a superscript, a fraction, a nested pair), it swaps BOTH atoms for the TIERED glyphs
+    mexpr_bracket_left()/_right() build (math_expr_composer.h's mexpr_bracket_side - a FONT_MATH_EX
+    symbol at whichever tier fits, or a LINE_STRIP composite at the largest). Those carry no
+    meaningful node.symb.code, so the MEXPR_TYPE_SYMBOL branch below read it back as 0 - which is
+    char.lua's very FIRST table entry, "!" - and every tall bracket silently serialized as "!"
+    instead of "(" / ")". Purely a serialization bug (the on-screen tree was always correct), but
+    to_latex() is what math_writer.save and Ctrl+C are both built on, so it corrupted on SAVE:
+    "((a))" with a superscript typed into it came back as "!(a^{i}!)".
+
+    The tag is authoritative for both representations at once, which is exactly why this reads it
+    instead of the glyph - a resolved pair's two atoms are only ever "the same bracket" by that
+    tag, never by what they currently happen to be drawn as. ]]
+    local br = mexpru.u(node).bracket
+    if br then
+        local ascii = br.is_open and OPEN_BRACKET_ASCII[br.type] or CLOSE_BRACKET_ASCII[br.type]
+        if ascii then
+            return latex_escape_char(ascii)
+        end
+    end
+
+    do -- MEXPR_TYPE_SYMBOL - node.symb.code is exactly the ncod mexpr_symbol() was built with.
         local entry = char.find_by_ncod(node.symb.code)
         if not entry then
             return ""
@@ -173,6 +224,18 @@ else - an empty group, same as "^{}", still gets a fresh empty atom rather than 
 nothing in it). ]]
 local function parse_latex_children(fontset, s, pos, sz)
     local children = {}
+    -- Bracket re-pairing (2026-09-05, reported live: "loading and saving the brackets is simply
+    -- saving their glyph, at load those should be re-paired") - to_latex()/node_to_latex() only
+    -- ever emits a resolved bracket pair's own PLAIN "("/")" characters (the MEXPR_TYPE_SYMBOL
+    -- branch, same as any other glyph - it has no idea two of them were ever a real pair), so
+    -- loading them back with NO pairing at all would silently drop the structure: no cascade-
+    -- delete, no synchronized resize, nothing - just two ordinary, unrelated glyphs. A real stack
+    -- (not mformula_new.lua's own single pending_bracket slot - that's fine for interactive typing,
+    -- where only one bracket is ever mid-edit at a time, but loaded text can contain multiple,
+    -- nested, or sequential ALREADY-COMPLETE pairs, e.g. "(a+b)*(c+d)" or "((a+b))") - local to
+    -- THIS call, same as pending_bracket can't span into a sup/sub's own separate content, brackets
+    -- typed across a "^{...}"/"_{...}"/"\\frac{...}{...}" boundary can't pair across it either.
+    local bracket_stack = {}
 
     while pos <= #s do
         local c = s:sub(pos, pos)
@@ -341,7 +404,36 @@ local function parse_latex_children(fontset, s, pos, sz)
                 -- sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
                 local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sz), code = entry.ncod}, true)
                 mexpru.u(g).sz = sz
-                children[#children + 1] = g
+                if OPEN_BRACKETS[c] then
+                    -- Always tagged, paired or not - a literal unmatched "(" in the source (a
+                    -- malformed/incomplete formula) round-trips as a genuinely still-PENDING
+                    -- bracket, same as open_bracket()'s own live convention.
+                    mexpru.u(g).bracket = {is_open = true, type = OPEN_BRACKETS[c]}
+                    children[#children + 1] = g
+                    table.insert(bracket_stack, {atom = g, idx = #children})
+                elseif CLOSE_BRACKETS[c] then
+                    local top = bracket_stack[#bracket_stack]
+                    if top and mexpru.u(top.atom).bracket.type == CLOSE_BRACKETS[c] then
+                        table.remove(bracket_stack)
+                        -- Nothing was added since the open went in (an empty "()" in the source -
+                        -- to_latex()'s own node_to_latex() emits exactly this for a live-typed
+                        -- empty pair, its EMPTY_BOX filler rendering as "") - keep the span
+                        -- non-empty the same way, or resolve_bracket_pairs() (mexpru.lua) errors
+                        -- on it (mformula_new.lua's own handle_input() fix, 2026-09-05, same
+                        -- reasoning: mirrors try_close_bracket()'s own "closed immediately" filler).
+                        if #children == top.idx then
+                            children[#children + 1] = build_empty_atom(fontset, sz)
+                        end
+                        mexpru.u(g).bracket = {is_open = false, type = CLOSE_BRACKETS[c], peer = mexpru.u(top.atom)}
+                        mexpru.u(top.atom).bracket.peer = mexpru.u(g)
+                    end
+                    -- Mismatched or unmatched close (no open on the stack, or a type mismatch like
+                    -- "(a]") - left as a PLAIN, untagged glyph rather than guessing a pairing that
+                    -- isn't really there; same leniency this parser already has everywhere else.
+                    children[#children + 1] = g
+                else
+                    children[#children + 1] = g
+                end
             end
             pos = pos + 1
         end

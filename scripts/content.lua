@@ -30,6 +30,7 @@ local DEFAULT_FONT_SIZE = mexpru.DEFAULT_SIZE
 local MIN_FONT_SIZE, MAX_FONT_SIZE = 1, mexpru.MAX_SIZE_INDEX -- char.lua's own table bounds
 local CLOSE_SIZE  = 16   -- close ("x") button, sits just above each box's top-right corner
 local WIREFRAME_SIZE = 16 -- wireframe-toggle button, sits just left of the close button
+local GRAPH_SIZE = 16    -- graph-toggle button, sits just left of the wireframe button
 local RAIL_CLICK_RADIUS = 16 -- how close to the rail line counts as "clicking the rail"
 
 local RAIL_COLOR         = 0xff777777
@@ -38,6 +39,8 @@ local BOX_ACTIVE_COLOR   = 0xffffffff
 local BOX_FILL_COLOR     = 0x33ffffff
 local CLOSE_COLOR        = 0xffaaaaaa
 local HOVER_COLOR        = 0xff66ff66
+local GRAPH_OFF_COLOR    = 0xff888888
+local GRAPH_ON_COLOR     = 0xff55cc55
 local WIREFRAME_OFF_COLOR = 0xff888888
 local WIREFRAME_ON_COLOR  = 0xff66ccff
 
@@ -62,6 +65,11 @@ local function new_shell()
                                  -- global, not per-box: whether mexpr drawing shows its debug bounding
                                  -- boxes (vc.mexpr_draw's own draw_bb) everywhere, off by default so
                                  -- it's only on when actually visually debugging (2026-09-04).
+        show_graph = false,     -- toggled by its own button next to the wireframe one - global, same
+                                 -- reasoning as show_wireframe: whether the ACTIVE formula's own
+                                 -- reachable-position graph (mformula_new.reachable_graph(), ported
+                                 -- 2026-09-05 from the old row-based mformula.lua) is drawn, off by
+                                 -- default so it doesn't clutter ordinary editing.
         font_size = DEFAULT_FONT_SIZE, -- Ctrl+MouseWheel (handle_input()) adjusts this - global, same
                                  -- reasoning as show_wireframe just above. A char.lua size-table
                                  -- index, not a pixel size (DEFAULT_FONT_SIZE's own comment).
@@ -334,6 +342,11 @@ function content.handle_input(state, fontset, pos)
                 state.show_wireframe = not state.show_wireframe
                 return
             end
+            if r.graph_btn and point_in_rect(mpos.x, mpos.y,
+                    r.graph_btn.x, r.graph_btn.y, r.graph_btn.w, r.graph_btn.h) then
+                state.show_graph = not state.show_graph
+                return
+            end
         end
 
         local hit = nil
@@ -400,11 +413,15 @@ local HELP_LINES = {
     "",
     "General",
     "  F1                       Toggle this panel",
+    "  F2                       Alt+letter glyph reference",
     "  Click inside a box       Activate it / place the cursor",
     "  Click the left rail      Insert a new box there",
     "  Click a box's x          Close that box",
     "  Ctrl+Up / Ctrl+Down       Switch to the previous / next box",
     "  Ctrl+N                   New box right after the current one",
+    "  Mouse wheel              Scroll",
+    "  Ctrl+Mouse wheel          Zoom text size in / out",
+    "  Buttons above a box       Graph / wireframe overlays, and close",
     "",
     "Plain text",
     "  Type                     Insert a character",
@@ -424,9 +441,15 @@ local HELP_LINES = {
     "  Click a formula            Enter it",
     "  Inside a formula:",
     "    Type / Alt+letter          Same as plain text, inside the formula",
+    "    Space                      A real space (keeps its width)",
     "    Left / Right                Walk through it, including sup/sub bases",
     "    Up / Down                  Jump into/between superscript & subscript, or numerator & denominator",
+    "    Shift+Left/Right            Sprint: jump to the next ( ) = ; or to the slot's edge",
+    "    Alt+Up / Alt+Down           Go back the way you came in - from a numerator or",
+    "                               denominator, back onto the fraction itself",
+    "    Ctrl+Shift+= / Ctrl+Shift+-   Superscript / subscript on the character before the cursor",
     "    Ctrl+/                     Insert an empty fraction at the cursor",
+    "    ( [ {  then  ) ] }           Brackets pair up and resize to fit what's between them",
     "    Ctrl+Left/Right, Escape,     Exit the formula",
     "      or click outside",
     "    Click inside                Place the cursor there",
@@ -442,11 +465,31 @@ local HELP_LINE_HEIGHT = 17
 local HELP_BG_COLOR = 0xee1a1a1a
 local HELP_TEXT_COLOR = 0xffe0e0e0
 
+--[[ Laid out in as many columns as it takes to fit the display's own height, rather than one long
+run - the list outgrew a 720p window the moment the formula section filled out (2026-09-05), and a
+help panel whose bottom entries are off-screen is worse than useless. Breaks at a blank line where
+it can, so a section is never split across a column boundary. ]]
+local HELP_COLUMN_W = 620
+local HELP_TOP = 16
+
 local function draw_help()
     local size = vc.ImGui_GetDisplaySize()
     vc.ImGui_AddRectFilled({x=0, y=0}, {x=size.x, y=size.y}, HELP_BG_COLOR, 0)
+
+    local per_col = math.max(1, math.floor((size.y - HELP_TOP * 2) / HELP_LINE_HEIGHT))
+    local x, row = 40, 0
     for i, line in ipairs(HELP_LINES) do
-        vc.ImGui_AddText({x=40, y=16 + (i - 1) * HELP_LINE_HEIGHT}, HELP_TEXT_COLOR, line)
+        if row >= per_col then
+            -- Prefer breaking on the blank line that separates two sections: look back a few rows
+            -- for one rather than slicing a section in half.
+            x, row = x + HELP_COLUMN_W, 0
+        end
+        vc.ImGui_AddText({x = x, y = HELP_TOP + row * HELP_LINE_HEIGHT}, HELP_TEXT_COLOR, line)
+        row = row + 1
+        -- A blank line close to the bottom of a column ends it early, keeping sections whole.
+        if line == "" and row > per_col - 8 then
+            x, row = x + HELP_COLUMN_W, 0
+        end
     end
 end
 
@@ -566,13 +609,13 @@ function content.draw(state, fontset, pos)
     local y = content_start_y
     local rail_x = pos.x + RAIL_OFFSET
     local box_x = pos.x + BOX_LEFT
-    -- How far right a box is allowed to grow (below) to fit oversized content (a zoomed-in formula
-    -- especially - reported live, 2026-09-05: "zooming makes it exit the box", since the border
-    -- used to be a flat BOX_WIDTH that never grew to match) - up to the display's own right edge,
-    -- kept RIGHT_MARGIN short of actually touching it (deliberately smaller than the box's own
-    -- left-side margin back to the rail, BOX_LEFT - RAIL_OFFSET, so growth never reads as more
-    -- cramped on the right than the fixed rail gap already is on the left).
-    local RIGHT_MARGIN = 24
+    -- A box spans the full width available to it, stopping RIGHT_MARGIN short of the display's own
+    -- right edge - and that margin MATCHES the gap on the left between the rail and the box
+    -- (BOX_LEFT - RAIL_OFFSET), so the content sits in an evenly inset column rather than being
+    -- noticeably tighter on one side. Reported live, 2026-09-05: "the content box stopped extending
+    -- to the end of the window (not glued, but with a space (similar to the space from the content
+    -- box to the vertical line))".
+    local RIGHT_MARGIN = BOX_LEFT - RAIL_OFFSET
     local max_box_w = display_size
             and math.max(BOX_WIDTH, display_size.x - box_x - RIGHT_MARGIN) or BOX_WIDTH
 
@@ -582,11 +625,22 @@ function content.draw(state, fontset, pos)
 
         local cached = state.last_layout and state.last_layout[i]
         local cached_h = cached and cached.h
-        -- This box's own width, from LAST frame's actual measured need (editor.draw()'s own 2nd
-        -- return value - see its comment) - same one-frame-lag idiom cached_h/out_of_view already
-        -- use below, not a hack specific to this. Floors at BOX_WIDTH, caps at max_box_w (above) -
-        -- a box never shrinks below the plain default, and never grows past available screen room.
-        local box_w = math.max(BOX_WIDTH, math.min(max_box_w, (cached and cached.needed_w or 0) + 2 * BOX_PADDING))
+        --[[ Every box is simply as wide as the column allows - the full width out to RIGHT_MARGIN,
+        never sized to its own content.
+
+        It used to grow from the content instead, fed by LAST frame's measured need. Two things were
+        wrong with that at once. The width was a feedback loop (the width granted becomes
+        editor.draw()'s width_limit, which decides where things WRAP, which decides the width
+        needed), and editor.lua was reporting one FORMULA_MARGIN more than it had been given, so the
+        loop had no fixed point at all: it climbed a margin per round until it hit this same cap.
+        That is the "converging to the new size" resize - and also why boxes LOOKED full-width, which
+        is what stopping the climb then took away ("the content box stopped extending to the end of
+        the window"). The margin bug is fixed in editor.lua either way; taking the width straight
+        from the column makes the loop moot, since the answer never depended on the content.
+
+        Content wider than the column is not a reason to widen the box - it wraps (mformula's own
+        wrap_edge), and the box grows DOWNWARD via content_h below. ]]
+        local box_w = max_box_w
         local content_w = box_w - 2 * BOX_PADDING
         -- A box entirely outside the viewport, that also isn't the active one (so its content
         -- can't be changing without a click that requires it to be visible first), doesn't need
@@ -599,9 +653,9 @@ function content.draw(state, fontset, pos)
                 and (box_y + cached_h < viewport_top or box_y > viewport_bottom)
 
         if is_active or not out_of_view then
-            local content_h, needed_w = editor.draw(box.editor, fontset,
+            local content_h = editor.draw(box.editor, fontset,
                     {x=box_x + BOX_PADDING, y=box_y + BOX_PADDING}, state.font_size, content_w, is_active,
-                    state.show_wireframe)
+                    state.show_wireframe, state.show_graph)
             local box_h = math.max((content_h or 0) + 2 * BOX_PADDING, 50)
 
             -- Fill/border drawn after the text (translucent, same trick as the selection
@@ -647,15 +701,34 @@ function content.draw(state, fontset, pos)
                         {x=wf.x+wf.w-wf_pad, y=wf.y+wf.h-wf_pad}, wf_color, 1, 1)
             end
 
+            -- Graph-toggle button: sits just left of the wireframe button, same row - same global/
+            -- per-box-button reasoning (this file's own new_shell() comment on show_graph).
+            local gr = {x=wf.x - GRAPH_SIZE - 4, y=box_y - GRAPH_SIZE - 2,
+                    w=GRAPH_SIZE, h=GRAPH_SIZE}
+            local gr_color = state.show_graph and GRAPH_ON_COLOR or GRAPH_OFF_COLOR
+            vc.ImGui_AddRect({x=gr.x, y=gr.y}, {x=gr.x+gr.w, y=gr.y+gr.h}, gr_color, 3, 1)
+            -- Two dots joined by a line standing in for "graph" - filled dots when on, hollow when
+            -- off, mirroring the wireframe button's own filled-vs-outline convention.
+            local gr_p1 = {x=gr.x+4, y=gr.y+gr.h-4}
+            local gr_p2 = {x=gr.x+gr.w-4, y=gr.y+4}
+            vc.ImGui_AddLine(gr_p1, gr_p2, gr_color, 1)
+            if state.show_graph then
+                vc.ImGui_AddCircleFilled(gr_p1, 2, gr_color)
+                vc.ImGui_AddCircleFilled(gr_p2, 2, gr_color)
+            else
+                vc.ImGui_AddCircle(gr_p1, 2, gr_color, 1)
+                vc.ImGui_AddCircle(gr_p2, 2, gr_color, 1)
+            end
+
             layout[i] = {x=box_x, y=box_y, w=box_w, h=box_h, close=close, wireframe_btn=wf,
-                    needed_w=needed_w}
+                    graph_btn=gr}
             y = box_y + box_h + BOX_GAP
         else
-            -- Culled: nothing drawn this frame - just carry its own last-known width/height forward
-            -- so everything stacked below it still lands in the right place, and box_w's own next
-            -- read of cached.needed_w still finds it.
+            -- Culled: nothing drawn this frame - just carry its own last-known height forward so
+            -- everything stacked below it still lands in the right place. Width needs no carrying
+            -- (every box is the full column - see box_w above), only the height it last measured.
             layout[i] = {x=box_x, y=box_y, w=box_w, h=cached_h, close=nil, wireframe_btn=nil,
-                    needed_w=cached and cached.needed_w}
+                    graph_btn=nil}
             y = box_y + cached_h + BOX_GAP
         end
     end

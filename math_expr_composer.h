@@ -556,6 +556,13 @@ inline void mexpr_draw_rec(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m
     ImVec2 bb_br2;
     ImVec2 offpos2;
 
+    /* Where this node sat BEFORE any wrapping, and how many rows it ended up crossing - together
+    they name every row the node passes through (offpos_first, then one adj step per row). Only
+    MEXPR_TYPE_LINE_STRIP uses them so far, to draw itself once per row and let clipping take the
+    slice belonging to each; see that case below. */
+    ImVec2 offpos_first = pos;
+    int wrap_steps = 0;
+
     while (bb_tl.x > di->edge || bb_br.x > di->edge) {
         if (bb_tl.x <= di->edge && bb_br.x > di->edge) {
             bb_tl2 = bb_tl;
@@ -567,6 +574,7 @@ inline void mexpr_draw_rec(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m
         bb_tl += adj;
         bb_br += adj;
         offpos += adj;
+        wrap_steps++;
     }
 
     if (draw_bb) {
@@ -583,9 +591,37 @@ inline void mexpr_draw_rec(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m
             fs->char_draw(m->symb, offpos + m->symb_off, m->color, 0, 0);
         } break;
         case MEXPR_TYPE_LINE_STRIP: {
-            for (int i = 1; i < m->line_strip.size(); i++) {
-                draw_list->AddLine(offpos + m->line_strip[i-1], offpos + m->line_strip[i], m->color,
-                        m->line_width);
+            /* A line strip that straddles the wrap edge is drawn once per row it spans, each pass
+            CLIPPED to the column - so every row shows exactly its own slice and the strip reads as
+            one continuous line broken across rows, instead of jumping whole onto the row its right
+            end happens to land on. Requested live 2026-09-05 for fraction bars specifically ("the
+            lines of the fractions should be drawn for each intersection with the edges and
+            cropped"), which is the case that actually shows: a frac's numerator and denominator are
+            separate leaves that wrap on their own, so a bar that relocated by itself tore the
+            fraction in half.
+
+            Clipping alone is enough, no geometry is split: a bar spanning [x0, x1] with x1 past the
+            edge shows [x0, edge] on the first pass, and on the next - shifted back by exactly the
+            column width - the clip leaves precisely the remainder. Falls out for free at any number
+            of rows, and a strip that never straddles has wrap_steps == 0 and draws once, as before.
+            (This is what the old TODO on mexpr_frac's own divider line asked for; it wanted the bar
+            rebuilt out of many small segments, which turns out not to be necessary.)
+
+            Vertical bounds come from the node's own tl/br plus the stroke width rather than
+            anything unbounded, so the rect stays finite and intersects cleanly with whatever clip
+            is already current. */
+            const ImVec2 adj(-(di->edge - di->startx), di->skipy);
+            ImVec2 p = offpos_first;
+            for (int k = 0; k <= wrap_steps; k++) {
+                draw_list->PushClipRect(
+                        ImVec2(di->startx, p.y + m->tl.y - m->line_width),
+                        ImVec2(di->edge,   p.y + m->br.y + m->line_width), true);
+                for (int i = 1; i < m->line_strip.size(); i++) {
+                    draw_list->AddLine(p + m->line_strip[i-1], p + m->line_strip[i], m->color,
+                            m->line_width);
+                }
+                draw_list->PopClipRect();
+                p += adj;
             }
         } break;
         case MEXPR_TYPE_EMPTY_BOX: {
@@ -617,6 +653,16 @@ inline mexpr_p mexpr_empty(vc::ref_t<charc::fontset_t> fs, float x, float y, flo
 
 inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_char) {
     auto [tl, br] = fs->char_get_bb(sym);
+
+    /* A glyph with no INK at all - a space - has X0 == X1, so char_get_bb() hands back an empty box
+    and the node would lay out zero-wide: typing a space inside a formula inserted something real
+    (it round-trips through to_latex fine) that simply occupied no room and could not be seen, so
+    "a", Space, "b" came out as "ab". Every extent in this file is an ink box by design, which is
+    right for everything that HAS ink; a space's width lives only in the font's own advance, so
+    that is what gets used when there is no ink to measure. Width only - the vertical extent stays
+    empty, since a space should never make a line taller. */
+    if (br.x - tl.x <= 0.0f)
+        br.x = tl.x + fs->char_get_sz(sym).adv;
 
     auto ret = mexpr_t::create(MEXPR_TYPE_SYMBOL);
     ret->symb = sym;
@@ -711,8 +757,10 @@ inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs,
     auto tmp_div = mexpr_symbol(fs, divline, false);
     dl->tl = ImVec2(0, tmp_div->tl.y);
     dl->br = ImVec2(sz_frac_x, tmp_div->br.y);
-    /* TODO: to enable spliting fractions we need to make the fractions line from multiple smaller
-    lines in multiple different objects */
+    /* Deliberately ONE strip, not many small segments: splitting a bar across a wrap edge is done
+    at draw time instead, by drawing it once per row it spans with the column as a clip rect
+    (mexpr_draw_rec's own MEXPR_TYPE_LINE_STRIP case). That keeps the bar a single object with a
+    single width here - nothing about wrapping leaks into how a fraction is built. */
     dl->line_strip.push_back(ImVec2(0, 0));
     dl->line_strip.push_back(ImVec2(sz_frac_x, 0));
     dl->line_width = (tmp_div->br.y - tmp_div->tl.y);

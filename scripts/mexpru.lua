@@ -123,6 +123,125 @@ single-slot pending discipline (only one unpaired open bracket can ever exist at
 every closed pair in the tree is already same-type matched, so a mismatched-type crossing can never
 actually arise to trip this up. Never needs identity comparison either - purely a plain-index walk
 over whatever mexpru.u(_).bracket each child carries, or doesn't. ]]
+--[[ What one slot of a horiz's children contributes to a running bracket count, in READING order:
++1 for an open bracket, -1 for a close, 0 for everything else.
+
+A supsub counts as whatever its own BASE is. That is the whole reason this exists rather than each
+caller testing u(_).bracket itself: a base sits in document order exactly where its compound does,
+and it can BE a bracket - "(a)^{N}" is [ "(", a, supsub(base=")") ], where the closing half of that
+pair is a base and not a sibling at all. Every walk that looked only at siblings was blind to it,
+which is how mispaired and unbalanced states kept getting built while both the rendering and the
+LaTeX looked perfectly fine. ]]
+function mexpru.bracket_delta(node)
+    local u = mexpru.u(node)
+    local br = u.bracket
+    if not br and u.kind == "supsub" and u.base then
+        br = mexpru.u(u.base).bracket
+    end
+    if not br then
+        return 0
+    end
+    return br.is_open and 1 or -1
+end
+
+--[[ THE counter rule, stated once: walking `children` from `from` to `to` (inclusive) in reading
+order, a bracket may close only where the running count of still-open brackets is back to ZERO, and
+that count may never go below zero on the way.
+
+Returns the count at `to` when the walk stayed legal, or nil the moment it would go negative - that
+negative step IS the close of the pair ENCLOSING this range, so `to` and everything past it are out
+of bounds for anything opened inside it.
+
+Requested in exactly these terms, 2026-09-05: "do the contor trick, a paranthesis can close only on
+zero opened paranthesis and it can never decrease". It replaces a depth-tracked scan that answered
+the same question by walking outward looking for a specific atom - which was both easy to fool (it
+could not see a bracket serving as a base, so it sailed past and reported an unrelated one) and
+impossible to state as a single invariant. A count is checkable at any point, over any range,
+without knowing which atom is whose partner. ]]
+function mexpru.bracket_count(children, from, to)
+    local count = 0
+    for i = from, to do
+        local child = children[i]
+        if not child then
+            break
+        end
+        local delta = mexpru.bracket_delta(child)
+        if delta < 0 and count == 0 then
+            return nil          -- this is the ENCLOSING close - never step over it
+        end
+        count = count + delta
+    end
+    return count
+end
+
+--[[ The same counter rule applied to a whole horiz, as a checkable invariant rather than a
+question about one position. Returns (ok, count): `ok` is false the moment the running count would
+go NEGATIVE - a close with nothing open, which no editing operation may ever produce - and `count`
+is what is left open at the end.
+
+count > 0 with ok true is a perfectly good mid-edit state (that's a bracket typed and not yet
+closed, mformula_new.lua's own container.pending_bracket); count == 0 is fully balanced. Only
+`ok == false` is corruption. Kept here beside the rule itself so tests and any future caller assert
+the model's own invariant rather than restating it. ]]
+function mexpru.brackets_balanced(children)
+    local count = 0
+    for i = 1, #children do
+        local delta = mexpru.bracket_delta(children[i])
+        if delta < 0 and count == 0 then
+            return false, count
+        end
+        count = count + delta
+    end
+    return true, count
+end
+
+--[[ The index of `node`'s OWN peer within `children` - a direct .peer identity read (this file's own
+top comment on why plain `==` between two u tables is a real, reliable check), NOT a depth walk.
+Returns nil when node isn't a bracket, has no peer yet (still pending), or - importantly - when its
+peer is real but simply ISN'T in this flat list.
+
+That last case is not hypothetical: a resolved pair's ")" can be a supsub's own BASE ("(a)^{N}" is
+[ "(", a, supsub(base=")", sup=N) ] - mformula_new.lua's own close-onto-a-base path, and the shape
+"(a+b)^2" needs), and a base is not a sibling in `children` at all. scan_bracket() cannot see it
+there, and being a blind depth walk it doesn't fail cleanly either - it just keeps going and returns
+whatever OTHER unmatched bracket it meets next, silently pairing two atoms that were never partners.
+That is exactly how "((A)^{N})" lost a bracket on backspace and became the unbalanced "((A)"
+(reported live 2026-09-05, "reached an invalid state"): deleting the outer ")" walked left, skipped
+straight over the supsub, met the INNER "(" first and cascaded that one away instead of its own.
+
+So: use this to find a bracket's own partner, and scan_bracket() below only for what it's actually
+documented for - finding the pair that ENCLOSES an ordinary, non-bracket position. ]]
+function mexpru.peer_index(children, node)
+    local br = mexpru.u(node).bracket
+    if not br or not br.peer then
+        return nil
+    end
+    for i, child in ipairs(children) do
+        if mexpru.u(child) == br.peer then
+            return i
+        end
+    end
+    return nil
+end
+
+--[[ The index of whichever child in `children` is a supsub whose own BASE is `node`'s peer - i.e.
+where peer_index() above came up empty because the peer is serving as a base rather than sitting in
+the flat list. Returns nil if there is no such child. Together the two cover every place a resolved
+peer can actually live. ]]
+function mexpru.peer_base_owner_index(children, node)
+    local br = mexpru.u(node).bracket
+    if not br or not br.peer then
+        return nil
+    end
+    for i, child in ipairs(children) do
+        local cu = mexpru.u(child)
+        if cu.kind == "supsub" and cu.base and mexpru.u(cu.base) == br.peer then
+            return i
+        end
+    end
+    return nil
+end
+
 function mexpru.scan_bracket(children, idx, direction)
     local depth = 0
     local i = idx + direction
@@ -191,14 +310,53 @@ local function resolve_bracket_pairs(fs, children, lo, hi)
                             "whenever backspace/delete would otherwise remove its last remaining child")
                 end
 
-                local assembled = (#inner == 1) and inner[1] or mexpru.mexpr_merge_h(fs, inner)
+                -- sz is LOGICAL (u(_).sz's own meaning, untouched by zoom - mexpru.physical_sz()'s
+                -- own comment) - mapped to PHYSICAL below for the real bracket construction/height
+                -- check, same as every other leaf this file's own callers build. Missing this
+                -- mapping here specifically (found live 2026-09-05, alongside the sizing issue
+                -- below: "behaves quite differently with different zoom levels") meant a resolved
+                -- bracket pair kept rendering at whatever size it was AT WHEN LAST RESOLVED,
+                -- ignoring the current zoom entirely, while everything around it correctly rescaled.
                 local sz = mexpru.u(children[i]).sz
-                local opts = char.bracket_opts(br.type, sz)
+                local phys_sz = mexpru.physical_sz(sz)
+                local opts = char.bracket_opts(br.type, phys_sz)
+                local assembled = (#inner == 1) and inner[1] or mexpru.mexpr_merge_h(fs, inner)
 
-                local new_left = mexpru.mexpr_bracket_left(fs, assembled, opts)
-                local new_right = mexpru.mexpr_bracket_right(fs, assembled, opts)
-                mexpru.u(new_left).sz = sz
-                mexpru.u(new_right).sz = mexpru.u(children[close_idx]).sz
+                -- Two FIRST attempts at "don't let a short pair (a lone letter) shrink below a
+                -- plain typed paren" (2026-09-05) forced a MINIMUM height into the tiered bracket
+                -- system (mexpr_bracket_side, math_expr_composer.h) - wrong in a different way each
+                -- time, but both wrong for the same underlying reason: that system's own smallest
+                -- tier (char.lua's "\\bigl("/"\\bigl)", FONT_MATH_EX) isn't a same-size stand-in for
+                -- an ordinary typed "(" (FONT_NORMAL) at all - it's a DIFFERENT, deliberately
+                -- LARGER glyph, meant for genuinely tall content, not for matching plain text. So
+                -- forcing content up to "at least as tall as a plain paren" doesn't land ON a
+                -- plain-sized result - it still picks that same bigger tier, just from the other
+                -- side of its own threshold. Reported live 2026-09-05: "nothing should change from
+                -- '(a' to '(a)', besides the ')' appearing" - pixel-identical, not "close enough".
+                --
+                -- The actual fix: don't invoke the tiered system AT ALL when content is short
+                -- enough that an ordinary paren already suffices - keep reusing the SAME plain
+                -- glyphs (children[i]/children[close_idx], already built by open_bracket()/
+                -- insert_glyph_at_cursor() at this exact phys_sz) completely untouched, exactly the
+                -- pixel-identical result asked for. Only content taller than a plain paren's own
+                -- real height (a fraction, a nested exponent, ...) actually needs a bigger bracket,
+                -- and only THEN does the tiered system get a chance to do its own real job.
+                local plain_paren = char.find_by_ascii("(")
+                local paren_sz = fs:char_get_sz({size = phys_sz, code = plain_paren.ncod})
+                local plain_h = math.abs(paren_sz.tr.y - paren_sz.bl.y)
+                local content_bb = vc.mexpr_get_bb(assembled)
+                local content_h = content_bb.br.y - content_bb.tl.y
+
+                local new_left, new_right
+                if content_h <= plain_h then
+                    new_left = children[i]
+                    new_right = children[close_idx]
+                else
+                    new_left = mexpru.mexpr_bracket_left(fs, assembled, opts)
+                    new_right = mexpru.mexpr_bracket_right(fs, assembled, opts)
+                    mexpru.u(new_left).sz = sz
+                    mexpru.u(new_right).sz = mexpru.u(children[close_idx]).sz
+                end
                 mexpru.u(new_left).bracket = {is_open = true, type = br.type, peer = mexpru.u(new_right)}
                 mexpru.u(new_right).bracket = {is_open = false, type = br.type, peer = mexpru.u(new_left)}
 
