@@ -1,4 +1,4 @@
-1807
+1991
 $$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)\ $$ 
 
 $$\vec{a}\ \vec{m}\ \vec{F}\ \vec{I}$$
@@ -11,14 +11,17 @@ $$\widehat{\begin{matrix}ABC\end{matrix}}\ =\ \widehat{\begin{matrix}AOC\end{mat
 
 $$a\bar{a}\ =\ |a|^{2}\ a\ \not =\ b$$
 
-$$\frac{df(x)}{dx}\ =\ \mathop{\begin{matrix}lim\end{matrix}}\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ ;\ A\perp B\ ;\ C\parallel D\ ;\ \Delta ABC\ \equiv \ \Delta BGD\ $$
+$$\frac{df(x)}{dx}\ =\ \mathop{\begin{matrix}lim\end{matrix}}\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D\ ;\ \Delta ABC\ \equiv \ \Delta BGD\ $$
 
 $$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}$$
 
 $$\ \left\lvert \widehat{\begin{matrix}\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \end{matrix}}\right\rvert \ \widehat{\begin{matrix}\left\lvert \begin{matrix}\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \end{matrix}\right\rvert \end{matrix}}\ $$
 
-$$\left(\frac{a}{b}\right)$$ $$\left(\frac{a}{b}\right)^{2}\ \ \ \frac{a}{b}\ +\ \{\ \left(\frac{A}{B}\right)\ \}\ ;\ \frac{a}{b}+q+\frac{c}{d}\ ;\ \frac{a}{b}+q+\frac{c}{d}\ A...\cdot \cdot \cdot B\ $$
+$$\left(\frac{a}{b}\right)$$ $$\left(\frac{a}{b}\right)^{2}\ \ \ \frac{a}{b}\ +\ \left\{\ \left[\ \left(\frac{A}{B}\right);\right]\ \right\}\ +\ \left\{\frac{\{a\}}{b\frac{\pi }{2}}\right\}\ +\ q+\frac{c}{d}\ ;\ \frac{a}{b}+q+\frac{c}{d}\ A...\cdot \cdot \cdot B\ $$
 
-Houses for everyone! Ok what is next?79
-Mi se pare asa misto ca intr-un final pot sa scriu chestii in
-editorul de mate.
+$$\mathop{\bigcup }\limits_{I\subseteq \R }M$$
+
+$$\bigcup \limits_{M\subset \R }M\ =\ \R $$
+
+Houses for everyone! Ok what is next?22
+Editor stage 1 is done

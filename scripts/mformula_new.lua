@@ -42,10 +42,19 @@ local mformula_new = {}
 function mformula_new.set_warn_sink(fn) input_recorder_warn = fn end
 
 local CURSOR_COLOR = 0xff00ffff
--- Cursor color while container.pending_bracket is set - "you're in bracket-closing mode, waiting
+-- Cursor color while a bracket is open and unclosed - "you're in bracket-closing mode, waiting
 -- for the matching )/]/}". A visibly different hue (purple, vs. CURSOR_COLOR's yellow) rather than
 -- a blink-rate/shape change, so it reads at a glance without having to watch it blink first.
 local PENDING_BRACKET_CURSOR_COLOR = 0xffff00cc
+
+--[[ Forward declaration. The real definition is far below (it needs is_horiz/base_of/slot_atom),
+but the cursor is drawn ABOVE it and asks every frame which colour to use.
+
+Without this the reference up there is not the local at all - Lua resolves it to a GLOBAL, which is
+nil, so the draw threw once per frame. The whole test suite still passed: the headless harness never
+runs the draw path, so nothing caught it. It showed up only as the running app visibly pulsing.
+2026-09-06. ]]
+local innermost_unclosed_open
 -- Translucent, drawn UNDER the glyphs, same idea as editor.lua's own plain-text selection.
 local SELECTION_COLOR = 0x553399ff
 --[[ A vert's box and the tick between its cells. ImGui packs colours ABGR (0xAABBGGRR), so
@@ -680,7 +689,8 @@ function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wirefr
         cursor_top, cursor_h = rect.top - pos.y, rect.bottom - rect.top
         -- Same ~30-frame half-period blink as mformula.lua's own caret (roughly 0.5s at 60fps).
         if math.floor(container.frame / 30) % 2 == 0 then
-            local color = container.pending_bracket and PENDING_BRACKET_CURSOR_COLOR or CURSOR_COLOR
+            local color = innermost_unclosed_open(container) and PENDING_BRACKET_CURSOR_COLOR
+                    or CURSOR_COLOR
             vc.ImGui_AddLine({x = rect.x, y = rect.top}, {x = rect.x, y = rect.bottom}, color, 2)
         end
     end
@@ -878,7 +888,14 @@ three-character sequences work with no lookahead and no timer: "<" then "=" has 
 less-or-equal glyph by the time ">" arrives, so ">" extends THAT. Same for "<-" then ">". Every step
 is a complete substitution on its own, so there is never a half-finished state to get stuck in.
 
-To type the characters literally, put anything between them - "a < = b" stays as typed. ]]
+SHORTHANDS FIRE ON TYPING ONLY. Nothing re-scans for them afterwards - not deletion, not loading
+a file, not pasting. That is what makes the escape work, and the escape is better than "leave a
+space in": type the two characters with ANYTHING between, then delete the separator. Left, Delete,
+Right leaves the pair adjacent and untouched, and it survives save/load because from_latex does not
+run this table either. Reported as the trick 2026-09-06; it applies to every entry here.
+
+Do not "fix" this by re-checking adjacency after an edit - that would take the escape away and
+there would be no way left to write two dots. ]]
 local DIGRAPHS = {
     ["<"] = {["="] = {"\\le"},  ["-"] = {"\\leftarrow"}},
     [">"] = {["="] = {"\\ge"}},
@@ -892,6 +909,22 @@ local DIGRAPHS = {
     tall bracket is Ctrl+Shift+\\, deliberately kept off this key), and a single "_" stays an
     underscore. ]]
     ["_"] = {["|"] = {"\\perp"}},
+
+    --[[ The number sets: type the capital TWICE. "Double struck" is literally what blackboard
+    bold means, so the gesture is the notation. Chosen 2026-09-06 over Alt+Shift+letter, which had
+    room for only five of the eight - Q, L and H collide with the integral, Lambda and Theta - and
+    splitting one family across two mechanisms is worse than either.
+
+    The cost: "NN" can no longer be written as N times N. That is rare (one would write N^2), and
+    the escape is the same as every other shorthand here - put anything between the two. ]]
+    ["N"] = {["N"] = {"\\N"}},
+    ["Z"] = {["Z"] = {"\\Z"}},
+    ["Q"] = {["Q"] = {"\\Q"}},
+    ["R"] = {["R"] = {"\\R"}},
+    ["C"] = {["C"] = {"\\C"}},
+    ["H"] = {["H"] = {"\\H"}},
+    ["I"] = {["I"] = {"\\I"}},
+    ["L"] = {["L"] = {"\\L"}},
     ["|"] = {["|"] = {"\\parallel"}},
     ["="] = {[">"] = {"\\Rightarrow"}, ["="] = {"\\equiv"}},
 
@@ -1097,6 +1130,45 @@ without building a bigop inside a bigop.
 
 Everything about the capture-before-you-wrap discipline here is make_supsub()'s: mexpru.bigop()
 reparents target as it builds, so the parent and index have to be read first. ]]
+--[[ Operators that have a DISPLAY form, taken automatically when limits are attached.
+
+"\cup" is the inline union - the one Alt+[ types, correctly small, the size you want in "A \cup B".
+The moment it carries limits it is a different operator: "\bigcup", set at display size like a sum.
+TeX makes the same distinction, and "\cup" with limits is not a thing anyone writes.
+
+Reported 2026-09-06 as "the union is too small, intersection two" - the limits went on, the glyph
+stayed inline-sized, and the result was a tiny union under a full-height "i=0". Promoting here means
+Alt+[ needs no second key for the big form: the shape of what you are building decides it.
+
+Only cup and cap for now; the other display forms (\bigvee, \bigwedge, \bigoplus) have no glyph
+in these fonts yet. ]]
+local DISPLAY_OPERATOR = {
+    ["\\cup"] = "\\bigcup",
+    ["\\cap"] = "\\bigcap",
+}
+
+--[[ Swaps `atom` for its display-size counterpart when it has one, else returns it unchanged.
+Rebuilt rather than retagged: the size boost lives in the glyph's own baked geometry (see
+char.size_delta_by_desc), so it can only be applied by constructing it afresh. ]]
+local function to_display_operator(fontset, atom)
+    if not atom or atom.type ~= vc.MEXPR_TYPE_SYMBOL then
+        return atom
+    end
+    local entry = char.find_by_ncod(atom.symb.code)
+    local want = entry and DISPLAY_OPERATOR[entry.desc]
+    local target = want and char.find_by_desc(want)
+    if not target then
+        return atom
+    end
+    local sz = mexpru.u(atom).sz
+    local delta = char.size_delta_by_desc[target.desc]
+    local glyph_sz = delta and math.max(1, math.min(sz + delta, MAX_SIZE_INDEX)) or sz
+    local g = mexpru.mexpr_symbol(fontset,
+            {size = mexpru.physical_sz(glyph_sz), code = target.ncod}, true)
+    mexpru.u(g).sz = sz
+    return g
+end
+
 function mformula_new.make_bigop(container, fontset, slot)
     --[[ Raw kind checks rather than is_horiz()/is_supsub(): those are declared further down this
     file, and this sits beside make_supsub(), which uses the same workaround for the same reason. ]]
@@ -1136,7 +1208,9 @@ function mformula_new.make_bigop(container, fontset, slot)
     end
 
     local new_empty, new_horiz = build_side(fontset, sub_sz)
-    local node = mexpru.bigop(fontset, target,
+    -- An inline union/intersection becomes its display form the moment it takes limits.
+    local operator = to_display_operator(fontset, target)
+    local node = mexpru.bigop(fontset, operator,
             (slot == "sup") and new_horiz or nil,
             (slot == "sub") and new_horiz or nil, base_sz)
 
@@ -1443,7 +1517,8 @@ end
 glyph - an ordinary ASCII glyph at this point, same as any other typed character - and splices it in
 via insert_glyph_at_cursor(), the exact same 4-way splice an ordinary typed character goes through,
 since at this point it genuinely IS just an ordinary character as far as the tree is concerned. Tags
-it u(_).bracket = {is_open=true, type=bracket_type} and parks container.pending_bracket on it - a
+it u(_).bracket = {is_open=true, type=bracket_type}. Nothing is recorded anywhere else - the row
+IS the record, and innermost_unclosed_open() reads it back by the counter rule - a
 single slot, not a stack (opening a SECOND bracket while one is already pending is a no-op/blocked -
 see this function's own call site in handle_input()). While pending, mformula_new.draw() shows a
 purple cursor (PENDING_BRACKET_CURSOR_COLOR) instead of the ordinary CURSOR_COLOR. ]]
@@ -1459,7 +1534,6 @@ local function open_bracket(container, fontset, target, target_parent, target_is
     insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
             target_is_empty, target_is_supsub_base, target_sz, new_glyph)
 
-    container.pending_bracket = vc.wref_mexpr(new_glyph)
 end
 
 -- ')' / ']' / '}' -> bracket type, and back - entangled-bracket closing (try_close_bracket() below).
@@ -1503,12 +1577,68 @@ It renders and even serializes as an innocent "((a))" - the damage is only in th
 is why every downstream walk quietly built on a structure that was never valid. The enclosing close
 comes from mexpru.scan_bracket() rather than a hand-rolled depth walk; nil means nothing encloses
 it, so there is no right-hand bound at this level. ]]
-local function close_position_ok(container, node)
-    local pending = container.pending_bracket
-    if not pending then
+--[[ The innermost still-unclosed open bracket to the LEFT of the cursor, or nil.
+
+This REPLACED a stored container.pending_bracket slot on 2026-09-06. That slot could hold exactly
+one bracket, so typing a second open while one was unclosed was a silent no-op - "{" could never be
+closed over "(", and "{()}" was unreachable. Reported as "a wrong limitation", and it was: the row
+already contains every bracket, so a parallel slot was never a model of the state, only a cache of
+one fact about it.
+
+The rule is the counter, stated by the user and already written as mexpru.bracket_count: walking
+left, a close raises the depth, an open lowers it, and the first open met at depth zero is ours.
+"{ ( a ) |" walks ")" to depth 1, "(" back to 0, and finds "{".
+
+Read through slot_atom, because a ")" is frequently a supsub base ("(a)^2") and invisible to any
+walk reading children directly - the blind spot that has produced six live bugs now.
+
+A RESOLVED open at depth zero means the cursor is INSIDE a finished pair, so nothing at this level
+is closable from here and the answer is nil - which is what keeps a close from crossing out of the
+pair it sits in. ]]
+-- (forward-declared near PENDING_BRACKET_CURSOR_COLOR - see the note there)
+function innermost_unclosed_open(container)
+    local node = container.cursor_pos and container.cursor_pos:get_obj()
+    if not node then
         return nil
     end
-    local open_atom = pending:get_obj()
+    local horiz, idx
+    if is_horiz(node) then
+        horiz, idx = node, 0            -- resting on the row itself: slot 0, nothing to the left
+    else
+        -- A base occupies its supsub's own slot, the same convention every other walk here uses.
+        local carrier = base_of(node) or node
+        horiz = carrier:get_parent()
+        idx = carrier:get_parent_idx()
+    end
+    if not horiz or mexpru.u(horiz).kind ~= "horiz" or not idx then
+        return nil
+    end
+
+    local children = mexpru.u(horiz).children
+    local depth = 0
+    for i = idx, 1, -1 do
+        local atom = children[i] and mexpru.slot_atom(children[i])
+        local br = atom and mexpru.u(atom).bracket
+        if br then
+            if not br.is_open then
+                depth = depth + 1
+            elseif depth > 0 then
+                depth = depth - 1
+            elseif not br.peer then
+                return atom
+            else
+                return nil              -- inside a resolved pair; closing here would cross
+            end
+        end
+    end
+    return nil
+end
+
+-- Exported for tests: this is the whole of the bracket-nesting rule, and worth pinning directly.
+mformula_new.innermost_unclosed_open = innermost_unclosed_open
+
+local function close_position_ok(container, node, open_atom)
+    open_atom = open_atom or innermost_unclosed_open(container)
     if not open_atom then
         return nil
     end
@@ -1565,22 +1695,31 @@ be guarded one entry point at a time into things that simply cannot be reached: 
 began with the cursor wandering somewhere its pending bracket could never close from, which is no
 longer a place it can go. The pending open atom's own slot is itself inside the region, so
 backspacing the bracket away always stays possible - confined, never trapped. ]]
+--[[ With nesting, the INNERMOST unclosed bracket is the one that confines the cursor, and the
+region shrinks as more are opened. Settled 2026-09-06 when the single slot became a counter. ]]
 local function cursor_pos_forbidden(container, node)
-    return container.pending_bracket ~= nil and close_position_ok(container, node) == nil
+    return innermost_unclosed_open(container) ~= nil
+            and close_position_ok(container, node) == nil
 end
 
+--[[ Returns TRUE when it actually closed a pair, false otherwise.
+
+The return value replaced a trick: Ctrl+Shift+\ used to detect success by watching
+container.pending_bracket go nil, which its own comment admitted was done "rather than by giving it
+a return value its three other callers do not want". Once the pending open is derived from the row
+rather than stored, there is no slot to watch, so the honest signal is the one it always should
+have been. ]]
 local function try_close_bracket(container, fontset, bracket_type)
-    local pending = container.pending_bracket
-    if not pending then
-        return
-    end
-    local open_atom = pending:get_obj()
+    -- The innermost unclosed open, found by the counter rule - see innermost_unclosed_open().
+    local open_atom = innermost_unclosed_open(container)
     if not open_atom then
-        return
+        return false
     end
     local open_bracket_u = mexpru.u(open_atom).bracket
+    --[[ A type mismatch here IS the no-crossing rule: the innermost unclosed open is the only one
+    a close can pair with, so "{(a}" refuses rather than reaching past the "(". ]]
     if open_bracket_u.type ~= bracket_type then
-        return
+        return false
     end
     local open_horiz = open_atom:get_parent()
 
@@ -1588,9 +1727,9 @@ local function try_close_bracket(container, fontset, bracket_type)
     -- open-ended "same parent, at or after open_idx" test - that one had no right-hand bound, so
     -- it happily interleaved pairs into "(_1 (_2 a )_1 )_2". See that function's own comment.
     local cursor_node = container.cursor_pos:get_obj()
-    local close_target = close_position_ok(container, cursor_node)
+    local close_target = close_position_ok(container, cursor_node, open_atom)
     if not close_target then
-        return
+        return false
     end
     -- Non-nil exactly when the cursor is sitting ON a supsub's own base (rather than on the supsub
     -- itself, or on any ordinary sibling) - the one case that closes INTO the base below.
@@ -1657,7 +1796,6 @@ local function try_close_bracket(container, fontset, bracket_type)
     "((A)" (reported live, "reached an invalid state"). ]]
     mexpru.u(close_glyph).bracket = {is_open = false, type = bracket_type, peer = mexpru.u(open_atom)}
     open_bracket_u.peer = mexpru.u(close_glyph)
-    container.pending_bracket = nil
 
     -- children[close_idx] is read AFTER the rebuild below, not a local variable holding close_glyph
     -- directly - resolve_bracket_pairs() (mexpru.lua), part of that same rebuild, immediately
@@ -1790,7 +1928,7 @@ rescale_node() IS the copy: already a 1:1 mirror through the ordinary constructo
 rescale() it does not cut the original. Rebuilt at the current zoom from each node's LOGICAL sz, so
 a snapshot restored at a different zoom comes back correctly sized rather than frozen.
 
-pending_bracket and sel_anchor are deliberately NOT carried across - both are weak refs into the OLD
+sel_anchor is deliberately NOT carried across - it is a weak ref into the OLD
 tree, which the copy has no matching nodes for. A half-typed bracket comes back un-closeable rather
 than dangling; that is the honest degradation. ]]
 function mformula_new.clone(container, fontset)
@@ -2094,8 +2232,13 @@ local function collapsible_supsub(container)
     if not supsub then
         return nil
     end
+    --[[ is_supsub, not a bare kind check: a BIGOP carries the same base/sup/sub slots and collapses
+    the same way - back to its bare operator. It was excluded by an explicit `kind ~= "supsub"`,
+    so a freshly made big operator could not be undone from inside its own empty limit, and the only
+    way out was deleting the operator underneath it. Reported 2026-09-06: "after creating a bigop
+    marker I can't delete it from inside it". ]]
     local u = mexpru.u(supsub)
-    if u.kind ~= "supsub" then
+    if not is_supsub(supsub) then
         return nil
     end
     local in_sup = mexpru.same(u.sup, slot_horiz)
@@ -3154,7 +3297,7 @@ function mformula_new.handle_input(container, fontset, sz)
         if not body or body == "" then
             return
         end
-        if container.pending_bracket then
+        if innermost_unclosed_open(container) then
             print("mformula_new: ignoring paste while a bracket is still open - close it first")
             return
         end
@@ -3286,24 +3429,18 @@ function mformula_new.handle_input(container, fontset, sz)
             return
         end
         --[[ Ctrl+Shift+\ - the "|" delimiter (BAR_BRACKET's own comment). Close-then-open, in
-        that order: with a bar already pending and the cursor somewhere it can legally close, this
+        that order: with a bar already open and the cursor somewhere it can legally close, this
         press is the closing one. try_close_bracket() is left to judge that, since it owns every
-        rule about where a close is allowed (close_position_ok()), and success is read off
-        container.pending_bracket going nil - which is what it clears on closing - rather than by
-        giving it a return value its three other callers do not want.
+        rule about where a close is allowed (close_position_ok()), and it now says so with a return
+        value - it used to be inferred from container.pending_bracket going nil, which stopped
+        existing when that slot became a scan of the row.
 
-        If it declines (a different bracket pending, or the cursor has wandered out of the closable
-        region) the pending slot is still full, so the open branch refuses too and the press is a
-        no-op: exactly what typing a second "(" while one is pending already does. ]]
+        If it declines - the innermost unclosed bracket is a different type, or the cursor has
+        wandered out of the closable region - the press opens a new bar instead, which is what this
+        key has always meant when there was nothing to close. ]]
         if BAR_BRACKET and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Backslash, false) then
-            local was_pending = container.pending_bracket ~= nil
-            if was_pending then
-                try_close_bracket(container, fontset, BAR_BRACKET)
-            end
-            if was_pending and container.pending_bracket == nil then
+            if try_close_bracket(container, fontset, BAR_BRACKET) then
                 -- closed by the call above
-            elseif container.pending_bracket then
-                -- a different bracket is still pending: same no-op as a second "("
             elseif target_is_supsub_base then
                 print("mformula_new: ignoring Ctrl+Shift+\\ on a supsub's own base - a bracket "
                         .. "atom can never become one (it would be permanently unclosable) - "
@@ -3469,10 +3606,13 @@ function mformula_new.handle_input(container, fontset, sz)
                     print("mformula_new: ignoring '(' typed onto a supsub's own base - a bracket "
                             .. "atom can never become one (it would be permanently unclosable) - "
                             .. "move off the base first")
-                elseif not container.pending_bracket then
+                else
+                    --[[ No "one at a time" guard any more. It used to refuse a second open while
+                    one was unclosed, which made "{()}" unreachable - reported 2026-09-06 as "a
+                    wrong limitation". Nesting is bounded by the counter rule instead: a close pairs
+                    with the innermost unclosed open, and only if the types match. ]]
                     open_bracket(container, fontset, target, target_parent, target_is_horiz,
                             target_is_empty, target_is_supsub_base, target_sz, OPEN_BRACKETS[ch])
-                else
                 end
             elseif CLOSE_BRACKETS[ch] then
                 try_close_bracket(container, fontset, CLOSE_BRACKETS[ch])

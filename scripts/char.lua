@@ -8,6 +8,10 @@ local capi = {
 	FONT_MATH = 5,
 	FONT_SYMBOLS = 6,
 	FONT_MATH_EX = 7,
+	--[[ AMS "math symbols B", which is where blackboard bold lives - the double-struck capitals
+	used for the number sets. The only non-Computer-Modern face here; see fonts/amsfonts-ttf/
+	README.md for its provenance (AMSFonts converted to TTF) and fonts/licences/. ]]
+	FONT_BBOLD = 8,
 }
 
 function capi.load_font_set()
@@ -52,6 +56,14 @@ function capi.load_font_set()
     --      * brackets
     paths[capi.FONT_MATH_EX] = "fonts/cmex10.ttf"
 
+    -- Blackboard bold
+    --      * the number sets: naturals, integers, rationals, reals, complex, quaternions
+    --      * capitals only - msbm has A-Z double-struck at the ordinary ASCII positions
+    --
+    -- OBS: this is msbm at its EIGHT point design size, while every Computer Modern face here is
+    -- ten. Stroke weight may read slightly light beside them; it is what the repo ships.
+    paths[capi.FONT_BBOLD] = "fonts/amsfonts-ttf/MSBM8.ttf"
+
     local ret = vc.create_object(nil, {
         m_type = "charc::fontset_t",
         m_a_code = 61,
@@ -80,7 +92,7 @@ function capi.load_font_set()
     for i in ipairs(capi.chars) do
         local c = capi.chars[i]
         ret:register_code(c.ncod, c.fnum, c.fcod,
-                capi.y_offset_by_desc[c.desc] or 0.0,
+                capi.y_offset_by_desc[c.desc] or capi.y_offset_by_font[c.fnum] or 0.0,
                 capi.adv_by_desc[c.desc] or -1.0)
     end
 
@@ -472,6 +484,22 @@ capi.chars = {
     ordinary - "a \perp b" and "a \bot b" set differently. Which one a glyph came from is the only
     record of which was meant, so the two round-trip to their own names. ]]
     {acod='\0', fcod=0x3F, fnum=capi.FONT_SYMBOLS, ncod=263, desc="\\perp" },          -- perpendicular
+
+    --[[ The number sets, added 2026-09-06. msbm carries the double-struck capitals at the plain
+    ASCII letter positions, so the fcod is just the letter's own code - no encoding translation
+    needed here, unlike cmsy/cmex (see the note above capi.chars).
+
+    Named with the ams spelling (\mathbb is the LaTeX command; these descs are what to_latex
+    writes, and "\mathbb{R}" needs a brace group the desc form cannot carry, so the short names
+    are used and the writer stays one-token-per-glyph). ]]
+    {acod='\0', fcod=0x4E, fnum=capi.FONT_BBOLD  , ncod=270, desc="\\N" },               -- naturals
+    {acod='\0', fcod=0x5A, fnum=capi.FONT_BBOLD  , ncod=271, desc="\\Z" },               -- integers
+    {acod='\0', fcod=0x51, fnum=capi.FONT_BBOLD  , ncod=272, desc="\\Q" },               -- rationals
+    {acod='\0', fcod=0x52, fnum=capi.FONT_BBOLD  , ncod=273, desc="\\R" },               -- reals
+    {acod='\0', fcod=0x43, fnum=capi.FONT_BBOLD  , ncod=274, desc="\\C" },               -- complex
+    {acod='\0', fcod=0x48, fnum=capi.FONT_BBOLD  , ncod=275, desc="\\H" },               -- quaternions
+    {acod='\0', fcod=0x49, fnum=capi.FONT_BBOLD  , ncod=276, desc="\\I" },               -- irrationals
+    {acod='\0', fcod=0x4C, fnum=capi.FONT_BBOLD  , ncod=277, desc="\\L" },               -- L
     {acod='\0', fcod=0xB5, fnum=capi.FONT_MATH_EX, ncod=198, desc="\\biggl(" },        -- paranthesis '(' level 3
     {acod='\0', fcod=0xB3, fnum=capi.FONT_MATH_EX, ncod=199, desc="\\Bigl(" },         -- paranthesis '(' level 2
     {acod='\0', fcod=0xA1, fnum=capi.FONT_MATH_EX, ncod=200, desc="\\bigl(" },         -- paranthesis '(' level 1
@@ -676,6 +704,14 @@ capi.greek_alt_shift = {
     g="\\Gamma", d="\\Delta", h="\\Theta", l="\\Lambda", x="\\Xi",
     u="\\Upsilon", f="\\Phi", y="\\Psi",   w="\\Omega",
     q="\\int",  s="\\sum",  p="\\prod",
+
+    --[[ The QUANTIFIERS, added 2026-09-06. A for All, E for Exists - the same "this slot is free,
+    give it an operator" move as q/s/p above, and the mnemonics are as good as they get.
+
+    These two slots were free for a reason worth recording: Greek capital Alpha and Epsilon are
+    drawn identically to Latin A and E, so there was never anything to put there. Nothing is lost
+    by taking them, unlike Sigma and Pi which really were displaced. ]]
+    a="\\forall", e="\\exists",
 }
 
 --[[ How many size-table steps BIGGER (negative - the table runs biggest-to-smallest, see
@@ -772,6 +808,20 @@ capi.adv_by_desc = {
     ["\\qquad"] = 2.0,
 }
 
+--[[ Whole-FACE vertical corrections, for when a font's baseline simply does not sit where the
+Computer Modern ones do. Same units as y_offset_by_desc (a fraction of the font size, positive =
+down), and consulted only when a glyph has no entry of its own there.
+
+msbm needs one: measured 2026-09-06, its capitals bottom out 10px above where a cmr capital does at
+the default level, so a blackboard R floated a third of its own height above the line it was sitting
+on. Reported as "constructs a character in a strange location, not on the same line".
+
+A face-level entry rather than eight identical per-glyph ones - it is a property of the font, and
+this way a ninth set added later is correct without anyone remembering. ]]
+capi.y_offset_by_font = {
+    [capi.FONT_BBOLD] = 10.0 / 36.0,
+}
+
 capi.y_offset_by_desc = {
     ["\\sum"]    = 0.184,
     ["\\prod"]   = 0.184,
@@ -798,8 +848,14 @@ the same table. Adding a row here adds it to the legend.
 `key` is resolved to an integer id once, below, for the same reason greek_key_ids exists: the
 string form of an ImGuiKey costs a yaml node per poll. ]]
 capi.alt_symbols = {
-    {key = "ImGuiKey_LeftBracket",  label = "[", plain = "\\cup"},
-    {key = "ImGuiKey_RightBracket", label = "]", plain = "\\cap"},
+    --[[ Shift lifts these two from SETS to LOGIC, which is the exact correspondence - union is
+    or, intersection is and - so the shape of the key keeps meaning the shape of the sign. Added
+    2026-09-06 alongside the quantifiers. ]]
+    {key = "ImGuiKey_LeftBracket",  label = "[", plain = "\\cup",  shift = "\\vee"},
+    {key = "ImGuiKey_RightBracket", label = "]", plain = "\\cap",  shift = "\\wedge"},
+    --[[ Negation on Alt+1, because "!" is what that key carries in a programming layout and that is
+    where the hand already reaches for "not". ]]
+    {key = "ImGuiKey_1",            label = "1", plain = "\\neg"},
     {key = "ImGuiKey_Comma",        label = ",", plain = "\\in",  shift = "\\subset"},
     {key = "ImGuiKey_Period",       label = ".", plain = "\\ni",  shift = "\\supset"},
 }

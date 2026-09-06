@@ -44,6 +44,29 @@ here vendors or fetches them.
 make        # root makefile dispatches to linux.makefile or windows.makefile based on OS
 ```
 
+## What the tests are FOR
+
+Stated by the user, 2026-09-06: **a test raises an alarm so an eventual contradiction with an older
+test or assumption gets caught.** Not proof of correctness - a tripwire across an assumption.
+
+Three consequences that decide how to write and how to react to them:
+
+- **A test asserting behaviour just written is nearly worthless.** It can only confirm itself. The
+  ones that earn their keep are OLD. So write down the ASSUMPTION and why it holds, not the output.
+  That is why tests here carry long comments: when one fires, the next reader needs to know what
+  was assumed in order to judge whether the contradiction is a bug or a deliberate change.
+- **When an old test fires, do not just make it pass.** That disarms the alarm silently. Record why
+  the assumption stopped holding - `test_latex_roundtrip.lua`'s case4b is the worked example: it
+  asserted "a space is dropped" for a real technical reason, and now explains both that reason and
+  the decision that overrode it.
+- **A test can assert a bug as correct**, and then it actively defends the defect. That happened:
+  `test_digraphs.lua` claimed "two atoms, so each can be deleted on its own" as a feature, and it
+  was the bug reported the next day. Green means "what I asserted still holds", never "it works".
+
+Two things slipped through phase 1, and both fit the pattern: one had no alarm (nothing runs the
+draw path, so a nil-call there was invisible - now covered by `test_no_use_before_define.lua`), and
+one had an alarm pointed the wrong way.
+
 ## Automated tests
 
 ```bash
@@ -62,6 +85,19 @@ exposed to Lua via `virt_composer`. The actual math model lives in Lua: `ast.lua
 `char.lua` (glyph catalog), `mexpr.lua` (AST → drawable tree), `transforms.lua` (algebraic
 term-dragging, WIP). Full detail and data-flow diagram in `README.md`.
 
+## Where the project is
+
+**Phase 1 (the text editor) is done** — declared so 2026-09-06, commit "the user interfacing
+editor passed it's stage, time for second stage". Typing, navigation, brackets, accents, big
+operators, undo/redo, save/load and LaTeX in both directions all work; `tests/` covers them.
+
+**Phase 2 is linking the editor to the AST**, and its design is written up in
+**`docs/phase2_design.md`** — read that before touching `ast.lua`, `mexpr.lua` or `transforms.lua`.
+It records decisions made in conversation that are not derivable from the code: three editors with
+a one-way promotion door, immutable cells forming a proof DAG, why `mexpr -> ast` must be direct
+rather than routed through LaTeX, how names and subscripts identify, and what would be needed to
+talk to Lean. Nothing in it is implemented yet.
+
 ## Known WIP / intentionally incomplete
 
 - `transforms.lua` — term-dragging is deliberately unfinished, flagged in-file. Don't fill in the
@@ -69,8 +105,13 @@ term-dragging, WIP). Full detail and data-flow diagram in `README.md`.
   through, not a bug to fix.
 - Fraction layout (`mexpr_frac` in `math_expr_composer.h`, and its caller in `mexpr.lua`) has open
   rough edges noted in comments.
-- No editing/undo/redo/save-load yet — everything currently on screen comes from the hardcoded
-  demo in `main.lua`'s `test_draw()`.
+- `mexpr.lua`'s four `vc.mexpr_bracket()` calls use a signature the C++ no longer has (it split
+  into `mexpr_bracket_left`/`_right`). Only reachable from `main.lua`'s dead demo, so harmless
+  today — but they must be fixed before `ast -> mexpr -> ast` can serve as a test oracle. See
+  that file's own header.
+- Roughly 18 LaTeX macros are still dropped silently on paste (`\ast \oplus \otimes \vdots
+  \langle \lfloor \quad \sin \lim` and friends). Deferred deliberately as a paste-from-outside
+  nuisance; `docs/phase2_design.md` explains why phase 2 raises their priority.
 
 ## Debugging
 

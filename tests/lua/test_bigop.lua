@@ -92,6 +92,128 @@ function run_test()
                 #mexpru.u(c.root).children)
     end
 
+    -- ---------------------------------------------------------------- undoing one from inside
+    --[[ Reported 2026-09-06: "after creating a bigop marker I can't delete it from inside it (that
+    and deleting the underlying base are the only ways to get rid of it)".
+
+    Backspace in a still-empty limit collapses the whole thing back to its bare operator - exactly
+    what it does for a supsub. It did not, because collapsible_supsub() tested `kind ~= "supsub"`
+    literally instead of going through is_supsub(), which covers bigop. So a big operator made by
+    mistake could only be undone by deleting the operator underneath it. ]]
+    do
+        for _, slot in ipairs({"sup", "sub"}) do
+            local c = formula_with_op(fs, "sum")
+            mformula.make_bigop(c, fs, slot)
+            check("setup: made a bigop with a " .. slot,
+                    mexpru.u(first(c)).kind == "bigop", mexpru.u(first(c)).kind)
+            check("...cursor is in the new empty slot", cursor_is_empty(c))
+
+            check("backspace there collapses it",
+                    mformula.collapse_empty_supsub(c, fs) == true)
+            check("...back to a bare operator", mexpru.u(first(c)).kind == nil,
+                    mexpru.u(first(c)).kind)
+            check("...which is still the sum",
+                    first(c).symb.code == char.find_by_desc(B .. "sum").ncod)
+            check("...and the row is one atom again", #mexpru.u(c.root).children == 1,
+                    #mexpru.u(c.root).children)
+        end
+
+        --[[ But only while the limit is still EMPTY - a bigop with something typed in it must not
+        vanish on a backspace, same rule a supsub already follows. ]]
+        local c = mformula.from_latex(fs, SZ, B .. "sum " .. B .. "limits_{i}x")
+        local node = first(c)
+        c.cursor_pos = vc.wref_mexpr(mexpru.u(node).sub)
+        check("a bigop with a typed limit does not collapse",
+                mformula.collapse_empty_supsub(c, fs) == false)
+    end
+
+    -- ---------------------------------------------------------------- inline ops take display form
+    --[[ Reported 2026-09-06: "the union is too small, intersection two". Alt+[ types "\cup", the
+    INLINE union - correctly small in "A \cup B". Attaching limits makes it a different operator,
+    "igcup", which TeX sets at display size; a union with limits is not a thing anyone writes.
+
+    So make_bigop promotes it, and Alt+[ needs no second key for the big form. ]]
+    do
+        for _, pair in ipairs({{"cup", "bigcup"}, {"cap", "bigcap"}}) do
+            local c = formula_with_op(fs, pair[1])
+            mformula.make_bigop(c, fs, "sub")
+            local base = mexpru.u(first(c)).base
+            local e = char.find_by_ncod(base.symb.code)
+            check(B .. pair[1] .. " becomes " .. B .. pair[2] .. " when it takes limits",
+                    e ~= nil and e.desc == B .. pair[2], e and e.desc)
+        end
+
+        -- ...and an operator that is ALREADY a display form is left alone
+        for _, name in ipairs({"sum", "int", "prod", "bigcup"}) do
+            local c = formula_with_op(fs, name)
+            mformula.make_bigop(c, fs, "sub")
+            local e = char.find_by_ncod(mexpru.u(first(c)).base.symb.code)
+            check(B .. name .. " is not swapped for anything", e ~= nil and e.desc == B .. name,
+                    e and e.desc)
+        end
+
+        --[[ The visible point of the promotion: the operator now stands taller than a capital,
+        instead of an inline glyph sitting under a full-height limit. ]]
+        local cap = vc.mexpr_get_bb(
+                mexpru.u(mformula.from_latex(fs, SZ, "A").root).children[1])
+        local c = formula_with_op(fs, "cup")
+        mformula.make_bigop(c, fs, "sub")
+        local op = vc.mexpr_get_bb(mexpru.u(first(c)).base)
+        check("...and it is display-sized",
+                (op.br.y - op.tl.y) > (cap.br.y - cap.tl.y) * 1.5,
+                op.br.y - op.tl.y)
+    end
+
+    -- ---------------------------------------------------------------- limits never overhang a neighbour
+    --[[ Reported 2026-09-06: a lower limit escaping its box and printing over the character before
+    it. mexpr_bigop CENTRES the limits on the operator, so a limit wider than the operator makes the
+    node's own box start at a NEGATIVE tl.x - it legitimately extends left of where it is anchored.
+    mexpr_merge_h then placed it at the pen and advanced by br.x alone, so that overhang landed on
+    top of the left neighbour. Measured "a \cup \limits_{i=0}": tl.x = -8.00, ink starting 8 units
+    inside the "a".
+
+    The C++ fix places each node's LEFT EDGE at the pen instead of its origin, which is identical
+    for every node whose box starts at its origin - i.e. everything except this case.
+
+    NOT union-specific, which is why the empty-limit cases are here too: a sum with a still-empty
+    limit measured tl.x = -3.22, an integral -5.22. The union was only the most visible, its
+    operator being the smallest. ]]
+    do
+        local function no_overlap(src, label)
+            local c = mformula.from_latex(fs, SZ, src)
+            mexpru.update_positions(c.root)
+            local children = mexpru.u(c.root).children
+            local first_n, second = children[1], children[2]
+            local fp, fb = mexpru.u(first_n).pos, vc.mexpr_get_bb(first_n)
+            local sp, sb = mexpru.u(second).pos, vc.mexpr_get_bb(second)
+            local a_end = fp.x + fb.br.x
+            local op_start = sp.x + sb.tl.x
+            check(string.format("%s: the bigop starts at or after the letter before it"
+                            .. " (%.2f vs %.2f)", label, op_start, a_end),
+                    op_start >= a_end - 0.01, op_start - a_end)
+        end
+
+        for _, d in ipairs({"cup", "bigcup", "sum", "int", "prod"}) do
+            no_overlap("a" .. B .. d .. " " .. B .. "limits_{i=0}^{n}b", B .. d)
+        end
+
+        --[[ And the same with a limit that is deliberately much wider than any operator - the case
+        the centring makes worst. ]]
+        no_overlap("a" .. B .. "sum " .. B .. "limits_{i=0,j=1,k=2}b", "a very wide lower limit")
+
+        --[[ The other half: a node that does NOT overhang must not have moved. If the fix shifted
+        everything the whole line would re-space, so this is the regression guard. ]]
+        do
+            local plain = mformula.from_latex(fs, SZ, "abc")
+            mexpru.update_positions(plain.root)
+            local ch = mexpru.u(plain.root).children
+            local prev_end = mexpru.u(ch[1]).pos.x + vc.mexpr_get_bb(ch[1]).br.x
+            local next_start = mexpru.u(ch[2]).pos.x
+            check("ordinary glyphs are still laid out edge to edge",
+                    math.abs(next_start - prev_end) < 0.01, next_start - prev_end)
+        end
+    end
+
     -- ---------------------------------------------------------------- it navigates as a supsub
     --[[ The design in one check: nothing in navigation knows what a bigop is. It answers Up and
     Down because is_supsub() covers it and it carries the same slot names. ]]

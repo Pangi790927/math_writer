@@ -173,13 +173,22 @@ bracket not already claimed by a nested pair passed on the way - nil if there is
 
 Used with idx naming an ORDINARY position and direction=-1 it finds the pair ENCLOSING it. A bracket
 atom's own match is never found this way (see peer_slot()); this is for the case with nothing to
-look up, an ordinary node having no .bracket of its own. Checks only is_open, never type:
-mformula_new.lua's single-slot pending discipline means every closed pair is already type-matched. ]]
+look up, an ordinary node having no .bracket of its own.
+
+Checks only is_open, never type. That used to be justified by mformula_new.lua's single-slot pending
+discipline, which no longer exists (2026-09-06 - a close now pairs with the innermost unclosed open
+and refuses on a type mismatch, so every closed pair is still type-matched, just for a different
+reason).
+
+Reads each slot through slot_atom(), like every other walk here: a ")" carrying an exponent is a
+supsub BASE ("(a)^2") and invisible to a walk reading children directly. This function was the last
+one still reading around it - fixed 2026-09-06; without it a resolved pair to the left went
+uncounted and the depth came out wrong. ]]
 function mexpru.scan_bracket(children, idx, direction)
     local depth = 0
     local i = idx + direction
     while children[i] do
-        local br = bracket_kind(children[i])
+        local br = bracket_kind(mexpru.slot_atom(children[i]))
         if br then
             -- An open met while walking right, or a close met while walking left, starts (or
             -- continues) a nested/earlier-unrelated pair that has to be skipped past whole before

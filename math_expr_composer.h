@@ -1011,9 +1011,22 @@ inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p
 
     float x = 0;
     for (auto &n : nodes) {
-        ret->subobjs.push_back({ .obj = n, .pos = ImVec2(x, 0) });
+        /* Place the node's LEFT EDGE at the pen, not its origin.
+
+        Almost every node's box starts at its own origin, and for those this is exactly what it
+        always was. A big operator is the exception: mexpr_bigop centres its limits on the operator,
+        so when a limit is WIDER than the operator the node's box starts at a NEGATIVE tl.x - it
+        legitimately extends left of where it is anchored. Advancing by br.x alone then drew it over
+        whatever sat to its left.
+
+        Measured 2026-09-06, reported as a lower limit escaping its box: "a \cup \limits_{i=0}"
+        gave the bigop tl.x = -8.00, anchored exactly where the preceding "a" ended, so its ink
+        began 8 units inside that letter. Not specific to the small union either - a sum with a
+        still-EMPTY limit measures tl.x = -3.22, an integral -5.22. */
+        float place = x - std::min(0.0f, n->tl.x);
+        ret->subobjs.push_back({ .obj = n, .pos = ImVec2(place, 0) });
         n->parent = ret.get();
-        x += n->br.x;
+        x = place + n->br.x;
     }
 
     std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);

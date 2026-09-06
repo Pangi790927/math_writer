@@ -93,6 +93,56 @@ function run_test()
         check(src .. " round-trips as a literal brace", latex_of(fs, src) == src, latex_of(fs, src))
     end
 
+    -- ---------------------------------------------------------------- an ESCAPED brace is a bracket
+    --[[ The other half of the brace ambiguity. A bare "{" is a group, handled above. An escaped
+    "\{" is a literal curly BRACKET, and it has to come back from a save as a real pair - peers
+    linked, growing to fit its content, cascade-deleting together.
+
+    It did not. to_latex always writes a curly bracket escaped (the character is special to LaTeX),
+    so the escape branch was the ONLY path a curly pair could arrive by, and that branch tagged
+    nothing at all - a saved pair reloaded as two unrelated glyphs. Round and square pairs were
+    unaffected because they arrive bare, which is why it went unnoticed. Reported 2026-09-06:
+    "the paranthesys {} loose their linked pair after a restart".
+
+    Both bracket paths now share one push_char(), with the curly table consulted ONLY on the escape
+    path - or every group delimiter in the document would try to pair. ]]
+    do
+        local function pair_of(src)
+            local c = mformula_latex.from_latex(fs, SZ, src)
+            local ch = mexpru.u(c.root).children
+            return mexpru.u(mexpru.slot_atom(ch[1])), mexpru.u(mexpru.slot_atom(ch[#ch])), c
+        end
+
+        local o, l = pair_of(B .. "{a" .. B .. "}")
+        check("an escaped brace pair is tagged as brackets",
+                o.bracket ~= nil and l.bracket ~= nil)
+        check("...open on the left, close on the right",
+                o.bracket and o.bracket.is_open == true
+                        and l.bracket and l.bracket.is_open == false)
+        check("...and peered to each other",
+                o.bracket and o.bracket.peer == l and l.bracket and l.bracket.peer == o)
+
+        -- nesting a different type inside, which is the case the parser always handled
+        local o2, l2, c2 = pair_of(B .. "{(a)" .. B .. "}")
+        check("a round pair nests inside a curly one",
+                o2.bracket ~= nil and l2.bracket ~= nil and o2.bracket.peer == l2)
+        check("...with all four atoms present", #mexpru.u(c2.root).children == 5,
+                #mexpru.u(c2.root).children)
+
+        --[[ And it GROWS, which is the visible half of being a real pair - a saved brace around a
+        fraction has to come back tall, not letter-height. ]]
+        local tall = mformula_latex.to_latex(mformula_latex.from_latex(fs, SZ,
+                B .. "{" .. B .. "frac{a}{b}" .. B .. "}"))
+        check("a curly pair round a fraction is written as a grown pair",
+                tall:find("left", 1, true) ~= nil, tall)
+
+        --[[ The guard: a BARE brace must still be a group, or every "x^{2}" in the document would
+        try to pair as a bracket. ]]
+        local grp = mformula_latex.from_latex(fs, SZ, "x^{2}")
+        check("a bare brace is still structural, not a bracket",
+                mexpru.u(mexpru.u(grp.root).children[1]).bracket == nil)
+    end
+
     -- ---------------------------------------------------------------- everything else is untouched
     --[[ Every OTHER use of braces is consumed by its own caller before the loop ever sees it - a
     sup/sub slot, a \frac argument, an environment body. This branch must only ever catch the ones

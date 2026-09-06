@@ -227,6 +227,135 @@ function run_test()
                 char.greek_alt.d == B .. "delta", char.greek_alt.d)
     end
 
+    -- ---------------------------------------------------------------- the logic layer
+    --[[ Added 2026-09-06, once it became clear the logic layer is not deferrable: a typing rule is
+    itself a formula (docs/phase2_design.md 6b), so quantifiers and connectives are needed to state
+    the very first one.
+
+    Nearly all of it already existed as glyphs and only needed keys. Implication and the
+    biconditional needed neither - "=>" and "<=>" were already bound as arrows, and in mathematics
+    those ARE implication and iff. ]]
+    do
+        check("Alt+Shift+A is for-all", char.greek_alt_shift.a == B .. "forall",
+                char.greek_alt_shift.a)
+        check("Alt+Shift+E is exists", char.greek_alt_shift.e == B .. "exists",
+                char.greek_alt_shift.e)
+        --[[ Those two slots were free because Greek capital Alpha and Epsilon are drawn identically
+        to Latin A and E, so nothing was ever placed there - unlike Sigma and Pi, which really were
+        displaced. Alt+A and Alt+E must still be the lowercase Greek. ]]
+        check("...and Alt+A is still alpha", char.greek_alt.a == B .. "alpha", char.greek_alt.a)
+        check("...and Alt+E is still epsilon", char.greek_alt.e == B .. "epsilon",
+                char.greek_alt.e)
+
+        local by_label = {}
+        for _, sym in ipairs(char.alt_symbols) do
+            by_label[sym.label] = sym
+        end
+        --[[ Shift lifts the bracket pair from SETS to LOGIC - union to or, intersection to and,
+        which is the exact correspondence, so the key keeps meaning the shape. ]]
+        check("Alt+Shift+[ is or", by_label["["] and by_label["["].shift == B .. "vee")
+        check("Alt+Shift+] is and", by_label["]"] and by_label["]"].shift == B .. "wedge")
+        check("...and unshifted is still cup / cap",
+                by_label["["].plain == B .. "cup" and by_label["]"].plain == B .. "cap")
+        -- "!" is what that key carries in a programming layout, so that is where "not" goes.
+        check("Alt+1 is negation", by_label["1"] and by_label["1"].plain == B .. "neg")
+
+        for _, d in ipairs({"forall", "exists", "vee", "wedge", "neg", "Rightarrow",
+                            "Leftrightarrow"}) do
+            check(B .. d .. " resolves", char.find_by_desc(B .. d) ~= nil)
+        end
+    end
+
+    -- ---------------------------------------------------------------- the number sets
+    --[[ Blackboard bold, from AMS msbm - the first non-Computer-Modern face in the app. msbm holds
+    the double-struck capitals at the ordinary ASCII letter positions, so unlike cmsy and cmex there
+    is no encoding translation: the fcod IS the letter's code. Verified by rendering.
+
+    They are types (docs/phase2_design.md 6b: types are sets), so these are not decoration - they
+    are the vocabulary the typing relation is written in. ]]
+    do
+        for _, pair in ipairs({{"N", 0x4E}, {"Z", 0x5A}, {"Q", 0x51}, {"R", 0x52},
+                               {"C", 0x43}, {"H", 0x48}, {"I", 0x49}, {"L", 0x4C}}) do
+            local e = char.find_by_desc(B .. pair[1])
+            check(B .. pair[1] .. " is in the catalog", e ~= nil)
+            if e then
+                check("..." .. B .. pair[1] .. " comes from the blackboard face",
+                        e.fnum == char.FONT_BBOLD, e.fnum)
+                check("..." .. B .. pair[1] .. " sits at the plain letter position",
+                        e.fcod == pair[2], e.fcod)
+            end
+        end
+
+        --[[ Typed as a DOUBLED capital - "double struck" is what blackboard bold means, so the
+        gesture is the notation. Chosen over Alt+Shift+letter, which had room for only five of the
+        eight (Q, L and H collide with the integral, Lambda and Theta). ]]
+        for _, letter in ipairs({"N", "Z", "Q", "R", "C", "H", "I", "L"}) do
+            local fired, out = digraphs(fs, "x" .. letter, letter)
+            check(letter .. letter .. " gives " .. B .. letter,
+                    fired and out == "x" .. B .. letter .. " ", out)
+
+            -- a single capital stays a plain letter, or ordinary algebra breaks
+            local f2, o2 = digraphs(fs, "x", letter)
+            check("a lone " .. letter .. " is not a shorthand", not f2)
+            check("...and is left as the letter", o2 == "x", o2)
+
+            -- and the chain stops: a third capital must not mangle the set
+            local f3, o3 = digraphs(fs, "x" .. letter, letter .. letter)
+            check("a third " .. letter .. " leaves the set alone", not f3)
+            check("..." .. B .. letter .. " intact", o3 == "x" .. B .. letter .. " ", o3)
+        end
+
+        --[[ They must sit ON THE LINE. msbm's baseline does not agree with Computer Modern's - its
+        capitals bottomed out 10px high at the default level, so a blackboard R floated a third of
+        its own height above the letters beside it. Reported 2026-09-06 as "constructs a character
+        in a strange location, not on the same line"; fixed by char.y_offset_by_font, a FACE-level
+        correction rather than eight identical per-glyph ones.
+
+        Compared against the plain capital of the same letter, so this stays honest if the font or
+        the size table ever moves. The tolerance is 1px of ink rounding - round letters overshoot
+        the baseline slightly in one face and not the other. ]]
+        for _, letter in ipairs({"N", "Z", "R", "C", "H", "I", "L", "Q"}) do
+            local plain = vc.mexpr_get_bb(
+                    mexpru.u(mformula_latex.from_latex(fs, SZ, letter).root).children[1]).br.y
+            local bbold = vc.mexpr_get_bb(
+                    mexpru.u(mformula_latex.from_latex(fs, SZ, B .. letter).root).children[1]).br.y
+            check(string.format("%s%s sits on the same baseline as %s (%.1f vs %.1f)",
+                            B, letter, letter, bbold, plain),
+                    math.abs(bbold - plain) <= 1.0, bbold - plain)
+        end
+
+        --[[ And they round-trip, which is what makes them usable in a saved type statement. The
+        comparison is one pass against the next, not against the input: these are control WORDS, so
+        the writer appends the separator space that a control word needs, and the input written
+        without it is simply a different spelling of the same thing. ]]
+        local one = mformula_latex.to_latex(mformula_latex.from_latex(fs, SZ, "x" .. B .. "in " .. B .. "R"))
+        local two = mformula_latex.to_latex(mformula_latex.from_latex(fs, SZ, one))
+        check("a type statement round-trips (" .. one .. ")", one == two, two)
+        check("...and names the blackboard set", one:find(B .. "R", 1, true) ~= nil, one)
+    end
+
+    -- ---------------------------------------------------------------- typing only, never rescan
+    --[[ Shorthands fire while TYPING and at no other moment. Nothing re-scans for them afterwards.
+
+    That is what makes the escape hatch work, and the escape is the only way to write the literal
+    characters at all: type them with anything between, then delete the separator (Left, Delete,
+    Right). The pair ends up adjacent and untouched.
+
+    It has to survive save/load too, or a carefully escaped ".." would collapse into a centred dot
+    the next time the document is opened - silently, and with no way to get it back. So this pins
+    that loading applies no shorthands, which is the property the trick actually depends on.
+
+    Do not "fix" this by re-checking adjacency after an edit. ]]
+    do
+        for _, src in ipairs({"x..y", "xNNy", "x||y", "x==y", "a!=b", "x<=y", "x->y"}) do
+            local c = mformula_latex.from_latex(fs, SZ, src)
+            check("loading '" .. src .. "' applies no shorthand",
+                    mformula_latex.to_latex(c) == src, mformula_latex.to_latex(c))
+            check("...and it stays separate atoms",
+                    #mexpru.u(c.root).children == #src, #mexpru.u(c.root).children)
+        end
+    end
+
     -- ---------------------------------------------------------------- the new catalog rows
     --[[ Every one of these used to parse to NOTHING - an unknown macro was skipped silently, so
     "a \leq b" loaded as "ab". These are the ones reported as worth having. ]]

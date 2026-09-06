@@ -32,12 +32,21 @@ local MAX_SIZE_INDEX = mexpru.MAX_SIZE_INDEX
 
 -- "(" / "[" and ")" / "]" - mirrors mformula_new.lua's own OPEN_BRACKETS/CLOSE_BRACKETS (
 -- own small copy here rather than a require() - this file's own top comment on staying self-
--- sufficient). Curly braces are deliberately NOT here - "{"/"}" are ALWAYS structural in this
--- parser (group delimiters for ^{...}/_{...}/\frac{...}{...} - parse_latex_children() itself stops
--- at a bare "}"), never a literal glyph, so a curly MATH bracket can't round-trip through this
--- LaTeX subset at all - a pre-existing, separate gap from the one this fixes.
+-- sufficient). Curly braces are NOT here, because a BARE "{" is always structural in this parser -
+-- a group delimiter for ^{...}/_{...}/\frac{...}{...}, and parse_latex_children() stops at a bare
+-- "}". A literal curly BRACKET is a different character: it only ever arrives escaped, as "\{", so
+-- it gets its own table below.
 local OPEN_BRACKETS = { ["("] = vc.MEXPR_BRACKET_ROUND, ["["] = vc.MEXPR_BRACKET_SQUARE }
 local CLOSE_BRACKETS = { [")"] = vc.MEXPR_BRACKET_ROUND, ["]"] = vc.MEXPR_BRACKET_SQUARE }
+
+--[[ Brackets that are only ever written ESCAPED. "{" and "}" are special to LaTeX, so to_latex
+always emits "\{" / "\}" for a curly bracket atom - which means the escape branch is the only
+path a curly pair can arrive by, and until 2026-09-06 that branch tagged nothing at all. A curly
+pair therefore came back from a save as two unrelated glyphs: no cascade delete, no synchronized
+resize, no pairing. Reported as "the paranthesys {} loose their linked pair after a restart"; round
+and square pairs were unaffected because they arrive bare. ]]
+local ESCAPED_OPEN_BRACKETS = { ["{"] = vc.MEXPR_BRACKET_CURLY }
+local ESCAPED_CLOSE_BRACKETS = { ["}"] = vc.MEXPR_BRACKET_CURLY }
 --[[ Delimiters with no unambiguous CHARACTER of their own, written as commands instead.
 
 The bar is the case: "|" stays an ordinary typeable literal (its shortcut is Ctrl+Shift+\ - see
@@ -524,6 +533,60 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
     -- typed across a "^{...}"/"_{...}"/"\\frac{...}{...}" boundary can't pair across it either.
     local bracket_stack = {}
 
+    --[[ Appends one ordinary character glyph, tagging it if it is a bracket.
+
+    Shared by BOTH ways a character can arrive: bare in the source, and escaped after a backslash.
+    That second path is why this is a function rather than inline code - "{" and "}" are special to
+    LaTeX, so to_latex always writes them as "\{" and "\}", which means a curly pair only ever
+    reaches the parser through the escape branch. That branch used to build a plain glyph with no
+    bracket tag at all, so a curly pair came back from a save as two unrelated characters: no
+    cascade delete, no synchronized resize, no pairing. Reported 2026-09-06 as "the paranthesys {}
+    loose their linked pair after a restart". Round and square pairs were unaffected, which is why
+    it went unnoticed - they arrive bare.
+
+    `ascii` is the character the tag should be read from, which for the escaped path is the one
+    AFTER the backslash. ]]
+    local function push_char(entry, ascii, from_escape)
+        --[[ A bare "{" is a group; an escaped "\{" is a literal curly bracket. Only the escape
+        path may consult the curly table, or every group delimiter in the document would try to
+        pair as a bracket. ]]
+        local open_type = OPEN_BRACKETS[ascii]
+                or (from_escape and ESCAPED_OPEN_BRACKETS[ascii]) or nil
+        local close_type = CLOSE_BRACKETS[ascii]
+                or (from_escape and ESCAPED_CLOSE_BRACKETS[ascii]) or nil
+        -- sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
+        local g = mexpru.mexpr_symbol(fontset,
+                {size = mexpru.physical_sz(sz), code = entry.ncod}, true)
+        mexpru.u(g).sz = sz
+        if open_type then
+            -- Always tagged, paired or not - a literal unmatched "(" in the source (a
+            -- malformed/incomplete formula) round-trips as a genuinely still-PENDING bracket,
+            -- same as open_bracket()'s own live convention.
+            mexpru.u(g).bracket = {is_open = true, type = open_type}
+            children[#children + 1] = g
+            table.insert(bracket_stack, {atom = g, idx = #children})
+        elseif close_type then
+            local top = bracket_stack[#bracket_stack]
+            if top and mexpru.u(top.atom).bracket.type == close_type then
+                table.remove(bracket_stack)
+                -- Nothing was added since the open went in (an empty "()" in the source, which
+                -- to_latex emits for a live-typed empty pair) - keep the span non-empty or
+                -- resolve_bracket_pairs() errors on it.
+                if #children == top.idx then
+                    children[#children + 1] = build_empty_atom(fontset, sz)
+                end
+                mexpru.u(g).bracket = {is_open = false, type = close_type,
+                        peer = mexpru.u(top.atom)}
+                mexpru.u(top.atom).bracket.peer = mexpru.u(g)
+            end
+            -- Mismatched or unmatched close - left PLAIN rather than guessing a pairing that is
+            -- not really there; the same leniency this parser has everywhere else.
+            children[#children + 1] = g
+        else
+            children[#children + 1] = g
+        end
+    end
+
     while pos <= #s do
         local c = s:sub(pos, pos)
         if c == "}" then
@@ -930,10 +993,8 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                         or (nc ~= "" and char.find_by_desc("\\" .. nc))
                         or (nc ~= "" and char.find_by_ascii(nc))
                 if entry then
-                    -- sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
-                    local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sz), code = entry.ncod}, true)
-                    mexpru.u(g).sz = sz
-                    children[#children + 1] = g
+                    -- from_escape = true: this is where a literal curly BRACKET arrives.
+                    push_char(entry, nc, true)
                 end
                 pos = pos + 1
             end
@@ -956,39 +1017,7 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
             local cp = c:byte()
             local entry = (cp and cp >= 32 and cp < 256) and char.find_by_ascii(c) or nil
             if entry then
-                -- sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
-                local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sz), code = entry.ncod}, true)
-                mexpru.u(g).sz = sz
-                if OPEN_BRACKETS[c] then
-                    -- Always tagged, paired or not - a literal unmatched "(" in the source (a
-                    -- malformed/incomplete formula) round-trips as a genuinely still-PENDING
-                    -- bracket, same as open_bracket()'s own live convention.
-                    mexpru.u(g).bracket = {is_open = true, type = OPEN_BRACKETS[c]}
-                    children[#children + 1] = g
-                    table.insert(bracket_stack, {atom = g, idx = #children})
-                elseif CLOSE_BRACKETS[c] then
-                    local top = bracket_stack[#bracket_stack]
-                    if top and mexpru.u(top.atom).bracket.type == CLOSE_BRACKETS[c] then
-                        table.remove(bracket_stack)
-                        -- Nothing was added since the open went in (an empty "()" in the source -
-                        -- to_latex()'s own node_to_latex() emits exactly this for a live-typed
-                        -- empty pair, its EMPTY_BOX filler rendering as "") - keep the span
-                        -- non-empty the same way, or resolve_bracket_pairs() (mexpru.lua) errors
-                        -- on it (mformula_new.lua's own handle_input() fix, same
-                        -- reasoning: mirrors try_close_bracket()'s own "closed immediately" filler).
-                        if #children == top.idx then
-                            children[#children + 1] = build_empty_atom(fontset, sz)
-                        end
-                        mexpru.u(g).bracket = {is_open = false, type = CLOSE_BRACKETS[c], peer = mexpru.u(top.atom)}
-                        mexpru.u(top.atom).bracket.peer = mexpru.u(g)
-                    end
-                    -- Mismatched or unmatched close (no open on the stack, or a type mismatch like
-                    -- "(a]") - left as a PLAIN, untagged glyph rather than guessing a pairing that
-                    -- isn't really there; same leniency this parser already has everywhere else.
-                    children[#children + 1] = g
-                else
-                    children[#children + 1] = g
-                end
+                push_char(entry, c)
             end
             pos = pos + 1
         end
