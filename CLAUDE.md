@@ -33,6 +33,32 @@ this file is about how to work in it. These rules are specific to this repo and 
   intent and what the code actually does - that's ordinary review). Never silently pick a side,
   paper over it, or guess which one still holds - surface it and ask. Also in the global
   `~/.claude/CLAUDE.md` ("Working style" section) as the general, all-projects form of this rule.
+- **Law 3 — in a Pangi repo, check these laws are acknowledged, and offer to spread them.** The
+  first time in a session you're clearly working in a git repo authored by Pangi (commit history
+  has an author name/email containing "Pangi", case-insensitive, or `git config
+  user.name`/`user.email` does), check whether that repo's own CLAUDE.md acknowledges the three
+  laws in some form — a reference, a summary or a link back to `~/.claude/CLAUDE.md` is enough. If
+  it doesn't: **tell Andrei, don't silently add it.** CLAUDE.md is normally yours to write without
+  asking; this specific case is explicitly "remind me", not "just do it" — his word. Then offer to
+  add a reference if he wants one started. Once per session is enough — don't re-check every
+  message, don't nag a repo that already acknowledges them. This file is that acknowledgement for
+  `math_writer`.
+  User's own words, verbatim, 2026-09-04: "if a git is by me (see name Pangi) then you will remind
+  me if those three laws are not set, or acknowledged in some way." — and, on why the laws exist at
+  all, also verbatim: "this will be the laws for claude, ok? and they would spread through my pc and
+  grow, this is the 3rd rule of claude."
+- **Amendment to Law 3 — verbatim citation is verbatim; commentary is not.** User's own words,
+  verbatim, 2026-09-06: "THE ORIGINAL STATEMENT MUST MATCH EXACTLY WHEN COPIED - THIS IS ALSO AN
+  RIGINAL CITATION - BUT COMMENTS MAY VARY, INTERPRETATIONS..."
+  What this binds, and what it frees: when a law spreads into another repo's CLAUDE.md, the quoted
+  original statements travel **character for character** — no tidying, no fixing typos, no
+  modernising the wording, no "cleaner" paraphrase standing in for the quote. That includes the
+  amendment above, which is itself an original citation and is reproduced here with its own typo
+  ("AN RIGINAL") intact, deliberately. What surrounds a citation — the summary in your own words,
+  the worked example, the reasoning about scope, the pointer to the file where it bit — is
+  commentary, and commentary may be rewritten, expanded, shortened or re-argued per repo to fit
+  what that repo actually does. The line is simply: inside the quote marks, nothing moves; outside
+  them, everything may.
 
 ## Build
 
