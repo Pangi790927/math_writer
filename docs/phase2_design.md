@@ -70,6 +70,7 @@ export as `calc` blocks, statements import as roots (section 14).
 | 15 | Defects found in `ast.lua` | four, recorded not fixed |
 | 16 | What part two revises in sections 1-8 | the one table to read if you only read one thing |
 | 17 | Open questions carried by part two | seven, with the biggest called out |
+| 17b | The acceptance corpus | seven identities from 2025 that all of this has to walk a user through |
 | 18 | Inter-workings | how the pieces connect, and in what order they must be built |
 | 19 | Conclusion | what is decided, what blocks, what to build first |
 
@@ -1399,6 +1400,13 @@ core, user-written rules possibly later) rather than reversal, but that reading 
 2. **Is alpha-equivalence automatic or opt-in?** (9)
 3. **Are cells ever pruned?** The only thing that would actually reclaim space, at the cost of the
    proof of anything downstream (12).
+   *Partly answered for the newest cell.* Undo needs no machinery of its own: it is dropping the
+   last cell. This was written down as a design target in 2025 - `old/experiment_copac/main.lua`,
+   verbatim: *"obs: There needs not be any complicated ctrl+z because the steps are allways above,
+   so a ctrl+z is practically: remove the current eq-state and goto prev one"* - and under the
+   immutable-cell DAG of section 1 it is no longer a target but a RESULT: a cell with no children
+   has nothing depending on it, so dropping it invalidates nothing. What stays open is pruning a
+   cell that DOES have descendants.
 4. **Typing rules: built in, or user-written statements?** The section 6b conflict above (16).
 5. **Are propositions a separate sort from terms?** Section 6b's "types are sets" has a Prop-shaped
    hole (14).
@@ -1407,6 +1415,37 @@ core, user-written rules possibly later) rather than reversal, but that reading 
    strictly harder job — deciding equality between two arbitrary expressions rather than finding
    like terms within one. Not currently in scope.
 7. **`EXP` is partial** (section 6b, unchanged): emit a constraint, widen to `C`, or refuse.
+
+---
+
+## 17b. The acceptance corpus — what "we will see by example" means
+
+Recovered 2026-09-06 from `old/main.cpp`, where it sat under the heading `/* All of those must
+work: */`. It predates every design decision in this document by two rewrites, and it is the
+concrete target the whole of part two is abstract about:
+
+```
+(a+b)^2 = a^2+2ab+b^2
+(a-b)^2 = a^2-2ab+b^2
+a^2-b^2 = (a+b)(a-b)
+2(a^2+b^2) = (a+b)^2 + (a-b)^2
+(a+b)^3 = a^3+3a^2b+3ab^2+b^3
+(a-b)^3 = a^3-3a^2b+3ab^2-b^3
+```
+
+**Use these as the worked examples.** Every rule in sections 9-13 was written with no formula to
+argue back; these seven are the argument. Notably they need nothing exotic — commutativity,
+coefficient collection and distribution, which is exactly the automatic rule set of section 9 and
+nothing beyond it. If the design cannot walk a user through `(a+b)^2` step by step, it is wrong
+somewhere, and that is a cheaper way to find out than building all of it first.
+
+They are also the natural first tests. Per `CLAUDE.md`, a test records an ASSUMPTION rather than an
+output - so what each of these pins is not "the answer is `a^2+2ab+b^2`" but "this manipulation is
+expressible as a sequence of checked steps, with these rules active".
+
+`old/main.cpp` also carries a pointer to a wider corpus, verbatim:
+
+> /* TODO: sa mearga toate manipularile de aici: https://www.youtube.com/@tesan3377/playlists */
 
 ---
 

@@ -1,3 +1,0 @@
-main_script:
-    m_type: vc::lua_script_t
-    m_source_path: ./main.lua
