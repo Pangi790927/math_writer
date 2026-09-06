@@ -100,6 +100,35 @@ struct fontset_t : public vc::object_t {
     struct font_loc_t {
         uint32_t font;
         uint32_t fcode;
+
+        /*! Vertical correction for THIS glyph, as a fraction of the font size (so it scales with
+         * the size table and with zoom on its own - a pixel count would only be right at one size).
+         * Positive moves the glyph DOWN, y growing downward as everywhere else here.
+         *
+         * It exists because the fonts are TTF conversions that lost TeX's height/depth split: every
+         * cmex10 glyph reports the same flattened ascent, with no depth at all, so the big
+         * operators come out sitting entirely ABOVE the baseline instead of centred on the math
+         * axis the way TeX sets them. Measured 2026-09-06: \sum's ink ended a whole 8.5 units above
+         * the baseline it should have been straddling.
+         *
+         * A per-glyph correction to the FONT's own metrics, so it belongs with the font location
+         * rather than in the layout above it - same argument as char.lua's size_delta_by_desc,
+         * which corrects the other half of the same lossy conversion. Both are set from char.lua,
+         * which is where the catalog of what each glyph IS already lives. */
+        float y_off_em = 0.f;
+
+        /*! Advance width for THIS glyph, as a fraction of the font size, REPLACING the font's own.
+         * Negative means "use the font's", which is every glyph but a handful.
+         *
+         * An override rather than an offset (unlike y_off_em) because what it expresses is not a
+         * nudge but a fact the font lost: TeX gives \not a width of exactly ZERO so the slash is
+         * overprinted on whatever follows it, which is how it builds \ne, \notin and the rest. This
+         * TTF gave that glyph an ordinary full-width advance, so the slash landed BESIDE the equals
+         * sign instead of through it. Setting it to 0 restores the composition TeX does.
+         *
+         * Measured 2026-09-06: cmsy 0x36 came back with adv 27.97 at the default level, identical
+         * to the "=" it is meant to overprint. */
+        float adv_em = -1.f;
     };
 
     /*! Code of letter a inside the subfont, or more precisely, some letter that stays above the
@@ -162,8 +191,20 @@ struct fontset_t : public vc::object_t {
         return vc::VC_ERROR_OK;
     }
 
-    void register_code(uint32_t code, uint32_t font, uint32_t fcode) {
-        code_to_font_loc[code] = font_loc_t{ .font = font, .fcode = fcode };
+    /*! Both corrections default to "none", so a glyph that needs neither registers as it always did. */
+    void register_code(uint32_t code, uint32_t font, uint32_t fcode, float y_off_em = 0.f,
+            float adv_em = -1.f)
+    {
+        code_to_font_loc[code] = font_loc_t{ .font = font, .fcode = fcode,
+                .y_off_em = y_off_em, .adv_em = adv_em };
+    }
+
+    /*! The one place y_off_em turns into pixels. Both char_get_sz() (metrics) and char_draw() (ink)
+     * have to apply it, and they must apply the SAME value - char_draw doesn't position through the
+     * metrics, it hands `pos` straight to RenderChar, so a correction applied to only one of them
+     * would slide the glyph out of its own bounding box. */
+    float char_y_off(char_t c) {
+        return code_to_font_loc[c.code].y_off_em * font_sizes[c.size-1];
     }
 
     char_sz_t char_get_sz(char_t c) {
@@ -175,10 +216,20 @@ struct fontset_t : public vc::object_t {
         check_char(c);
         auto glyph = fonts[c.size-1][code_to_font_loc[c.code].font-1]
                 ->GetFontBaked(font_sizes[c.size-1])->FindGlyphNoFallback(code_to_font_loc[c.code].fcode);
+        /* Applied here rather than at the call sites because this is the single funnel every glyph
+        metric in the app goes through (see the PROF_SCOPE note above) - so bb, layout, cursor
+        height and mexpr_bigop's limit placement all see the corrected position without any of them
+        knowing the correction exists. char_draw() applies the identical shift to the ink. */
+        float dy = char_y_off(c);
+        /* The advance is REPLACED when an override is set, not adjusted - see font_loc_t::adv_em.
+        The ink (bl/tr) is deliberately left alone: a zero-width \not still has to DRAW its slash,
+        it just must not push the next glyph along. */
+        const auto &loc = code_to_font_loc[c.code];
+        float adv = (loc.adv_em >= 0.f) ? loc.adv_em * font_sizes[c.size-1] : glyph->AdvanceX;
         return {
-            .adv = glyph->AdvanceX,
-            .bl = ImVec2(glyph->X0, glyph->Y1),
-            .tr = ImVec2(glyph->X1, glyph->Y0),
+            .adv = adv,
+            .bl = ImVec2(glyph->X0, glyph->Y1 + dy),
+            .tr = ImVec2(glyph->X1, glyph->Y0 + dy),
         };
     }
 
@@ -216,7 +267,11 @@ struct fontset_t : public vc::object_t {
             draw_list->AddLine(ImVec2(tr.x, tr.y), ImVec2(bl.x, tr.y), bb_color, 1);
             draw_list->AddLine(ImVec2(bl.x, tr.y), ImVec2(bl.x, bl.y), bb_color, 1);
         }
-        font->RenderChar(draw_list, font_sizes[c.size-1], pos, color, code_to_font_loc[c.code].fcode);
+        /* The same shift char_get_sz() already baked into bl/tr above - RenderChar takes `pos`
+        directly and never consults the metrics, so the ink has to be moved on its own or it would
+        part company with the box that was measured for it. */
+        font->RenderChar(draw_list, font_sizes[c.size-1], ImVec2(pos.x, pos.y + char_y_off(c)),
+                color, code_to_font_loc[c.code].fcode);
         ImGui::PopFont();
     }
 
@@ -236,7 +291,12 @@ inline int register_meta(vc::virt_state_t *vs) {
 
     VC_REGISTER_MEMBER_OBJECT(vs, fontset_t, m_a_code);
 
-    VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, register_code, uint32_t, uint32_t, uint32_t);
+    /* 5 params, not 3: the trailing y_off_em/adv_em are defaulted in C++ but the binding takes the
+    signature it is GIVEN, so a short registration would silently drop the arguments Lua passes
+    (which is exactly what happened first time round - char.lua passed the offset, the glyphs never
+    moved, and nothing errored). char.lua always passes all five. */
+    VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, register_code,
+            uint32_t, uint32_t, uint32_t, float, float);
     VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, char_draw, char_t, ImVec2, uint32_t, bool, uint32_t);
     VC_REGISTER_MEMBER_FUNCTION(vs, fontset_t, char_get_sz, char_t);
 

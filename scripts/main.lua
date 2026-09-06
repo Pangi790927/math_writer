@@ -222,8 +222,13 @@ local function demo_draw()
     local a_b_c_d = vc.mexpr_binexpr(fontset, a_b_c, char.plus(sz), subp)
     -- TODO: fix fractions
     -- local frac = vc.mexpr_frac(fontset, a_b_c_d, a_b_c, char.hline_basic(sz))
-    local int = vc.mexpr_bigop(fontset, a_b_c_d, a, b, char.integral(math.max(sz-5, 1)))
-    local sum = vc.mexpr_bigop(fontset, a_b_c_d, a, b, char.bigsum(math.max(sz-5, 1)))
+    -- The operand is no longer part of the node - it follows the operator in a row.
+    local int_c = char.integral(math.max(sz-5, 1))
+    local sum_c = char.bigsum(math.max(sz-5, 1))
+    local int = vc.mexpr_merge_h(fontset, {
+            vc.mexpr_bigop(fontset, vc.mexpr_symbol(fontset, int_c, false), a, b, int_c), a_b_c_d})
+    local sum = vc.mexpr_merge_h(fontset, {
+            vc.mexpr_bigop(fontset, vc.mexpr_symbol(fontset, sum_c, false), a, b, sum_c), a_b_c_d})
     local brack1 = vc.mexpr_bracket(fontset, int, char.round_bracket(sz))
     local brack2 = vc.mexpr_bracket(fontset, sum, char.round_bracket(sz))
     local sum_brack = vc.mexpr_binexpr(fontset, brack1, char.plus(sz), brack2)
@@ -241,8 +246,11 @@ local function demo_draw()
     local _b = vc.mexpr_symbol(fontset, {size=sz+1, code=62}, true)
     local g = vc.mexpr_symbol(fontset, {size=sz, code=67}, true)
     -- local intsym = vc.mexpr_symbol(fontset, char.integral(sz), false)
-    local sum = vc.mexpr_bigop(fontset, a, b, g, char.bigsum(sz-5))
-    local int = vc.mexpr_bigop(fontset, a, b, g, char.integral(sz-5))
+    local sum_c2, int_c2 = char.bigsum(sz-5), char.integral(sz-5)
+    local sum = vc.mexpr_merge_h(fontset, {
+            vc.mexpr_bigop(fontset, vc.mexpr_symbol(fontset, sum_c2, false), b, g, sum_c2), a})
+    local int = vc.mexpr_merge_h(fontset, {
+            vc.mexpr_bigop(fontset, vc.mexpr_symbol(fontset, int_c2, false), b, g, int_c2), a})
     local exp = vc.mexpr_supsub(fontset, a, _a, _b)
     local exp2 = vc.mexpr_supsub(fontset, a, _b, nil)
     local unar_op = vc.mexpr_unarexpr(fontset, char.minus(sz), exp)

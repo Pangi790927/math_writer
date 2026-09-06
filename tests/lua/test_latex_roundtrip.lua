@@ -86,16 +86,31 @@ function run_test()
                 latex == "a\\frac{1}{2}b")
     end
 
-    -- Case 4b: a literal space is silently dropped, not built as a glyph - it would have zero
-    -- width (math_expr_composer.h's mexpr_symbol sizes every glyph from its own ink bounding box,
-    -- and space has none), collapsing invisibly into whatever follows it. Tried making it a real
-    -- glyph 2026-09-04, reverted - not worth a math_expr_composer.h change right now.
+    --[[ Case 4b: a literal space in the source is KEPT, as a real glyph.
+
+    This used to assert the opposite. The original reason was technical - mexpr_symbol sized every
+    glyph from its ink box and a space has none, so a space atom came out zero-width - and that
+    stopped being true once mexpr_symbol gained its advance fallback for inkless glyphs.
+
+    What settled it was not the mechanics but the intent, 2026-09-06: "especialy spaces, since I
+    like them, I know latex kinda doesn't care about them, but my app will, even if loosing them
+    when exporting". LaTeX treats source whitespace as a token separator; this app is an editor and
+    keeps what was typed.
+
+    The one space that really IS a separator - the single one to_latex writes after every macro
+    name - is consumed by the macro branch before this path is ever reached, so our own output
+    still round-trips exactly. ]]
     do
         local c = mformula_latex.from_latex(fs, SZ, "a b")
-        check("case4b: space is dropped, only the two real glyphs survive",
-                mexpru.u(c.root).children and #mexpru.u(c.root).children == 2)
+        check("case4b: the space is kept as its own atom",
+                mexpru.u(c.root).children and #mexpru.u(c.root).children == 3,
+                mexpru.u(c.root).children and #mexpru.u(c.root).children)
         local latex = mformula_latex.to_latex(c)
-        check("case4b: round-trips without the space ('" .. latex .. "')", latex == "ab")
+        check("case4b: and writes back as a control space ('" .. latex .. "')",
+                latex == "a\\ b", latex)
+        -- ...and our own output re-reads identically, which is what keeps saves stable.
+        local again = mformula_latex.to_latex(mformula_latex.from_latex(fs, SZ, latex))
+        check("case4b: stable on a second read ('" .. again .. "')", again == latex, again)
     end
 
     -- Case 5: empty string -> single empty atom, matches mformula_new.new()'s own shape.

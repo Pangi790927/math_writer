@@ -258,9 +258,12 @@ function run_test()
         mexpru.u(g).sz = SZ
         c.root = mexpru.propagate_rebuild(fs, c.cursor_pos:get_obj(), g)
 
+        --[[ Real amsmath, not the old invented "\\stack": one row per slot separated by
+        "\\\\", so a saved formula pastes into a document and renders. The BARE matrix - a
+        vert carries no delimiters of its own here, the brackets around one are separate atoms. ]]
         local latex = mformula_new.to_latex(c)
-        check("a two-slot stack serialises as \\stack with one group each",
-                latex == "\\stack{}{x}", latex)
+        check("a two-slot stack serialises as a matrix environment",
+                latex == "\\begin{matrix}\\\\x\\end{matrix}", latex)
 
         local back = mformula_new.from_latex(fs, SZ, latex)
         check("...and parses back to the same thing", mformula_new.to_latex(back) == latex,
@@ -268,6 +271,17 @@ function run_test()
         local reslots = slots_of(back)
         check("the reloaded stack really is a vert with two slots",
                 reslots ~= nil and #reslots == 2, reslots and #reslots)
+
+        --[[ The superseded spelling still LOADS, and upgrades on the way out. Every save
+        written before this change contains it and reading it costs nothing - only the
+        writer moved. ]]
+        local legacy = mformula_new.from_latex(fs, SZ, "\\stack{0}{1}{2}")
+        local lslots = slots_of(legacy)
+        check("a legacy \\stack still parses into a vert",
+                lslots ~= nil and #lslots == 3, lslots and #lslots)
+        check("...and is rewritten as a matrix on save",
+                mformula_new.to_latex(legacy) == "\\begin{matrix}0\\\\1\\\\2\\end{matrix}",
+                mformula_new.to_latex(legacy))
     end
 
     print("checks: " .. checks_run .. ", failed: " .. checks_failed)

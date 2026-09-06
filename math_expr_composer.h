@@ -20,6 +20,10 @@ enum mexpr_bracket_e : int {
     MEXPR_BRACKET_ROUND,
     MEXPR_BRACKET_SQUARE,
     MEXPR_BRACKET_CURLY,
+    /*! "|" - absolute value / norm bars. Both delimiters of a pair are the same shape, so unlike
+    the three above it has no mirrored partner: mexpr_bracket_side() draws it identically whether
+    is_left is true or false. */
+    MEXPR_BRACKET_BAR,
 };
 
 enum mexpr_e : int {
@@ -27,6 +31,28 @@ enum mexpr_e : int {
     MEXPR_TYPE_LINE_STRIP,
     MEXPR_TYPE_EMPTY_BOX,
     MEXPR_TYPE_SYMBOL,
+};
+
+enum mexpr_accent_e : int {
+    MEXPR_ACCENT_HAT,
+    MEXPR_ACCENT_TILDE,
+    MEXPR_ACCENT_RULE,
+    /*! A vector arrow. Computer Modern has a \vec accent glyph (cmmi 0x7E) but only at one size and
+    only pointing right, so anything wider than it - and every leftward one - is drawn. */
+    MEXPR_ACCENT_ARROW_R,
+    MEXPR_ACCENT_ARROW_L,
+};
+
+/*! One decoration's recipe, for mexpr_accent(). `tiers` is narrowest-first, exactly as
+mexpr_bracket_t::left[]/right[] below hold their four sizes. RULE has no tiers - a bar is always
+drawn, at exactly the width asked for. */
+struct mexpr_accent_t {
+    mexpr_accent_e kind = MEXPR_ACCENT_HAT;
+    char_draw_composer::char_t tiers[4];
+    int tier_count = 0;
+    /* Only its HEIGHT is used, as the pen width - the same "passed purely for its metrics" idiom
+    as mexpr_frac's own divline. */
+    char_draw_composer::char_t stroke;
 };
 
 struct mexpr_bracket_t {
@@ -59,11 +85,17 @@ namespace virt_composer {
 extern inline std::unordered_map<std::string, math_expr_composer::mexpr_bracket_e>
         mexpr_bracket_from_str;
 
+extern inline std::unordered_map<std::string, math_expr_composer::mexpr_accent_e>
+        mexpr_accent_from_str;
+
 extern inline std::unordered_map<std::string, math_expr_composer::mexpr_e>
         mexpr_e_from_str;
 
 template <> inline math_expr_composer::mexpr_bracket_e
 get_enum_val<math_expr_composer::mexpr_bracket_e>(fkyaml::node &n);
+
+template <> inline math_expr_composer::mexpr_accent_e
+get_enum_val<math_expr_composer::mexpr_accent_e>(fkyaml::node &n);
 
 template <> inline math_expr_composer::mexpr_e
 get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n);
@@ -71,6 +103,11 @@ get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n);
 template <ssize_t index>
 struct luaw_param_t<math_expr_composer::mexpr_bracket_t, index> {
     math_expr_composer::mexpr_bracket_t luaw_single_param(lua_State *L);
+};
+
+template <ssize_t index>
+struct luaw_param_t<math_expr_composer::mexpr_accent_t, index> {
+    math_expr_composer::mexpr_accent_t luaw_single_param(lua_State *L);
 };
 
 template <>
@@ -388,8 +425,18 @@ inline float mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, b
         float edge_x);
 inline mexpr_p mexpr_empty(vc::ref_t<charc::fontset_t> fs, float x, float y, float above_bl);
 inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_char);
-inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs, mexpr_p right, mexpr_p above,
-        mexpr_p bellow, char_t bigop);
+/*! A big operator with its limits: `op` with `above` over it and `bellow` under it.
+
+`op` is a NODE, not a char, so an operator can be anything that can be built - a sum sign, an
+integral, or the word "lim". `metrics` is passed purely for its size, the same idiom mexpr_frac's
+divline and mexpr_dress's own metrics use: only .size is read from it, to scale the gap between the
+operator and its limits. The code is never looked at.
+
+There is deliberately no operand parameter. What the operator applies to follows it as ordinary
+siblings in the row, which is both how TeX models it and what makes this node exactly a supsub with
+different drawing - three slots, so every walk that already knows a supsub needs nothing new. */
+inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs, mexpr_p op, mexpr_p above,
+        mexpr_p bellow, char_t metrics);
 inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs, mexpr_p above, mexpr_p bellow,
         char_t divline);
 inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs, mexpr_p base, mexpr_p sup, mexpr_p sub);
@@ -398,6 +445,10 @@ mexpr_bracket_side() near their implementation) but never attaching `expr` itsel
 returned tree - `expr` is used purely for sizing/centering, the caller places it separately. */
 inline mexpr_p mexpr_bracket_left(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket);
 inline mexpr_p mexpr_bracket_right(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket);
+inline mexpr_p mexpr_accent(vc::ref_t<charc::fontset_t> fs, mexpr_accent_t acc, float width);
+/*! Dresses `target` with `above` and/or `bellow` - a hat, a bar, dots, a boot underneath. */
+inline mexpr_p mexpr_dress(vc::ref_t<charc::fontset_t> fs, mexpr_p target, mexpr_p above,
+        mexpr_p bellow, char_draw_composer::char_t metrics);
 inline mexpr_p mexpr_unarexpr(vc::ref_t<charc::fontset_t> fs, char_t op, mexpr_p b);
 inline mexpr_p mexpr_binexpr(vc::ref_t<charc::fontset_t> fs, mexpr_p a, char_t op, mexpr_p b);
 inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p> nodes);
@@ -497,6 +548,12 @@ inline int register_meta(vc::virt_state_t *vs) {
         { "mexpr_binexpr", vc::luaw_function_wrapper<mexpr_binexpr,
                 vc::ref_t<charc::fontset_t>, mexpr_p, char_t, mexpr_p>
         },
+        { "mexpr_accent", vc::luaw_function_wrapper<mexpr_accent,
+                vc::ref_t<charc::fontset_t>, mexpr_accent_t, float>
+        },
+        { "mexpr_dress", vc::luaw_function_wrapper<mexpr_dress,
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, mexpr_p, charc::char_t>
+        },
         { "mexpr_merge_h", vc::luaw_function_wrapper<mexpr_merge_h,
                 vc::ref_t<charc::fontset_t>, std::vector<mexpr_p>>
         },
@@ -510,6 +567,7 @@ inline int register_meta(vc::virt_state_t *vs) {
     };
 
     vc::add_lua_flag_mapping(vs, vc::mexpr_bracket_from_str);
+    vc::add_lua_flag_mapping(vs, vc::mexpr_accent_from_str);
     vc::add_lua_flag_mapping(vs, vc::mexpr_e_from_str);
 
     ASSERT_FN(add_lua_tab_funcs(vs, mexpr_tab_funcs));
@@ -714,6 +772,22 @@ inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_
     ret->tl = tl + ret->symb_off;
     ret->br = br + ret->symb_off;
 
+    /* An OVERPRINTING glyph: it HAS ink, yet the font declares zero advance for it (char.lua's
+    adv_by_desc, restoring what this TTF lost). TeX builds every negated relation this way - draw
+    \not, then print the next character on top of it, which is literally what \ne, \notin and
+    \mapsto are.
+
+    Collapsing the BOX is what makes that happen, not the zero advance on its own. Every extent in
+    this file is an ink box by design (see the no_ink note above), so mexpr_merge_h steps by br.x
+    and never consults the advance for a glyph that has ink - the advance override alone changed
+    nothing at all, and the slash still landed beside the equals sign. Found by rendering it,
+    2026-09-06.
+
+    The vertical extent is deliberately kept: the slash is taller than the "=" it crosses, and the
+    row still has to make room for it. */
+    if (!no_ink && fs->char_get_sz(sym).adv <= 0.0f)
+        ret->br.x = ret->tl.x;
+
     /* An inkless glyph's box has to be empty ON THE BASELINE - not a zero-height box left wherever
     the 'a'-centring symb_off above happens to put it, which at size 12 is y = -21.5, a full 12
     units ABOVE the top of the tallest ordinary glyph. Parked up there it unions into its row and
@@ -755,21 +829,20 @@ inline ImVec2 calc_sz(ImVec2 tl, ImVec2 br) { return ImVec2(br.x - tl.x, br.y - 
 inline ImVec2 calc_sz(mexpr_p m)            { return calc_sz(m->tl, m->br); }
 
 inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs,
-        mexpr_p right, mexpr_p above, mexpr_p bellow, char_t bigop)
+        mexpr_p op, mexpr_p above, mexpr_p bellow, char_t metrics)
 {
-    /* OBS: 1. a random distance is used to delimit above and bellow
-            2. above and bellow don't stay nicely on integral big op
-            3. the integral operator is to far from `right`, the operand */
-    if (!right)
-        throw vc::except_t("can't use mexpr_bigop without right");
+    /* OBS: above and bellow don't sit nicely on the integral sign yet - its glyph is designed to be
+       centred externally, unlike the sum. */
+    if (!op)
+        throw vc::except_t("can't use mexpr_bigop without an operator");
     if (!above)
         above = mexpr_t::create(MEXPR_TYPE_EMPTY_BOX);
     if (!bellow)
         bellow = mexpr_t::create(MEXPR_TYPE_EMPTY_BOX);
 
-    float dst = MEXPR_DISTANCER_BIGO * get_font_mul(fs, bigop);
+    /* Only metrics.size matters here - get_font_mul measures 'a' at that size. See the declaration. */
+    float dst = MEXPR_DISTANCER_BIGO * get_font_mul(fs, metrics);
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
-    auto op = mexpr_symbol(fs, bigop, false);
 
     auto sz_above = calc_sz(above);
     auto sz_bellow = calc_sz(bellow);
@@ -779,7 +852,6 @@ inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs,
         { .obj = op,     .pos = ImVec2(0, 0) },
         { .obj = above,  .pos = ImVec2( -sz_above.x/2. + sz_op.x/2., op->tl.y - above->br.y - dst) },
         { .obj = bellow, .pos = ImVec2(-sz_bellow.x/2. + sz_op.x/2., op->br.y - bellow->tl.y + dst) },
-        { .obj = right,  .pos = ImVec2(op->br.x, 0) },
     };
     for (auto &anch : ret->subobjs)
         anch.obj->parent = ret.get();
@@ -1049,6 +1121,27 @@ are called independently, from Lua, at different times even). Returned in its ow
 (baseline y=0, NOT yet shifted to expr's own vertical middle - mexpr_bracket_left()/_right() do that
 shift, each in their own single-anchor wrapper, since a raw glyph/LINE_STRIP composite has no anchor
 of its own to carry that shift). */
+/*! A LINE_STRIP's own bounding box, from its points. Hoisted out of mexpr_bracket_side() when
+mexpr_accent() became a second caller - a drawn shape has to publish a real bb, or layout sees a
+glyph-shaped box around something that is not a glyph. */
+inline ImVec2 mexpr_strip_tl(const std::vector<ImVec2>& points) {
+    ImVec2 tl = points[0];
+    for (auto &p : points) {
+        tl.x = std::min(p.x, tl.x);
+        tl.y = std::min(p.y, tl.y);
+    }
+    return tl;
+}
+
+inline ImVec2 mexpr_strip_br(const std::vector<ImVec2>& points) {
+    ImVec2 br = points[0];
+    for (auto &p : points) {
+        br.x = std::max(p.x, br.x);
+        br.y = std::max(p.y, br.y);
+    }
+    return br;
+}
+
 inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket,
         bool is_left) {
     PROF_SCOPE("cpp.mexpr_bracket_side");
@@ -1059,22 +1152,6 @@ inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, 
     float sz_threshold = 1.1;
     auto expr_sz = calc_sz(expr);
 
-    auto calc_tl = [](const std::vector<ImVec2>& points) {
-        ImVec2 tl = points[0];
-        for (auto &p : points) {
-            tl.x = std::min(p.x, tl.x);
-            tl.y = std::min(p.y, tl.y);
-        }
-        return tl;
-    };
-    auto calc_br = [](const std::vector<ImVec2>& points) {
-        ImVec2 br = points[0];
-        for (auto &p : points) {
-            br.x = std::max(p.x, br.x);
-            br.y = std::max(p.y, br.y);
-        }
-        return br;
-    };
     auto offset_all = [](std::vector<ImVec2>& points, ImVec2 off) {
         for (auto &p : points)
             p += off;
@@ -1132,8 +1209,8 @@ inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, 
                 lines_l->line_width = conl_sz.x;
                 lines_l->color = 0xff'eeeeee;
                 offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
-                lines_l->tl = calc_tl(lines_l->line_strip);
-                lines_l->br = calc_br(lines_l->line_strip);
+                lines_l->tl = mexpr_strip_tl(lines_l->line_strip);
+                lines_l->br = mexpr_strip_br(lines_l->line_strip);
                 b->subobjs.push_back({lines_l, ImVec2(0, 0)});
                 lines_l->parent = b.get();
             }
@@ -1148,11 +1225,38 @@ inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, 
                 lines_r->line_width = conl_sz.x;
                 lines_r->color = 0xff'eeeeee;
                 offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
-                lines_r->tl = calc_tl(lines_r->line_strip);
-                lines_r->br = calc_br(lines_r->line_strip);
+                lines_r->tl = mexpr_strip_tl(lines_r->line_strip);
+                lines_r->br = mexpr_strip_br(lines_r->line_strip);
                 b->subobjs.push_back({lines_r, ImVec2(0, 0)});
                 lines_r->parent = b.get();
             }
+            std::tie(b->tl, b->br) = calc_bb(b->subobjs);
+        }
+        else if (bracket.type == MEXPR_BRACKET_BAR) {
+            /* A plain vertical rule: the SQUARE branch above without its two hooks, and without a
+            left/right distinction - both delimiters of a bar pair are the same shape, so is_left
+            is not consulted here at all.
+
+            Sized by the same extensible arithmetic as every other bracket, so it quantises the way
+            they already do. char.lua's bar_bracket() passes the SPACE glyph for tl/bl/tr/br
+            precisely so their heights contribute 0 to it, leaving cl plus the connectors. */
+            h = lb_tl_sz.y + lb_bl_sz.y + lb_cl_sz.y + con_cnt * conl_sz.y;
+            auto lines = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+            float w = conl_sz.x;
+            lines->line_strip.push_back(ImVec2(w / 2.f, 0));
+            lines->line_strip.push_back(ImVec2(w / 2.f, h));
+            lines->line_width = w;
+            lines->color = 0xff'eeeeee;
+            offset_all(lines->line_strip, ImVec2(0, -h / 2.f));
+            lines->tl = mexpr_strip_tl(lines->line_strip);
+            lines->br = mexpr_strip_br(lines->line_strip);
+            /* mexpr_strip_tl/br read the POINTS only, and every point of a vertical strip shares
+            one x - so without widening by hand the bar lays out zero-wide and the content sits on
+            top of it. The stroke is centred on the path, hence w/2 either side. */
+            lines->tl.x -= w / 2.f;
+            lines->br.x += w / 2.f;
+            b->subobjs.push_back({lines, ImVec2(0, 0)});
+            lines->parent = b.get();
             std::tie(b->tl, b->br) = calc_bb(b->subobjs);
         }
         else if (bracket.type == MEXPR_BRACKET_ROUND) {
@@ -1176,8 +1280,8 @@ inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, 
                 lines_l->line_width = conl_sz.x;
                 lines_l->color = 0xff'eeeeee;
                 offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
-                lines_l->tl = calc_tl(lines_l->line_strip);
-                lines_l->br = calc_br(lines_l->line_strip);
+                lines_l->tl = mexpr_strip_tl(lines_l->line_strip);
+                lines_l->br = mexpr_strip_br(lines_l->line_strip);
                 b->subobjs.push_back({lines_l, ImVec2(0, 0)});
                 lines_l->parent = b.get();
             }
@@ -1200,8 +1304,8 @@ inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, 
                 lines_r->line_width = conr_sz.x;
                 lines_r->color = 0xff'eeeeee;
                 offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
-                lines_r->tl = calc_tl(lines_r->line_strip);
-                lines_r->br = calc_br(lines_r->line_strip);
+                lines_r->tl = mexpr_strip_tl(lines_r->line_strip);
+                lines_r->br = mexpr_strip_br(lines_r->line_strip);
                 b->subobjs.push_back({lines_r, ImVec2(0, 0)});
                 lines_r->parent = b.get();
             }
@@ -1245,8 +1349,8 @@ inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, 
                 lines_l->color = 0xff'eeeeee;
                 lines_l->line_width = conl_sz.x;
                 offset_all(lines_l->line_strip, ImVec2(0, -h/2.));
-                lines_l->tl = calc_tl(lines_l->line_strip);
-                lines_l->br = calc_br(lines_l->line_strip);
+                lines_l->tl = mexpr_strip_tl(lines_l->line_strip);
+                lines_l->br = mexpr_strip_br(lines_l->line_strip);
                 b->subobjs.push_back({lines_l, ImVec2(0, 0)});
                 lines_l->parent = b.get();
             }
@@ -1285,8 +1389,8 @@ inline mexpr_p mexpr_bracket_side(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, 
                 lines_r->color = 0xff'eeeeee;
                 lines_r->line_width = conr_sz.x;
                 offset_all(lines_r->line_strip, ImVec2(0, -h/2.));
-                lines_r->tl = calc_tl(lines_r->line_strip);
-                lines_r->br = calc_br(lines_r->line_strip);
+                lines_r->tl = mexpr_strip_tl(lines_r->line_strip);
+                lines_r->br = mexpr_strip_br(lines_r->line_strip);
                 b->subobjs.push_back({lines_r, ImVec2(0, 0)});
                 lines_r->parent = b.get();
             }
@@ -1302,6 +1406,193 @@ wrapped in its own single-anchor container so its own tl/br already land vertica
 expr's own middle - `expr` is used only for that sizing/centering math, never attached anywhere in
 the returned tree, and never appears as a sibling here either - the caller places whatever expr was
 built from separately, as an ordinary sibling of both this and mexpr_bracket_right()'s own result. */
+/*! The decoration to sit over (or under) something `width` wide.
+
+TEXbook Appendix G, Rule 12: "If the accent character has a successor in its font whose width is
+<= u, change it to the successor and repeat this sentence." TeX walks a charlist out of the TFM;
+these fonts are .ttf conversions carrying no TFM, so char.lua spells the chain out the way it
+already spells out the bracket tiers - hat: the text "^" then cmex10's widehat 0x62/0x63/0x64.
+
+Past the widest tier the accent is DRAWN, for the same reason mexpr_bracket_side draws its own
+bracket once no glyph is tall enough: the font simply runs out. The drawn shape continues from the
+last tier rather than inventing its own proportions - its apex height is that tier's height - so
+widening past the last glyph changes the width and nothing else, with no visible step at the
+boundary. */
+inline mexpr_p mexpr_accent(vc::ref_t<charc::fontset_t> fs, mexpr_accent_t acc, float width) {
+    PROF_SCOPE("cpp.mexpr_accent");
+
+    float pen = calc_sz(mexpr_symbol(fs, acc.stroke, false)).y;
+    float apex = pen * 2.f;   /* fallback, only if there is no tier to take a height from */
+
+    if (acc.kind != MEXPR_ACCENT_RULE) {
+        mexpr_p best;
+        float best_w = 0;
+        for (int i = 0; i < acc.tier_count && i < 4; i++) {
+            auto cand = mexpr_symbol(fs, acc.tiers[i], false);
+            auto csz = calc_sz(cand);
+            /* Tiers ascend, so the first one wider than the target ends the search - but the
+            narrowest is always acceptable, since something must be returned even for a target
+            narrower than any glyph. */
+            if (i > 0 && csz.x > width)
+                break;
+            best = cand;
+            best_w = csz.x;
+            apex = csz.y;
+        }
+        if (best && best_w >= width)
+            return best;   /* a real glyph covers it: Rule 12 satisfied, nothing to draw */
+
+        /* Past the widest tier there is no glyph left, so the shape below is drawn - and it has to
+        keep GROWING, not merely get wider. `apex` is the last tier's own height, and holding it
+        there however wide the target got is what flattened a hat over a stack into very nearly a
+        straight line: at size 12 the widest hat glyph is 15.00 x 3.00, so a 320-wide target drew a
+        320 x 3 sliver, an aspect of 0.009 against the glyph's own 0.200. Reported live 2026-09-06:
+        "large hats ^ look like lines almost, they must also rise in height and keep the aspect
+        ratio".
+
+        Scaling by how far past that tier the target reaches preserves the tier's aspect exactly,
+        and the factor is 1.0 at the boundary itself - so the drawn shape still continues the last
+        glyph with no step, which is the property the tier search was built around. Deliberately
+        uncapped: a hat is meant to span what it dresses, and TeX only stops growing because it has
+        run out of glyphs, not because stopping is right. */
+        if (best_w > 0)
+            apex *= width / best_w;
+    }
+
+    /* Drawn. Same construction as mexpr_bracket_side's own fallback: a LINE_STRIP whose bb comes
+    from its points (mexpr_strip_tl/br), so layout sees the real shape and not a glyph box. */
+    auto ln = mexpr_t::create(MEXPR_TYPE_LINE_STRIP);
+    ln->line_width = pen;
+    ln->color = 0xff'eeeeee;
+
+    if (acc.kind == MEXPR_ACCENT_RULE) {
+        ln->line_strip.push_back(ImVec2(0, 0));
+        ln->line_strip.push_back(ImVec2(width, 0));
+    }
+    else if (acc.kind == MEXPR_ACCENT_ARROW_R || acc.kind == MEXPR_ACCENT_ARROW_L) {
+        /* A shaft the full width with a head at the pointing end, drawn as one strip: out to the
+        tip, back along one barb, to the tip again, then the other barb, so a single polyline draws
+        both without lifting the pen.
+
+        The head is sized from 'a' AT THIS FONT SIZE, and is therefore constant for a given size
+        however long the arrow gets - which is the whole point: an arrow twice as long gets a longer
+        shaft, not a bigger head. Deliberately NOT from `apex`, which scales with width so a hat can
+        keep its aspect - right for a hat, wrong here, and a head that changes height with whatever
+        it sits over is the thing this replaces.
+
+        'a' rather than the pen: the pen is a rule THICKNESS and says nothing about the text the
+        arrow sits above, whereas 'a' is the same reference the whole file already centres glyphs on
+        (mexpr_symbol's is_char branch). Half of 'a' tall lands at 8.5 at size 12, within half a unit
+        of cmmi's own \vec glyph (8.0), so the drawn form continues the glyph with no visible step
+        at the width where one takes over from the other. */
+        bool right = (acc.kind == MEXPR_ACCENT_ARROW_R);
+        auto [a_tl, a_br] = fs->char_get_bb(
+                char_t{.size = acc.stroke.size, .code = fs->m_a_code});
+        float a_h = a_br.y - a_tl.y;
+        /* As a fraction of 'a', kept as two named numbers because this has been tuned by eye more
+        than once: 3/16 either side of the shaft is 3/8 of 'a' tall overall. */
+        constexpr float HEAD_HALF = 3.f / 16.f;
+        constexpr float HEAD_LEN = 3.f / 8.f;
+        float half = a_h * HEAD_HALF;
+        float len = std::min(a_h * HEAD_LEN, width);   /* never longer than the arrow itself */
+        float tip = right ? width : 0.f;
+        float back = right ? (width - len) : len;
+        ln->line_strip.push_back(ImVec2(right ? 0.f : width, 0));
+        ln->line_strip.push_back(ImVec2(tip, 0));
+        ln->line_strip.push_back(ImVec2(back, -half));
+        ln->line_strip.push_back(ImVec2(tip, 0));
+        ln->line_strip.push_back(ImVec2(back, half));
+    }
+    else if (acc.kind == MEXPR_ACCENT_HAT) {
+        ln->line_strip.push_back(ImVec2(0, 0));
+        ln->line_strip.push_back(ImVec2(width / 2.f, -apex));
+        ln->line_strip.push_back(ImVec2(width, 0));
+    }
+    else {
+        /* Two arcs, tessellated by the bezier helper this file already carries. It emits only its
+        END point, so the very first point has to be pushed by hand. */
+        float q = width / 4.f;
+        ln->line_strip.push_back(ImVec2(0, 0));
+        beziere_path_rec(ln->line_strip, ImVec2(0, 0), ImVec2(q, -apex),
+                ImVec2(q, apex), ImVec2(width / 2.f, 0));
+        beziere_path_rec(ln->line_strip, ImVec2(width / 2.f, 0), ImVec2(3 * q, -apex),
+                ImVec2(3 * q, apex), ImVec2(width, 0));
+    }
+
+    ln->tl = mexpr_strip_tl(ln->line_strip);
+    ln->br = mexpr_strip_br(ln->line_strip);
+    return ln;
+}
+
+/*! Dresses `target` with `above` and/or `bellow`. Either may be null. `metrics` is used ONLY for
+its size, to look up the x-height - the same "passed purely for its metrics" idiom as mexpr_frac's
+divline.
+
+TEXbook Appendix G, Rule 12, in three parts:
+
+  - vertical: the decoration clears the target's ink by a small font-derived amount. Rule 12's own
+    delta term is deliberately NOT imported - see the clearance comment in the body for why it
+    cannot be, and why measuring from the ink top gives the behaviour it was there to produce.
+  - centred: moved right by (u - w(y))/2. TeX also adds a skew read from the font kern against
+    its skewchar; that lives in the TFM, which these .ttf conversions do not carry, so it is 0
+    here. The visible cost is an accent sitting a hair left of ideal over a slanted italic.
+  - "w(z) <- w(x)": the dressed node is as wide as the TARGET, never as wide as the decoration, so
+    a wide hat OVERHANGS its neighbours instead of pushing them apart. This is the part calc_bb
+    cannot do on its own, and getting it wrong is what would make dressed glyphs drift.
+
+Height needs no special case: calc_bb already spans the target, so Rule 12's "if h(z) < h(x)"
+padding step is automatic here.
+
+Nothing about WHAT the decoration is lives here - a tiered widehat, a drawn chevron, a stretched
+rule and three dots side by side are all just an mexpr_p the caller built. */
+inline mexpr_p mexpr_dress(vc::ref_t<charc::fontset_t> fs, mexpr_p target, mexpr_p above,
+        mexpr_p bellow, char_t metrics)
+{
+    PROF_SCOPE("cpp.mexpr_dress");
+    if (!target)
+        throw vc::except_t("can't use mexpr_dress without a target");
+
+    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
+    auto tsz = calc_sz(target);
+
+    /* CLEARANCE above the target's ink, not Rule 12's delta.
+
+    Rule 12 says delta = min(h(x), x-height) and then kerns the accent DOWN by it. That delta is
+    compensating for something TeX has and this file does not: its accent box is baseline-relative,
+    so the glyph sits high inside a box with empty space beneath it, and the negative kern pulls
+    that space back out. mexpr_symbol returns the INK box (char_get_bb's a_min/a_max) with no such
+    space, so importing delta literally double-counts it and drags the accent down THROUGH the
+    letter - measured, on 'x', as a dressed atom exactly as tall as the bare glyph.
+
+    So the clearance is a small constant instead: the pen width, which is font-derived and already
+    the thickness a drawn accent is stroked at. The behaviour Rule 12's delta produces - an accent
+    that rides just above the ink whether the letter is short or tall - falls out of measuring from
+    the ink top in the first place, which is what this does. */
+    float clearance = calc_sz(mexpr_symbol(fs, metrics, false)).y;
+    if (clearance <= 0)
+        clearance = 1;
+
+    ret->subobjs.push_back({ .obj = target, .pos = ImVec2(0, 0) });
+    if (above)
+        ret->subobjs.push_back({ .obj = above, .pos = ImVec2(
+                (tsz.x - calc_sz(above).x) / 2.f,
+                (target->tl.y - clearance) - above->br.y) });
+    if (bellow)
+        /* Mirrored. NOT from Rule 12 - that covers accents above only; TeX builds under-accents
+        another way. Symmetry is the honest default until a rule says otherwise. */
+        ret->subobjs.push_back({ .obj = bellow, .pos = ImVec2(
+                (tsz.x - calc_sz(bellow).x) / 2.f,
+                (target->br.y + clearance) - bellow->tl.y) });
+
+    for (auto &anch : ret->subobjs)
+        anch.obj->parent = ret.get();
+
+    std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
+    ret->tl.x = target->tl.x;   /* w(z) <- w(x): the decoration overhangs, it does not widen */
+    ret->br.x = target->br.x;
+    return ret;
+}
+
 inline mexpr_p mexpr_bracket_left(vc::ref_t<charc::fontset_t> fs, mexpr_p expr, mexpr_bracket_t bracket) {
     auto lb = mexpr_bracket_side(fs, expr, bracket, true);
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
@@ -1338,11 +1629,26 @@ inline std::unordered_map<std::string, math_expr_composer::mexpr_bracket_e> mexp
     {"MEXPR_BRACKET_ROUND", math_expr_composer::MEXPR_BRACKET_ROUND},
     {"MEXPR_BRACKET_SQUARE", math_expr_composer::MEXPR_BRACKET_SQUARE},
     {"MEXPR_BRACKET_CURLY", math_expr_composer::MEXPR_BRACKET_CURLY},
+    {"MEXPR_BRACKET_BAR", math_expr_composer::MEXPR_BRACKET_BAR},
 };
 
 template <> inline math_expr_composer::mexpr_bracket_e
 get_enum_val<math_expr_composer::mexpr_bracket_e>(fkyaml::node &n) {
     return get_enum_val(n, mexpr_bracket_from_str);
+}
+
+inline std::unordered_map<std::string, math_expr_composer::mexpr_accent_e> mexpr_accent_from_str =
+{
+    {"MEXPR_ACCENT_HAT", math_expr_composer::MEXPR_ACCENT_HAT},
+    {"MEXPR_ACCENT_TILDE", math_expr_composer::MEXPR_ACCENT_TILDE},
+    {"MEXPR_ACCENT_RULE", math_expr_composer::MEXPR_ACCENT_RULE},
+    {"MEXPR_ACCENT_ARROW_R", math_expr_composer::MEXPR_ACCENT_ARROW_R},
+    {"MEXPR_ACCENT_ARROW_L", math_expr_composer::MEXPR_ACCENT_ARROW_L},
+};
+
+template <> inline math_expr_composer::mexpr_accent_e
+get_enum_val<math_expr_composer::mexpr_accent_e>(fkyaml::node &n) {
+    return get_enum_val(n, mexpr_accent_from_str);
 }
 
 inline std::unordered_map<std::string, math_expr_composer::mexpr_e> mexpr_e_from_str =
@@ -1358,6 +1664,39 @@ get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n) {
     return get_enum_val(n, mexpr_e_from_str);
 }
 
+
+template <ssize_t index>
+inline math_expr_composer::mexpr_accent_t
+luaw_param_t<math_expr_composer::mexpr_accent_t, index>::luaw_single_param(lua_State *L) {
+    math_expr_composer::mexpr_accent_t ret{};
+    if (lua_isnil(L, index))
+        return ret;
+    using char_t = char_draw_composer::char_t;
+
+    lua_getfield(L, index, "kind");
+    ret.kind = luaw_param_t<bm_t<math_expr_composer::mexpr_accent_e>, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+
+    lua_getfield(L, index, "stroke");
+    ret.stroke = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    lua_pop(L, 1);
+
+    /* `tiers` is a plain Lua array, narrowest first; anything past four is ignored rather than
+    treated as an error, matching how mexpr_bracket_t's own fixed-size arrays are filled. */
+    lua_getfield(L, index, "tiers");
+    if (lua_istable(L, -1)) {
+        int len = (int)lua_rawlen(L, -1);
+        for (int i = 1; i <= len && i <= 4; i++) {
+            lua_rawgeti(L, -1, i);
+            ret.tiers[i - 1] = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+            lua_pop(L, 1);
+            ret.tier_count = i;
+        }
+    }
+    lua_pop(L, 1);
+
+    return ret;
+}
 
 template <ssize_t index>
 inline math_expr_composer::mexpr_bracket_t

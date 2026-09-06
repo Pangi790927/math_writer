@@ -35,11 +35,11 @@ local mformula_new = require("mformula_new")
 local same = mexpru.same
 
 local checks_run, checks_failed = 0, 0
-local function check(name, cond)
+local function check(name, cond, got)
     checks_run = checks_run + 1
     if not cond then
         checks_failed = checks_failed + 1
-        print("FAIL: " .. name)
+        print("FAIL: " .. name .. (got ~= nil and ("  (got: " .. tostring(got) .. ")") or ""))
     end
 end
 
@@ -130,7 +130,8 @@ function run_test()
     resolves is a design call, not something to settle inside a regression test. Asserted here so
     the current behaviour is at least pinned down and this note is impossible to lose. ]]
     local latex = mformula_new.to_latex(container)
-    check("this state still serializes to the ambiguous \"(^{A})\"", latex == "(^{A})")
+    check("this state still serializes to the ambiguous \"(^{A})\"",
+            latex == "\\left(^{A}\\right)", latex)
 
     print("checks: " .. checks_run .. ", failed: " .. checks_failed)
     if checks_failed > 0 then

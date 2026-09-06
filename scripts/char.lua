@@ -55,13 +55,13 @@ function capi.load_font_set()
     local ret = vc.create_object(nil, {
         m_type = "charc::fontset_t",
         m_a_code = 61,
-        -- 60.0/50.0 (9, 10) added 2026-09-04, between the pre-existing 72 and 42, for content.lua's
+        -- 60.0/50.0 (9, 10) added, between the pre-existing 72 and 42, for content.lua's
         -- Ctrl+MouseWheel zoom (make_supsub()'s own SUB_SIZE_DELTA=1/MAX_SIZE_INDEX walk relies on
         -- consecutive indices being consecutive steps, so a smoothing level has to be INSERTED in
         -- sorted position, not appended past 8 - the old table jumped 72->42, a ~1.7x step, way out
         -- of line with every other step's ~1.2-1.3x, right where content.lua's own default (36, now
         -- index 12) sits closest to). mformula_new.lua/mformula.lua/mformula_latex.lua's own
-        -- MAX_SIZE_INDEX=18 (was 16) has to track this table's actual length - checked 2026-09-04,
+        -- MAX_SIZE_INDEX=18 (was 16) has to track this table's actual length - checked,
         -- all three still say so.
         m_font_sizes = {
             360.0,  288.0,  216.0,  180.0,  --[[  1,  2,  3,  4]]
@@ -73,8 +73,15 @@ function capi.load_font_set()
         m_font_paths = paths
     })
 
+    --[[ The trailing arguments are the two per-glyph metric corrections this font needs: a
+    vertical shift (capi.y_offset_by_desc / font_loc_t::y_off_em) and an advance-width override
+    (capi.adv_by_desc / font_loc_t::adv_em). Both have "no correction" defaults, so a glyph in
+    neither table registers exactly as it always did. ]]
     for i in ipairs(capi.chars) do
-        ret:register_code(capi.chars[i].ncod, capi.chars[i].fnum, capi.chars[i].fcod)
+        local c = capi.chars[i]
+        ret:register_code(c.ncod, c.fnum, c.fcod,
+                capi.y_offset_by_desc[c.desc] or 0.0,
+                capi.adv_by_desc[c.desc] or -1.0)
     end
 
     return ret
@@ -181,11 +188,51 @@ end
 `bracket_type` a bracket atom's own u(_).bracket.type carries (mexpru.lua's resolve_bracket_pairs()) -
 lets that generic code build the right mexpr_bracket_t for whichever type a given entangled pair
 actually is, without itself needing a three-way if/elseif of its own. ]]
+--[[ "|" - absolute value / norm bars. Both delimiters of a bar pair are the SAME shape, so
+unlike every other bracket here there is no mirrored partner to describe: left and right are equal.
+
+tl/bl/tr/br are the SPACE glyph, deliberately. mexpr_bracket_side sums their heights into the
+extensible's base height before deciding how many connectors to stack, and a bar has no corner
+pieces to account for - an inkless glyph measures exactly 0 tall (mexpr_symbol's own inkless
+branch), which is the contribution wanted. Only cl/conl carry real metrics: their HEIGHT is the
+quantisation step and their WIDTH is the stroke the drawn rule is given.
+
+The tiers are all the plain "|" (ncod 88 - 38 units tall at size 12, against a letter's 17), so
+anything that fits inside one resolves to the typed glyph itself and only genuinely tall content
+reaches the extensible path at all. There is nothing finer to put in them: cmex10 ships no
+\\big|/\\Big| tiers, TeX builds those from these same extension pieces.
+
+_vline_4/_vline_5 (w=2.0) are the widest registered extensions, against the plain bar's own 2.5 -
+half a unit thinner at size 12, which is the closest match available without adding a glyph. ]]
+function capi.bar_bracket(fontsz)
+    local space = capi.find_by_ascii(" ")
+    local blank = { size=fontsz, code=space and space.ncod or 247 }
+    local bar   = { size=fontsz, code=88 }
+    return {
+        type = vc.MEXPR_BRACKET_BAR,
+        tl   = blank,
+        bl   = blank,
+        tr   = blank,
+        br   = blank,
+        cl   = { size=fontsz, code=228 },
+        cr   = { size=fontsz, code=229 },
+        conl = { size=fontsz, code=228 },
+        conr = { size=fontsz, code=229 },
+        left  = { bar, bar, bar, bar },
+        right = { bar, bar, bar, bar },
+    }
+end
+
 function capi.bracket_opts(bracket_type, fontsz)
     if bracket_type == vc.MEXPR_BRACKET_SQUARE then
         return capi.square_bracket(fontsz)
     elseif bracket_type == vc.MEXPR_BRACKET_CURLY then
         return capi.curly_bracket(fontsz)
+    -- Guarded on the constant rather than assumed: the bar needs MEXPR_BRACKET_BAR registered from
+    -- C++ (math_expr_composer.h), and until that lands vc.MEXPR_BRACKET_BAR is nil - in which case
+    -- nothing ever tags a bracket with it and this branch is unreachable anyway.
+    elseif vc.MEXPR_BRACKET_BAR and bracket_type == vc.MEXPR_BRACKET_BAR then
+        return capi.bar_bracket(fontsz)
     else
         return capi.round_bracket(fontsz)
     end
@@ -345,12 +392,21 @@ capi.chars = {
     {acod='\0', fcod=0x2D, fnum=capi.FONT_SYMBOLS, ncod=150, desc="\\nwarrow" },       -- north-west arrow
     {acod='\0', fcod=0x2E, fnum=capi.FONT_SYMBOLS, ncod=151, desc="\\swarrow" },       -- south-west arrow
     {acod='\0', fcod=0x2F, fnum=capi.FONT_SYMBOLS, ncod=152, desc="\\propto" },        -- proportional to
-    {acod='\0', fcod=0x30, fnum=capi.FONT_SYMBOLS, ncod=153, desc="\\partial" },       -- partial derivative
+    -- TeX 0x30, which Figure 5 shows as PRIME, not partial - this row claimed "\partial" until
+    -- 2026-09-06, so every derivative drawn in this app was actually a prime mark. The real partial
+    -- is cmmi 0x40 (Figure 4), registered further down.
+    {acod='\0', fcod=0x30, fnum=capi.FONT_SYMBOLS, ncod=153, desc="\\prime" },         -- prime mark
     {acod='\0', fcod=0x31, fnum=capi.FONT_SYMBOLS, ncod=154, desc="\\infty" },         -- infinity
     {acod='\0', fcod=0x32, fnum=capi.FONT_SYMBOLS, ncod=155, desc="\\in" },            -- element of
     {acod='\0', fcod=0x33, fnum=capi.FONT_SYMBOLS, ncod=156, desc="\\ni" },            -- element of backwards
     {acod='\0', fcod=0x35, fnum=capi.FONT_SYMBOLS, ncod=157, desc="\\nabla" },         -- nabla
-    {acod='/',  fcod=0x36, fnum=capi.FONT_SYMBOLS, ncod=158, desc="/" },               -- forward slash
+    -- TeX 0x36. Figure 5 shows the NEGATION slash - the thing \ne and \notin are built from, not
+    -- an ordinary "/" (which is FONT_NORMAL 0x2F, above). It was spelled "/" here, which made it
+    -- unreachable: by_ascii and by_desc both resolve "/" to that earlier row. Zero advance, so it
+    -- overprints whatever follows - see capi.adv_by_desc.
+    {acod='\0', fcod=0x36, fnum=capi.FONT_SYMBOLS, ncod=158, desc="\\not" },            -- negation slash
+    -- TeX 0x37, the stem of \mapsto. Also zero width: TeX draws it and then an arrow on top.
+    {acod='\0', fcod=0x37, fnum=capi.FONT_SYMBOLS, ncod=262, desc="\\mapstochar" },     -- \mapsto stem
     {acod='\0', fcod=0x38, fnum=capi.FONT_SYMBOLS, ncod=159, desc="\\forall" },        -- for all
     {acod='\0', fcod=0x39, fnum=capi.FONT_SYMBOLS, ncod=160, desc="\\exists" },        -- exists
     {acod='\0', fcod=0x3A, fnum=capi.FONT_SYMBOLS, ncod=161, desc="\\neg" },           -- negation
@@ -380,7 +436,10 @@ capi.chars = {
     {acod='\0', fcod=0xA8, fnum=capi.FONT_SYMBOLS, ncod=185, desc="\\mp" },            -- minus-plus sign
     {acod='\0', fcod=0xB7, fnum=capi.FONT_SYMBOLS, ncod=186, desc="\\le" },            -- less than or equal
     {acod='\0', fcod=0xB8, fnum=capi.FONT_SYMBOLS, ncod=187, desc="\\ge" },            -- greater than or equal
-    {acod='\0', fcod=0xB4, fnum=capi.FONT_SYMBOLS, ncod=188, desc="\\cong" },          -- congruent
+    -- TeX 0x11. Figure 5 shows the three-bar identity sign here; cmsy10 has no congruence glyph
+    -- at all (it is built by stacking). Was labelled "\cong" until 2026-09-06 - kept reachable as
+    -- an alias below so documents written with the old name still load.
+    {acod='\0', fcod=0xB4, fnum=capi.FONT_SYMBOLS, ncod=188, desc="\\equiv" },         -- identical to
     {acod='\0', fcod=0xB6, fnum=capi.FONT_SYMBOLS, ncod=189, desc="\\supseteq" },      -- superset equal
     {acod='\0', fcod=0xB5, fnum=capi.FONT_SYMBOLS, ncod=190, desc="\\subseteq" },      -- subset equal
     {acod='\0', fcod=0x5A, fnum=capi.FONT_MATH_EX, ncod=191, desc="\\int" },           -- integration sign
@@ -390,6 +449,29 @@ capi.chars = {
     {acod='\0', fcod=0x5C, fnum=capi.FONT_MATH_EX, ncod=195, desc="\\bigcap" },        -- large intersection
     {acod='\0', fcod=0x49, fnum=capi.FONT_MATH_EX, ncod=196, desc="\\oint" },          -- circle integral
     {acod='\0', fcod=0xC3, fnum=capi.FONT_MATH_EX, ncod=197, desc="\\Biggl(" },        -- paranthesis '(' level 4
+    --[[ Added 2026-09-06. The authority for every fcod in this file is docs/texbook.pdf, Appendix F
+    "Font Tables" (page 431, Figure 5 for cmsy10; page 430, Figure 4 for cmmi10) - read it before
+    adding a row, do not work from memory of the encoding.
+
+    TeX positions have to be TRANSLATED for these TTFs, which do not carry the low range at its own
+    codes: cmsy10's TeX 0x00-0x1F lands at 0xA1+ here, with output slots 0xAC/0xAD skipped - so TeX
+    0x00-0x0A are 0xA1-0xAB, and TeX 0x0B-0x1F are 0xAE-0xC2. TeX 0x20-0x7F map straight through.
+    Checked against nine rows already in this table (0xB1 circ, 0xB2 bullet, 0xB5/0xB6
+    subseteq/supseteq, 0xB7/0xB8 le/ge, 0xBF/0xC0 ll/gg, 0xC3 leftarrow). The two-slot gap makes a
+    plain offset wrong above 0xAB, so translate, never extrapolate.
+
+    ncod runs past 255 from here; char_t::code is uint32_t, and nothing stores it narrower. ]]
+    {acod='\0', fcod=0xA2, fnum=capi.FONT_SYMBOLS, ncod=256, desc="\\cdot" },         -- centred dot
+    {acod='\0', fcod=0xBB, fnum=capi.FONT_SYMBOLS, ncod=257, desc="\\sim" },          -- similar to
+    {acod='\0', fcod=0xBC, fnum=capi.FONT_SYMBOLS, ncod=258, desc="\\approx" },       -- approximately
+    {acod='\0', fcod=0xBD, fnum=capi.FONT_SYMBOLS, ncod=259, desc="\\subset" },       -- proper subset
+    {acod='\0', fcod=0xBE, fnum=capi.FONT_SYMBOLS, ncod=260, desc="\\supset" },       -- proper superset
+    {acod='\0', fcod=0x40, fnum=capi.FONT_MATH   , ncod=261, desc="\\partial" },      -- cmmi 0x40, Figure 4
+    --[[ Same GLYPH as \bot (TeX 0x3F), deliberately a separate entry rather than an alias. In
+    LaTeX they are different classes: \perp is a relation and gets relation spacing, \bot is
+    ordinary - "a \perp b" and "a \bot b" set differently. Which one a glyph came from is the only
+    record of which was meant, so the two round-trip to their own names. ]]
+    {acod='\0', fcod=0x3F, fnum=capi.FONT_SYMBOLS, ncod=263, desc="\\perp" },          -- perpendicular
     {acod='\0', fcod=0xB5, fnum=capi.FONT_MATH_EX, ncod=198, desc="\\biggl(" },        -- paranthesis '(' level 3
     {acod='\0', fcod=0xB3, fnum=capi.FONT_MATH_EX, ncod=199, desc="\\Bigl(" },         -- paranthesis '(' level 2
     {acod='\0', fcod=0xA1, fnum=capi.FONT_MATH_EX, ncod=200, desc="\\bigl(" },         -- paranthesis '(' level 1
@@ -440,6 +522,46 @@ capi.chars = {
     {acod='<',  fcod=0x3C, fnum=capi.FONT_MATH   , ncod=245, desc="<" },
     {acod='>',  fcod=0x3E, fnum=capi.FONT_MATH   , ncod=246, desc=">" },
     {acod=' ',  fcod=0x20, fnum=capi.FONT_NORMAL , ncod=247, desc=" " },
+    --[[ TeX's spacing commands, added 2026-09-06. Each is the SPACE glyph - no ink at all -
+    with its own width, set in capi.adv_by_desc below (TeX's own fractions of an em: 3/18, 4/18,
+    5/18, 1 and 2). mexpr_symbol sizes an inkless glyph from its advance, so the width IS the atom.
+
+    Separate entries rather than one shared space so each keeps its own name and writes back out as
+    itself - "\\,"  in, "\\,"  out - instead of every gap flattening to one width.
+
+    \\! is a NEGATIVE thin space in TeX. Zero here, because adv_em treats a negative value as "no
+    override": it survives as a real, deletable atom that round-trips, it just does not pull the
+    next glyph back. ]]
+    {acod='\0', fcod=0x20, fnum=capi.FONT_NORMAL , ncod=264, desc="\\," },            -- thin space
+    {acod='\0', fcod=0x20, fnum=capi.FONT_NORMAL , ncod=265, desc="\\:" },            -- medium space
+    {acod='\0', fcod=0x20, fnum=capi.FONT_NORMAL , ncod=266, desc="\\;" },            -- thick space
+    {acod='\0', fcod=0x20, fnum=capi.FONT_NORMAL , ncod=267, desc="\\!" },            -- negative thin
+    {acod='\0', fcod=0x20, fnum=capi.FONT_NORMAL , ncod=268, desc="\\quad" },        -- 1 em
+    {acod='\0', fcod=0x20, fnum=capi.FONT_NORMAL , ncod=269, desc="\\qquad" },       -- 2 em
+
+    --[[ ACCENT glyphs, for mexpr_dress()/mexpr_accent() (math_expr_composer.h).
+
+    The hat and tilde a formula can already contain ARE the accent shapes: cmr10 is encoded OT1,
+    where 0x5E is the circumflex ACCENT and 0x7E the tilde ACCENT - which is why ncod 58 and 90
+    above sit high rather than on the baseline. So only the dot needs adding: OT1 puts it at 0x5F,
+    but the '_' entry above deliberately takes that slot from FONT_MONO, where it really is an
+    underscore.
+
+    The wide variants come from cmex10, and are what TEXbook Appendix G Rule 12's successor search
+    walks: "if the accent character has a successor in its font whose width is <= u, change it to
+    the successor and repeat". Listed narrowest-first in the accent tables at the bottom of this
+    file, the same order and for the same purpose as the bracket tables' left[]/right[]. There is
+    no bar/macron glyph in any of these fonts (OT1 0x16 is absent from the .ttf cmaps) - a bar is
+    drawn instead.
+    ]]
+    {acod='\0', fcod=0x5F, fnum=capi.FONT_NORMAL , ncod=249, desc="\\dot" },
+    {acod='\0', fcod=0x7E, fnum=capi.FONT_MATH   , ncod=248, desc="\\vec" },              -- cmmi vector accent
+    {acod='\0', fcod=0x62, fnum=capi.FONT_MATH_EX, ncod=250, desc="\\widehat1" },
+    {acod='\0', fcod=0x63, fnum=capi.FONT_MATH_EX, ncod=251, desc="\\widehat2" },
+    {acod='\0', fcod=0x64, fnum=capi.FONT_MATH_EX, ncod=252, desc="\\widehat3" },
+    {acod='\0', fcod=0x65, fnum=capi.FONT_MATH_EX, ncod=253, desc="\\widetilde1" },
+    {acod='\0', fcod=0x66, fnum=capi.FONT_MATH_EX, ncod=254, desc="\\widetilde2" },
+    {acod='\0', fcod=0x67, fnum=capi.FONT_MATH_EX, ncod=255, desc="\\widetilde3" },
 }
 
 -- #################################################################################################
@@ -467,9 +589,37 @@ function capi.find_by_ascii(ascii_char)
     return by_ascii[ascii_char]
 end
 
---[[ Returns the capi.chars entry whose `desc` matches exactly (e.g. "\\alpha"), or nil. ]]
+--[[ Spellings that mean an EXISTING glyph rather than a new one.
+
+A table, not extra rows in capi.chars, and that distinction matters: by_ncod maps one code to one
+entry, so a second row sharing an ncod would make to_latex()'s choice of name depend on table order.
+Aliases resolve on the way IN only. What comes back out is always the primary desc, so a document
+round-trips to one canonical spelling.
+
+  - leq/geq/land/lor are just LaTeX's other names for glyphs already here.
+  - to is by far the commonest way to write a rightarrow, and what "->" produces.
+  - setminus IS the backslash glyph (TeX 0x6E - see Figure 5), already registered as "\\\\".
+  - cong is BACK-COMPATIBILITY: that name used to be attached to the identity sign by mistake, so
+    documents saved before 2026-09-06 still contain it. They load as the glyph they always drew. ]]
+capi.desc_aliases = {
+    ["\\leq"]      = "\\le",
+    ["\\geq"]      = "\\ge",
+    ["\\land"]     = "\\wedge",
+    ["\\lor"]      = "\\vee",
+    ["\\to"]       = "\\rightarrow",
+    ["\\setminus"] = "\\",
+    ["\\cong"]     = "\\equiv",
+}
+
+--[[ Returns the capi.chars entry whose `desc` matches exactly (e.g. "\\alpha"), or nil.
+Falls back to capi.desc_aliases, so an alternate spelling finds the same glyph. ]]
 function capi.find_by_desc(desc)
-    return by_desc[desc]
+    local hit = by_desc[desc]
+    if hit then
+        return hit
+    end
+    local aliased = capi.desc_aliases[desc]
+    return aliased and by_desc[aliased] or nil
 end
 
 --[[ Returns the capi.chars entry for a given ncod (glyph catalog code), or nil. ]]
@@ -491,16 +641,41 @@ capi.greek_alt = {
     h="\\eta",     j="\\theta", i="\\iota",  k="\\kappa", l="\\lambda",  m="\\mu",
     n="\\nu",      x="\\xi",   p="\\pi",     r="\\rho",   s="\\sigma",   t="\\tau",
     u="\\upsilon", f="\\phi",  c="\\chi",    y="\\psi",   w="\\omega",
+
+    --[[ q has no Greek lowercase (there is no lowercase koppa in these fonts), so it was the one
+    letter slot left. It holds the PARTIAL differential - "the other than d", asked for 2026-09-06 -
+    which pairs with Alt+Shift+Q holding the integral for exactly the same "this key is free"
+    reason. Both are operators on a letter key, and both are listed in greek_alt_shift's own note. ]]
+    q="\\partial",
 }
 
 --[[ Only these have a distinct capital glyph in capi.chars - the rest look identical to their
 Latin counterpart and were never catalogued separately. 'q' isn't a capital Greek letter at all -
 'q' has no Greek association (see greek_alt's own comment), so Alt+Shift+Q was otherwise wasted
 falling back to plain 'Q' - the integral sign lives here instead, freeing that keystroke up. ]]
+--[[ Three entries here are OPERATORS, not letters, and that is deliberate.
+
+`q` never had a Greek capital to hold (uppercase Koppa is not in the fonts), so the key was free and
+took the integral.
+
+`s` and `p` are real trades, made 2026-09-06 after "I do alt+shift+s and it's the same as F, that's
+not good" and then "and also do product, large pi". They were Greek capital Sigma and Pi, which are
+LETTERS and therefore correctly the same size as a capital F - but each is the same letterform as
+the operator it shadows, so the key looked broken every time it produced the letter. Nobody reaching
+for Alt+Shift+S in a formula wants a variable named Sigma; they want the operator - a different
+glyph in a different font (cmex10 ncod 192, not FONT_NORMAL ncod 98) carrying size_delta_by_desc's
+display-size correction. Same for Pi and \prod.
+
+So the rule for this table is "Greek uppercase where that is what the key is FOR", not "Greek
+uppercase wherever one exists". \Sigma and \Pi themselves are still reachable by typing the name and
+Space, the same route every other unmapped symbol uses.
+
+The letters left alone are the ones genuinely used AS variables - \Delta, \Omega, \Gamma, \Phi,
+\Theta, \Lambda, \Xi, \Upsilon, \Psi. None of those shadows an operator. ]]
 capi.greek_alt_shift = {
-    g="\\Gamma", d="\\Delta", h="\\Theta", l="\\Lambda", x="\\Xi",   p="\\Pi",
-    s="\\Sigma", u="\\Upsilon", f="\\Phi", y="\\Psi",    w="\\Omega",
-    q="\\int",
+    g="\\Gamma", d="\\Delta", h="\\Theta", l="\\Lambda", x="\\Xi",
+    u="\\Upsilon", f="\\Phi", y="\\Psi",   w="\\Omega",
+    q="\\int",  s="\\sum",  p="\\prod",
 }
 
 --[[ How many size-table steps BIGGER (negative - the table runs biggest-to-smallest, see
@@ -510,15 +685,128 @@ reads as a thin, undersized squiggle instead of the display-style integral sign 
 be (compare main.lua's demo, which draws it via char.integral(sz-5) for exactly this reason) -
 not a general per-glyph size feature, just this one shortcut's own fix.
 
--7, not -5: recalibrated 2026-09-04 after inserting two new levels (60/50, between the old 72/42)
+-7, not -5: recalibrated after inserting two new levels (60/50, between the old 72/42)
 into m_font_sizes above for Ctrl+MouseWheel zoom - those two extra rungs sit exactly inside this
 delta's own path from the default (12), so the old "-5" (which used to land on 144pt, 4x the 36pt
 default) only reached 96pt (2.67x) once the table grew under it - visibly "too small" again,
 reported live. -7 from 12 lands back on index 5 (144pt), the same PHYSICAL target -5 always meant
 against the pre-2026-09-04 table - not a new/different visual size, just re-pointed at the same one. ]]
 capi.size_delta_by_desc = {
-    ["\\int"] = -7,
+    --[[ Every one of these is -7, and that is not a coincidence: it is ONE correction, applied to
+    the whole cmex10 display-operator family, because they all share the same defect.
+
+    Measured at the default level (index 12, 36pt), against a capital 'A' at 26px:
+
+        int/oint   22px        sum/prod/bigcup/bigcap   14px
+
+    A display integral in real TeX stands about 3x the cap height and a display sum about 2x, so
+    these arrive roughly 4x too small - fonts/cmex10.ttf carries a far larger em box than the
+    metrics it was converted from, so a nominal 36pt buys about 9pt of actual ink. -7 walks 12 ->
+    5 in m_font_sizes above, i.e. 36pt -> 144pt, which is exactly that factor back. It lands int at
+    86px (3.3x cap) and sum at 54px (2.1x) - the TeX proportions, and the two stay in proportion to
+    EACH OTHER because they were only ever off by the same constant.
+
+    "\sum" spent a while at -4 (a literal reading of "make it twice as big"), which doubles 14 to
+    27 - dead level with a capital A, which is why it came back reported as "sigma is the same
+    size". Twice as big was the right instinct and the wrong arithmetic: the glyph needed to be
+    un-shrunk first, not doubled from a broken baseline.
+
+    This is a per-glyph FIX, not a general size feature. It is baked into construction (real ink)
+    and deliberately never reaches u(_).sz, which stays LOGICAL - see the callers, and
+    test_int_size.lua, which pins that separation. ]]
+    ["\\int"]    = -7,
+    ["\\oint"]   = -7,
+    ["\\sum"]    = -7,
+    ["\\prod"]   = -7,
+    ["\\bigcup"] = -7,
+    ["\\bigcap"] = -7,
 }
+
+--[[ The OTHER half of the same lossy font conversion: where size_delta_by_desc fixes how BIG these
+glyphs are, this fixes WHERE they sit. Passed to register_code() as font_loc_t::y_off_em - a
+fraction of the font size, positive = down, y growing downward as everywhere else.
+
+TeX centres a big operator on the math axis (a quarter em above the baseline), so it straddles the
+line rather than resting on it. fonts/cmex10.ttf reports no depth at all - every glyph in it comes
+back with the same flattened ascent - so they arrive sitting entirely above the baseline instead.
+Measured at the default level (36pt, baseline at 7.5, axis at -1.5):
+
+    glyph                       ink spans     centre    axis    needs
+    sum/prod/bigcup/bigcap    -55.0 .. -1.0    -28.0    -1.5    +26.5px = +0.184em
+    int/oint                  -55.0 .. +31.0   -12.0    -1.5    +10.5px = +0.073em
+
+The sum family does not touch the baseline anywhere - its lowest ink ended 8.5 units ABOVE the line
+it was supposed to straddle, which is what "it is the right size, not the right placement" was
+describing. The integrals do straddle, being drawn with real descent, but still hang about 10 too
+high.
+
+Two values rather than six because the family splits exactly by whether the glyph was converted with
+descent or without - the same split their raw heights show (22px vs 14px, see above). Nothing here
+is tuned by eye: each is (axis - centre) at the size the glyph is actually drawn at.
+
+Kept as an em fraction so it scales with the size table and with Ctrl+MouseWheel zoom by itself. A
+pixel count would be correct at exactly one size and wrong at the other seventeen - the same reason
+size_delta_by_desc is a table INDEX delta rather than a point size. ]]
+--[[ Advance widths this font got wrong, as a fraction of the font size. REPLACES the font's own
+(font_loc_t::adv_em), unlike y_offset_by_desc which adds to it - because what these express is not a
+nudge but a width TeX defines as exactly zero.
+
+A zero-width glyph is drawn and then NOT stepped over, so the next character prints on top of it.
+That is how TeX builds every negated relation: \ne is \not followed by =, \notin is \not followed
+by \in. This TTF gave \not an ordinary full-width advance (measured 27.97 at the default level,
+the same as the "=" it is meant to cross), so the slash landed beside the sign instead of through
+it, and \ne could not be expressed at all.
+
+Only glyphs DESIGNED to overprint belong here. Zeroing anything else makes it collide with its
+neighbour. ]]
+capi.adv_by_desc = {
+    ["\\not"]        = 0.0,
+    ["\\mapstochar"] = 0.0,
+
+    -- TeX's own spacing widths, as fractions of an em (see the entries above).
+    ["\\,"]     = 3.0 / 18.0,
+    ["\\:"]     = 4.0 / 18.0,
+    ["\\;"]     = 5.0 / 18.0,
+    ["\\!"]     = 0.0,
+    ["\\quad"]  = 1.0,
+    ["\\qquad"] = 2.0,
+}
+
+capi.y_offset_by_desc = {
+    ["\\sum"]    = 0.184,
+    ["\\prod"]   = 0.184,
+    ["\\bigcup"] = 0.184,
+    ["\\bigcap"] = 0.184,
+    ["\\int"]    = 0.073,
+    ["\\oint"]   = 0.073,
+}
+
+--[[ Alt+PUNCTUATION: the set-theory symbols. Alt+letter is entirely spoken for by Greek, so
+these live on the keys either side of it, paired by their left/right position, with Shift giving the
+"bigger" relation of each pair.
+
+The shifted pair gives the PROPER inclusions. On a US layout those keys are "<" and ">", so
+Alt+Shift+, is Alt+< - the shape of the key is the shape of the sign. The or-equal forms are not
+bound to anything: type "=" straight after and the shorthand upgrades the glyph in place, exactly
+as "<" then "=" does (DIGRAPHS in mformula_new.lua). Asked for 2026-09-06 - "that is the inclusion
+sign and included or equal should be a composite, so made with equal after".
+
+Here rather than beside the key handler because F2's panel draws from it too - that panel's whole
+claim is that it "can never drift from what the keys actually do", which only holds while both read
+the same table. Adding a row here adds it to the legend.
+
+`key` is resolved to an integer id once, below, for the same reason greek_key_ids exists: the
+string form of an ImGuiKey costs a yaml node per poll. ]]
+capi.alt_symbols = {
+    {key = "ImGuiKey_LeftBracket",  label = "[", plain = "\\cup"},
+    {key = "ImGuiKey_RightBracket", label = "]", plain = "\\cap"},
+    {key = "ImGuiKey_Comma",        label = ",", plain = "\\in",  shift = "\\subset"},
+    {key = "ImGuiKey_Period",       label = ".", plain = "\\ni",  shift = "\\supset"},
+}
+
+for _, sym in ipairs(capi.alt_symbols) do
+    sym.key_id = vc[sym.key] or sym.key
+end
 
 --[[ ImGuiKey name -> lowercase letter, used to poll Alt+letter Greek shortcuts directly (Alt
 combinations don't reliably produce char events, so this can't go through
@@ -538,7 +826,7 @@ capi.greek_keys = {
 The two Alt+letter loops that walk this (editor.lua and mformula_new.lua) call ImGui_IsKeyPressed
 for all 26 entries on every frame Alt is held. Passing the NAME makes virt_composer's bm_t<ImGuiKey>
 build an fkyaml::node per call to look the enum up - measured at 180.83us against 0.22us for the
-integer form (2026-09-05, 20000 calls each), so 26 names cost ~4.7ms of a 16.7ms frame for as long
+integer form (20000 calls each), so 26 names cost ~4.7ms of a 16.7ms frame for as long
 as Alt is down. The integers are already on the vc table (add_lua_flag_mapping), so this is just
 taking the fast path that was always there.
 
@@ -549,5 +837,74 @@ capi.greek_key_ids = {}
 for name, letter in pairs(capi.greek_keys) do
     capi.greek_key_ids[vc[name] or name] = letter
 end
+
+--[[ Accent recipes for mexpr_accent(). Same shape as capi.round_bracket() above - a size in, a
+table out, tiers narrowest-first. `stroke` is passed only for its HEIGHT, which becomes the pen
+width when the accent has to be DRAWN rather than set from a glyph (mexpr_frac's divline idiom).
+
+hat and tilde run out of glyphs after their third cmex10 variant; past that mexpr_accent draws the
+shape itself, continuing at the last tier's own height so there is no step at the boundary. A bar
+has no glyph at all in these fonts, so it is always drawn - hence no tiers. ]]
+function capi.hat_accent(fontsz)
+    return {
+        kind = "MEXPR_ACCENT_HAT",
+        stroke = capi.hline_basic(fontsz),
+        tiers = {
+            {size = fontsz, code = 58},    -- "^" - the OT1 circumflex accent
+            {size = fontsz, code = 250},
+            {size = fontsz, code = 251},
+            {size = fontsz, code = 252},
+        },
+    }
+end
+
+--[[ Vector arrows. The RIGHT one has a real accent glyph - cmmi 0x7E, what LaTeX's own \\vec
+uses - at 17x8 against a letter's ~17 wide, so an ordinary single-letter vector resolves to it.
+There is no left-pointing counterpart in Computer Modern at any size, and no wider right one either,
+so everything else is drawn (MEXPR_ACCENT_ARROW_R/_L, math_expr_composer.h). That matters here
+rather than being a corner case: a vector over a STACK is exactly what this is for, and no glyph
+is anywhere near that wide.
+
+The left one therefore lists no tiers at all - the drawn shape is its only form. ]]
+function capi.vec_accent(fontsz)
+    return {
+        kind = "MEXPR_ACCENT_ARROW_R",
+        stroke = capi.hline_basic(fontsz),
+        -- No tiers on purpose - see mexpr_accent's arrow branch. cmmi's own \\vec glyph (ncod 248)
+        -- is 8 tall against the drawn head's 4.25, so letting short targets use it would make
+        -- the head change size with the target, which is exactly what it must not do.
+        tiers = {},
+    }
+end
+
+function capi.vec_left_accent(fontsz)
+    return {
+        kind = "MEXPR_ACCENT_ARROW_L",
+        stroke = capi.hline_basic(fontsz),
+        tiers = {},
+    }
+end
+
+function capi.tilde_accent(fontsz)
+    return {
+        kind = "MEXPR_ACCENT_TILDE",
+        stroke = capi.hline_basic(fontsz),
+        tiers = {
+            {size = fontsz, code = 90},    -- "~" - the OT1 tilde accent
+            {size = fontsz, code = 253},
+            {size = fontsz, code = 254},
+            {size = fontsz, code = 255},
+        },
+    }
+end
+
+function capi.bar_accent(fontsz)
+    return { kind = "MEXPR_ACCENT_RULE", stroke = capi.hline_basic(fontsz), tiers = {} }
+end
+
+-- One dot. Several are made by merging this with itself, not by a wider glyph - there is no ddot
+-- in these fonts either.
+function capi.dot_accent_char(fontsz) return {size = fontsz, code = 249} end
+
 
 return capi

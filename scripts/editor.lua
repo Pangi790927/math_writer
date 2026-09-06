@@ -23,7 +23,7 @@ they're reinterpreted by mformula.lua (Up/Down = enter superscript/subscript).
 local vc = require("virt_composer")
 local char = require("char")
 local mexpru = require("mexpru")
-local mformula = require("mformula_new") -- TEMP: swapped in for a live look, see CLAUDE.md/chat
+local mformula = require("mformula_new")
 local prof = require("prof")
 
 local editor = {}
@@ -241,7 +241,7 @@ end
 
 --[[ Rescales every formula embed in state.chars at the CURRENT global zoom (mexpru.set_zoom(), set
 by content.lua just before calling this) - content.lua's own Ctrl+MouseWheel handler calls this for
-every box any time the zoom actually changes (2026-09-04), so already-typed formula content visibly
+every box any time the zoom actually changes, so already-typed formula content visibly
 catches up (mformula_new.rescale()'s own comment - plain text needs no equivalent call here, it's
 never baked into anything, always measured/drawn fresh from the live `sz` passed to draw() itself). ]]
 function editor.rescale(state, fontset)
@@ -328,10 +328,26 @@ local function snapshot(state)
             end
         end
     end
+    --[[ Which formula owned input, by its INDEX in chars rather than by the table itself: the
+    restore hands back all-new item tables, so the identity is gone but the position is not. This
+    is what lets undo_or_redo() put the user back inside the formula they were editing (reported
+    live: "space, ctrl+z, the undo operation went ok, but the cursor jumped outside the
+    formula, I want it to stay there"). The formula's own internal cursor rides along on its clone,
+    which mformula.clone() maps across for exactly this reason. ]]
+    local active_idx
+    if state.active_formula then
+        for i, item in ipairs(state.chars) do
+            if item.formula == state.active_formula then
+                active_idx = i
+                break
+            end
+        end
+    end
     return {
         chars = chars,
         cursor_pos = state.cursor_pos,
         selection_anchor = state.selection_anchor,
+        active_formula_idx = active_idx,
     }
 end
 
@@ -374,10 +390,11 @@ local function push_undo(state, coalesce_key)
     commit_undo(state, snapshot(state), coalesce_key)
 end
 
---[[ Ctrl+Z / Ctrl+Shift+Z. Always exits any active formula on restore - the restored chars are a
-fresh copy with all-new row/formula tables, so there's no single "same" formula left to stay
-inside even if one was active before; the user can click or arrow back into whichever one they
-want. A no-op (not even clearing undo_coalesce_key) when the relevant stack is empty. ]]
+--[[ Ctrl+Z / Ctrl+Shift+Z. Restores the formula that owned input too, by the index snapshot()
+recorded - the restored chars are all-new tables, so the old active_formula reference cannot be
+reused, but the item at that index is the same formula and undoing an edit made INSIDE one should
+leave you still inside it. Falls back to plain editing when that index holds no formula any more
+(the undone edit deleted it, say). A no-op when the relevant stack is empty. ]]
 local function undo_or_redo(state, is_redo)
     local from_stack = is_redo and state.redo_stack or state.undo_stack
     local to_stack = is_redo and state.undo_stack or state.redo_stack
@@ -389,10 +406,51 @@ local function undo_or_redo(state, is_redo)
     state.chars = snap.chars
     state.cursor_pos = snap.cursor_pos
     state.selection_anchor = snap.selection_anchor
-    state.active_formula = nil
+    local restored = snap.active_formula_idx and state.chars[snap.active_formula_idx]
+    state.active_formula = restored and restored.formula or nil
     state.undo_coalesce_key = nil
     state._undo_baseline = nil      -- the state just changed wholesale; any cached one is stale
 end
+
+--[[ The two halves of one frame of editing INSIDE a formula, called by handle_input() around
+mformula.handle_input() and exported so a test can drive the same sequence (that branch itself needs
+real keypresses).
+
+begin: make sure a pre-edit baseline exists - CACHED, not rebuilt per frame, because rebuilding it
+means cloning every formula tree and that made the editor visibly lag - and return where the caret
+is RIGHT NOW, as a path.
+
+The split exists because those two have different lifetimes, which is the bug that produced it: the
+baseline stays valid until an edit changes the tree, but the caret moves freely without bumping
+version, so the caret position inside a cached baseline goes stale immediately. commit stamps the
+freshly-captured path onto the baseline before recording it, so Ctrl+Z restores the tree AND puts
+the caret back where the undone edit started, not where the previous one left it. ]]
+function editor.begin_formula_edit(state)
+    if not state._undo_baseline then
+        state._undo_baseline = snapshot(state)
+    end
+    return mformula.cursor_path(state.active_formula)
+end
+
+function editor.commit_formula_edit(state, cursor_path)
+    local snap = state._undo_baseline
+    if not snap then
+        return
+    end
+    local idx = snap.active_formula_idx
+    local snap_item = idx and snap.chars[idx]
+    if snap_item and snap_item.formula then
+        mformula.cursor_from_path(snap_item.formula, cursor_path)
+    end
+    commit_undo(state, snap, nil)
+end
+
+--[[ Exported for tests only (the convention mformula_new's make_supsub()/make_frac() already use).
+handle_input()'s own Ctrl+Z branch is the real entry point, and it needs real keypresses, so a test
+that wants to undo something has to reach the machinery directly. ]]
+editor.push_undo = push_undo
+function editor.undo(state) undo_or_redo(state, false) end
+function editor.redo(state) undo_or_redo(state, true) end
 
 -- #################################################################################################
 -- Input handling
@@ -488,9 +546,8 @@ function editor.handle_input(state, fontset, sz)
                 -- done here since hit_test() never receives draw_x itself (local_click is already
                 -- draw_x-relative by the time it gets there).
                 local wrap_width = fb.wrap_edge and (fb.wrap_edge - fb.draw_x)
-                -- TEMP: mformula_new's hit_test() mutates cursor_pos directly (same convention as
-                -- move_*) rather than returning a value - mformula.lua's own hit_test() returned
-                -- {row=,pos=} for the caller to assign into state.cursor instead.
+                -- hit_test() mutates cursor_pos directly, the same convention move_*() uses,
+                -- rather than returning a position for the caller to assign.
                 mformula.hit_test(state.active_formula, fontset, sz, local_click, wrap_width,
                         dragging_here and not clicked_inside_fb)
                 state.formula_dragging = fb
@@ -511,20 +568,19 @@ function editor.handle_input(state, fontset, sz)
             That was merely wasteful while a snapshot was a shallow deep_copy; once snapshot() began
             cloning each formula's whole tree (it had to - see mformula_new.clone()) it became a
             full structural rebuild of every formula, every frame, and the editor visibly lagged.
-            Reported live 2026-09-05: "it lags a lot".
+            Reported live: "it lags a lot".
 
             A baseline stays valid until something actually changes the state, so it is invalidated
             in commit_undo() and undo_or_redo() - the two places that ever do. The cost is back to
             about one clone per edit instead of one per frame. ]]
             local formula = state.active_formula
             local pre_version = formula.version
-            if not state._undo_baseline then
-                state._undo_baseline = snapshot(state)
-            end
-            local pre_snapshot = state._undo_baseline
-            mformula.handle_input(formula, fontset, sz) -- TEMP: mformula_new needs these, mformula didn't
+            -- The caret path has to be taken BEFORE the edit - afterwards it has already moved with
+            -- it. See editor.begin_formula_edit()'s comment for why it isn't read off the baseline.
+            local pre_cursor_path = editor.begin_formula_edit(state)
+            mformula.handle_input(formula, fontset, sz)
             if formula.version ~= pre_version then
-                commit_undo(state, pre_snapshot, nil)
+                editor.commit_formula_edit(state, pre_cursor_path)
             end
             return
         end
@@ -574,7 +630,7 @@ function editor.handle_input(state, fontset, sz)
 
     -- Ctrl+=: the same again for a stack - a new formula embed already holding a one-slot vert,
     -- cursor inside it. The third of the three containers reachable straight from plain text
-    -- (Ctrl+M blank, Ctrl+/ fraction, Ctrl+= stack); asked for 2026-09-05 precisely so the stack
+    -- (Ctrl+M blank, Ctrl+/ fraction, Ctrl+= stack); asked for precisely so the stack
     -- stops being the odd one out that needs a Ctrl+M first. Ctrl+SHIFT+= is superscript and is
     -- handled in the block below - the `not is_shift` guard here is what keeps the two apart, the
     -- same split mformula_new.handle_input() makes for these keys INSIDE a formula. -------------
@@ -925,6 +981,55 @@ local CURSOR_COLOR = 0xff00ffff
 local TEXT_COLOR = 0xffeeeeee
 local SELECTION_COLOR = 0x55cc6622 -- translucent, drawn on top of already-drawn text
 local FORMULA_MARGIN = 4
+
+--[[ The narrowest CONTENT column a formula may be handed, as a multiple of the line height (so it
+scales with the font instead of being a pixel constant).
+
+Not cosmetic. mexpr_draw_rec() (math_expr_composer.h) wraps a node by stepping it left by exactly
+one column width per row until it lands inside the column - and when that width is zero or negative
+the step is zero or positive, so the node never moves in and the loop never ends. That is a hard
+hang: 100% of one core, flat memory, no error, the window simply stops responding.
+
+Reproduced from the report "too large of a zoom out crashes the application", minimally
+as the 21-byte document "$$x+y$$$$a+b$$$$c+d$$" plus eleven Ctrl+MouseWheel steps: at that size the
+first formula fills the column, and the second one is then laid out at an x already past the wrap
+edge. Nothing to do with the integral or with any font size being missing - the size index is
+clamped to the table's own bounds long before this (mexpru.physical_sz()).
+
+Two things keep it from happening now: a formula with less than this much room left starts a new
+line, the same rule plain glyphs already followed, and the column actually passed down is clamped to
+at least this much so even a box narrower than one is never a degenerate column. The C++ loop should
+still refuse to run on a non-positive column - a layout bug must not be able to hang the app - but
+that belongs in math_expr_composer.h, not here. ]]
+local MIN_FORMULA_COLUMN_LINES = 1
+
+--[[ Where a formula goes on the line it is currently on. `used` is how far along that line the
+layout has already advanced (pass 1's lx, pass 2's x - pos.x); returns (break_line, column):
+
+  break_line - start a new line before drawing it, the same rule a glyph that doesn't fit follows.
+               Never true at the start of a line, where breaking would gain nothing and could
+               repeat forever.
+  column     - the CONTENT width to hand down, floored at MIN_FORMULA_COLUMN_LINES worth so it is positive
+               even in a box too narrow to hold one - see MIN_FORMULA_COLUMN_LINES.
+
+Both passes call this rather than each doing the arithmetic, because a disagreement between them
+about which line a formula lands on is its own class of bug (see pass 1's own comment). ]]
+local function formula_line_fit(m, width_limit, used)
+    if not width_limit then
+        return false, nil
+    end
+    local min_col = m.line_height * MIN_FORMULA_COLUMN_LINES
+    local remaining = width_limit - used - 2 * FORMULA_MARGIN
+    if used > 0 and remaining < min_col then
+        -- Break: the column becomes the whole line's worth, measured from its start.
+        return true, math.max(min_col, width_limit - 2 * FORMULA_MARGIN)
+    end
+    return false, math.max(min_col, remaining)
+end
+
+-- Exported for tests only (the convention mformula_new's make_supsub()/make_frac() already use):
+-- the passes that call it live inside draw(), which needs a real ImGui frame to run.
+editor.formula_line_fit = formula_line_fit
 local FORMULA_BORDER_COLOR = 0xff777777
 local FORMULA_ACTIVE_BORDER_COLOR = 0xff00ffff
 -- Muted green for the debug cursor-travel track drawn under the active formula - low-contrast
@@ -943,9 +1048,9 @@ caret is only drawn when `show_cursor` is true (or omitted) - a caller managing 
 (e.g. content.lua's boxes) should pass false for every editor that isn't the active one.
 `show_wireframe` (default false) is forwarded to every inline formula's own mformula.draw() - the
 debug bounding-box overlay (vc.mexpr_draw's draw_bb), off by default so it's only on when actually
-visually debugging (content.lua's own wireframe-toggle button, 2026-09-04).
+visually debugging (content.lua's own wireframe-toggle button).
 `show_graph` (default false) gates the ACTIVE formula's own reachable-position graph (mformula.
-reachable_graph() - ported 2026-09-05 from the old row-based mformula.lua) - off by default, same
+reachable_graph() - ported from the old row-based mformula.lua) - off by default, same
 reasoning as show_wireframe, content.lua's own graph-toggle button flips it on.
 @return the total content height in pixels (bottom of the last line, relative to pos.y), and the
 widest any single line's own content actually reached (relative to pos.x - may exceed width_limit,
@@ -975,6 +1080,12 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                     line_extra_top[line_idx], line_extra_bottom[line_idx] = 0, 0
                     lx = 0
                 elseif item.formula then
+                    local break_line, wrap_width = formula_line_fit(m, width_limit, lx)
+                    if break_line then
+                        line_idx = line_idx + 1
+                        line_extra_top[line_idx], line_extra_bottom[line_idx] = 0, 0
+                        lx = 0
+                    end
                     -- Mirrors pass 2's own content_x = x + margin (x here IS pos.x + lx at this
                     -- exact point, same reasoning as the width_limit line-break check just below) -
                     -- an ESTIMATE of how much room this formula will actually have once pass 2 gets
@@ -984,7 +1095,6 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                     -- its final advance adds the trailing one - so a formula allowed the full
                     -- width_limit - lx - margin ends up occupying width_limit + margin once that
                     -- advance lands. See pass 2's own wrap_edge comment for why that mattered.
-                    local wrap_width = width_limit and (width_limit - lx - 2 * FORMULA_MARGIN)
                     local box = mformula.measure(item.formula, fontset, sz, wrap_width)
                     local extra_top = math.max(0, m.baseline_shift - box.top)
                     local extra_bottom = math.max(0, box.bottom - (m.baseline_shift + m.line_height))
@@ -1032,7 +1142,7 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
     -- Widest any line's own content actually reaches, relative to pos.x - width_limit only
     -- controls WHERE plain text wraps; a single formula wider than width_limit can't be split, so
     -- it renders at its own real width regardless and can end up past width_limit anyway (e.g.
-    -- right after a Ctrl+MouseWheel zoom-in - reported live, 2026-09-05, "zooming makes it exit
+    -- right after a Ctrl+MouseWheel zoom-in - reported live, "zooming makes it exit
     -- the box"). content.lua's own box border only grows to fit content_h automatically, never
     -- width, so it needs this to know how wide it actually has to be too - see this function's own
     -- return value/content.lua's own box-sizing comment.
@@ -1054,11 +1164,20 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
         local item = state.chars[i+1]
         local item_sz = nil
         local eff_sz = sz
-        if item and not item.newline and not item.formula then
-            eff_sz = math.max(1, math.min(MAX_SIZE_INDEX, sz + (item.size_off or 0)))
-            item_sz = fontset:char_get_sz({size=eff_sz, code=item.code})
-            if width_limit and (x - pos.x) + item_sz.adv > width_limit then
-                newline()
+        --[[ The line break happens HERE, before positions/cursor_screen_pos are recorded below,
+        so both agree with where the item actually lands. A formula follows the same rule as a
+        glyph - no usable room left, start a new line - which pass 1 above applies identically. ]]
+        if item and not item.newline then
+            if item.formula then
+                if (formula_line_fit(m, width_limit, x - pos.x)) then
+                    newline()
+                end
+            else
+                eff_sz = math.max(1, math.min(MAX_SIZE_INDEX, sz + (item.size_off or 0)))
+                item_sz = fontset:char_get_sz({size=eff_sz, code=item.code})
+                if width_limit and (x - pos.x) + item_sz.adv > width_limit then
+                    newline()
+                end
             end
         end
 
@@ -1098,11 +1217,15 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                 as width_limit + margin - i.e. asking for a wider box than it was just given, every
                 single time. content.lua then granted it, and the whole thing repeated: a width
                 demand that grew by one margin per round and only ever stopped at the max-width cap.
-                That is the "converging in steps" resize reported live 2026-09-05 - it was never
+                That is the "converging in steps" resize reported live - it was never
                 converging at all, just creeping until it hit the cap. With this, a wrapped formula
                 plus BOTH its margins fits inside width_limit, so the width is a real fixed point
                 and content.lua's own measure loop settles on the first round. ]]
-                local wrap_edge = width_limit and (pos.x + width_limit - FORMULA_MARGIN)
+                -- content_x + the column formula_line_fit() grants, so [content_x, wrap_edge]
+                -- is never degenerate - see MIN_FORMULA_COLUMN_LINES for what a zero one does.
+                -- Identical to pos.x + width_limit - FORMULA_MARGIN whenever there is real room.
+                local _, formula_column = formula_line_fit(m, width_limit, x - pos.x)
+                local wrap_edge = formula_column and (content_x + formula_column)
 
                 -- Debug: a graph of every position ANY navigation key can reach - Left/Right
                 -- within a row, Up/Down into a node's sup/sub - so navigation fixes can be
@@ -1113,7 +1236,7 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                 -- a separate strip underneath. Drawn BEFORE the formula itself so the glyphs (and
                 -- the real blinker, also drawn by mformula.draw below) layer on top of the track,
                 -- not the other way around. Active formula only - it'd just be clutter for the
-                -- others. show_graph (content.lua's own graph-toggle button, 2026-09-05, same
+                -- others. show_graph (content.lua's own graph-toggle button, same
                 -- pattern as show_wireframe) gates this specifically - ported live from the old
                 -- (row-based) mformula.lua, off by default so it doesn't clutter ordinary editing.
                 --[[ The cursor highlight, FIRST - before the graph, which is itself before the
@@ -1154,7 +1277,7 @@ function editor.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wir
                         was flatly wrong: a superscript sits at a different y from its own base on
                         the SAME row, so every base<->sup edge - each "2", both integral limits -
                         was treated as a row crossing and shot a stub out to the column edge.
-                        Reported live 2026-09-05: "lines that wouldn't normaly intersect the edge now
+                        Reported live: "lines that wouldn't normaly intersect the edge now
                         pass through to the edge".
 
                         The column is [content_x, wrap_edge] - the same startx/edge the C++ wrap loop

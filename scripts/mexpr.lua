@@ -301,11 +301,19 @@ function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
                     local expr = #node > 4 and
                                node_to_wrapped_mexpr(fontset, ns, node[5], node_type, sz)
                             or node_to_wrapped_mexpr(fontset, ns, node[2], node_type, sz)
-                    return vc.mexpr_bigop(fontset, expr, var, stop, char.bigsum(math.max(sz-5, 1)))
+                    -- mexpr_bigop no longer holds the operand: it is the operator plus its
+                    -- limits, and what it applies to follows it in a row.
+                    local op_sz = char.bigsum(math.max(sz-5, 1))
+                    local op = vc.mexpr_symbol(fontset, op_sz, false)
+                    return vc.mexpr_merge_h(fontset,
+                            {vc.mexpr_bigop(fontset, op, var, stop, op_sz), expr})
                 else
                     -- Simple sum without bounds
                     local expr = node_to_wrapped_mexpr(fontset, ns, node[2], node_type, sz)
-                    return vc.mexpr_bigop(fontset, expr, nil, nil, char.bigsum(math.max(sz-5, 1)))
+                    local op_sz = char.bigsum(math.max(sz-5, 1))
+                    local op = vc.mexpr_symbol(fontset, op_sz, false)
+                    return vc.mexpr_merge_h(fontset,
+                            {vc.mexpr_bigop(fontset, op, nil, nil, op_sz), expr})
                 end
             elseif fn_name == "int" or fn_name == "\\int" then
                 -- Integral
@@ -316,11 +324,17 @@ function mexpr.to_mexpr(fontset, ns, node, parent_type, sz)
                     local expr = #node > 4 and
                                node_to_wrapped_mexpr(fontset, ns, node[5], node_type, sz)
                             or node_to_wrapped_mexpr(fontset, ns, node[2], node_type, sz)
-                    return vc.mexpr_bigop(fontset, expr, var, stop, char.integral(math.max(sz-5, 1)))
+                    local op_sz = char.integral(math.max(sz-5, 1))
+                    local op = vc.mexpr_symbol(fontset, op_sz, false)
+                    return vc.mexpr_merge_h(fontset,
+                            {vc.mexpr_bigop(fontset, op, var, stop, op_sz), expr})
                 else
                     -- Simple integral without bounds
                     local expr = node_to_wrapped_mexpr(fontset, ns, node[2], node_type, sz)
-                    return vc.mexpr_bigop(fontset, expr, nil, nil, char.integral(math.max(sz-5, 1)))
+                    local op_sz = char.integral(math.max(sz-5, 1))
+                    local op = vc.mexpr_symbol(fontset, op_sz, false)
+                    return vc.mexpr_merge_h(fontset,
+                            {vc.mexpr_bigop(fontset, op, nil, nil, op_sz), expr})
                 end
             else
                 -- Regular function call - concatenate function name with arguments

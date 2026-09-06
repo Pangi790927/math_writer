@@ -24,7 +24,7 @@ local NODE_RADIUS = 6
 -- state.font_size (below, new_shell()) starts here - a char.lua m_font_sizes table index (1 =
 -- biggest/360pt, 18 = smallest/8pt - see that table's own comment), not a pixel size. mexpru's own
 -- DEFAULT_SIZE (36pt) - the same nominal size this used to be a plain constant at before Ctrl+
--- MouseWheel zoom (2026-09-04) made it live, adjustable state instead - single source of truth
+-- MouseWheel zoom made it live, adjustable state instead - single source of truth
 -- since editor.lua's own brand-new-formula construction (Ctrl+M/paste) needs the exact same value
 -- (mexpru.DEFAULT_SIZE's own comment: a fixed LOGICAL baseline, not this live state.font_size).
 local DEFAULT_FONT_SIZE = mexpru.DEFAULT_SIZE
@@ -54,7 +54,7 @@ local SCROLL_SPEED = 44 -- pixels per wheel notch
 25ms while the threshold still measured wall time, where anything smaller just counted frames that
 had already missed a vsync and were sitting idle waiting for the next one.
 
-For reference, measured 2026-09-05 with page heap off (see below): the app does a whole keystroke,
+For reference, measured with page heap off (see below): the app does a whole keystroke,
 including the undo clone, in ~0.5ms of work - about 3% of the budget - so this should fire only when
 something is genuinely wrong.
 
@@ -82,11 +82,11 @@ local function new_shell()
         show_wireframe = false, -- toggled by the small button next to each box's close ("x") button -
                                  -- global, not per-box: whether mexpr drawing shows its debug bounding
                                  -- boxes (vc.mexpr_draw's own draw_bb) everywhere, off by default so
-                                 -- it's only on when actually visually debugging (2026-09-04).
+                                 -- it's only on when actually visually debugging.
         show_graph = false,     -- toggled by its own button next to the wireframe one - global, same
                                  -- reasoning as show_wireframe: whether the ACTIVE formula's own
                                  -- reachable-position graph (mformula_new.reachable_graph(), ported
-                                 -- 2026-09-05 from the old row-based mformula.lua) is drawn, off by
+                                 -- from the old row-based mformula.lua) is drawn, off by
                                  -- default so it doesn't clutter ordinary editing.
         font_size = DEFAULT_FONT_SIZE, -- Ctrl+MouseWheel (handle_input()) adjusts this - global, same
                                  -- reasoning as show_wireframe just above. A char.lua size-table
@@ -334,7 +334,7 @@ function content.handle_input(state, fontset, pos)
     -- Mouse wheel scrolls the whole stack, UNLESS Ctrl is held, in which case it zooms instead
     -- (state.font_size - a char.lua size-table INDEX, not a pixel size, see DEFAULT_FONT_SIZE's own
     -- comment) - global, same as show_wireframe, not tied to whichever box the mouse happens to be
-    -- over (2026-09-04). One size-table step per wheel notch, not scaled by SCROLL_SPEED - these are
+    -- over. One size-table step per wheel notch, not scaled by SCROLL_SPEED - these are
     -- discrete levels, not pixels, and a raw multi-unit wheel event (e.g. a fast trackpad flick)
     -- would otherwise jump several steps at once. Positive wheel (away from the user, the usual
     -- "scroll up"/"zoom in" gesture) should make text BIGGER, i.e. walk the table towards index 1 -
@@ -348,7 +348,7 @@ function content.handle_input(state, fontset, pos)
             -- mexpru.set_zoom() first (mexpru.physical_sz()'s own comment: one global value the
             -- whole app reads) - THEN rescale every box's every formula so already-typed content
             -- visually catches up too, not just brand-new typing (editor.rescale()'s own comment).
-            -- Global, not just the active box - confirmed 2026-09-04.
+            -- Global, not just the active box - confirmed.
             mexpru.set_zoom(state.font_size - DEFAULT_FONT_SIZE)
             for _, box in ipairs(state.boxes) do
                 editor.rescale(box.editor, fontset)
@@ -454,7 +454,7 @@ local HELP_LINES = {
     "",
     "General",
     "  F1                       Toggle this panel",
-    "  F2                       Alt+letter glyph reference",
+    "  F2                       Alt+letter and Alt+symbol glyph reference",
     "  Click inside a box       Activate it / place the cursor",
     "  Click the left rail      Insert a new box there",
     "  Click a box's x          Close that box",
@@ -468,8 +468,8 @@ local HELP_LINES = {
     "",
     "Plain text",
     "  Type                     Insert a character",
-    "  Alt+letter                Greek lowercase (a=alpha, b=beta, g=gamma, d=delta, ...)",
-    "  Alt+Shift+letter           Greek uppercase where it exists / Alt+Shift+Q = integral",
+    "  Alt+letter                Greek lowercase (a=alpha, b=beta, ...) / Alt+Q = partial",
+    "  Alt+Shift+letter           Greek uppercase / S = sum, P = product, Q = integral",
     "  Space / Enter             Space / newline",
     "  Backspace / Delete         Delete before / after the cursor",
     "  Left / Right               Move (Ctrl+Left/Right = word skip, or enter a formula)",
@@ -485,6 +485,9 @@ local HELP_LINES = {
     "  Click a formula            Enter it",
     "  Inside a formula:",
     "    Type / Alt+letter          Same as plain text, inside the formula",
+    "    >= <= -> <- => <=> <-> != == .. _| ||   Become one symbol as you type",
+    "    ~                          Similar-to  (~= gives approximately)",
+    "    = after a relation         Its or-equal form: Alt+< then = gives included-or-equal",
     "    Space                      A real space (keeps its width)",
     "    Left / Right                Walk through it, including sup/sub bases",
     "    Up / Down                  Jump into/between superscript & subscript, or numerator & denominator",
@@ -493,9 +496,21 @@ local HELP_LINES = {
     "    Alt+Up / Alt+Down           Go back the way you came in - from a numerator or",
     "                               denominator, back onto the fraction itself",
     "    Ctrl+Shift+= / Ctrl+Shift+-   Superscript / subscript on the character before the cursor",
+    "    Ctrl+Shift+[ / Ctrl+Shift+]  Limit above / below - makes a big operator (sum, integral)",
+    "    " .. "\\" .. "name then Space         Any symbol by its LaTeX name: " .. "\\" .. "sum, "
+            .. "\\" .. "infty, " .. "\\" .. "partial ...",
+    "    Alt+[ / Alt+]              Union / intersection      (F2 lists them all)",
+    "    Alt+, / Alt+.              Belongs to / contains",
+    "    Alt+< / Alt+>              Included in / includes; type = after for the or-equal form",
     "    Ctrl+/                     Insert an empty fraction at the cursor",
     "    Ctrl+= / Ctrl+-            Start a stack / add a cell to it, or drop a cell",
+    "    Ctrl+6 / Ctrl+` / Ctrl+G     Hat / tilde / bar ABOVE the character (press again = off)",
+    "    the same three with Shift    ...the same accent BELOW it instead",
+    "    Ctrl+. / Ctrl+,            Add / remove a dot above it (up to three)",
+    "    Ctrl+Shift+. / Ctrl+Shift+,   Vector arrow above it, pointing right / left",
     "    ( [ {  then  ) ] }           Brackets pair up and resize to fit what's between them",
+    "    Ctrl+Shift+\\               A | delimiter - the same shortcut opens and closes it",
+    "                               (a typed | stays an ordinary character)",
     "    Ctrl+Left/Right, Escape,     Exit the formula",
     "      or click outside",
     "    Click inside                Place the cursor there",
@@ -513,7 +528,7 @@ local HELP_BG_COLOR = 0xee1a1a1a
 local HELP_TEXT_COLOR = 0xffe0e0e0
 
 --[[ Laid out in as many columns as it takes to fit the display's own height, rather than one long
-run - the list outgrew a 720p window the moment the formula section filled out (2026-09-05), and a
+run - the list outgrew a 720p window the moment the formula section filled out, and a
 help panel whose bottom entries are off-screen is worse than useless. Breaks at a blank line where
 it can, so a section is never split across a column boundary. ]]
 local HELP_COLUMN_W = 620
@@ -633,7 +648,7 @@ local function draw_alt_help(fontset)
     local size = vc.ImGui_GetDisplaySize()
     vc.ImGui_AddRectFilled({x=0, y=0}, {x=size.x, y=size.y}, HELP_BG_COLOR, 0)
     vc.ImGui_AddText({x=40, y=16}, HELP_TEXT_COLOR,
-            "Math Writer - Alt+letter / Alt+Shift+letter  (F2 to close)")
+            "Math Writer - Alt+letter / Alt+Shift+letter, and Alt+symbol  (F2 to close)")
 
     local gm = glyph_metrics(fontset, ALT_GLYPH_SZ)
     local row_h = gm.line_height + 10
@@ -671,6 +686,33 @@ local function draw_alt_help(fontset)
                     HELP_TEXT_COLOR, false, 0)
         end
         draw_label(fontset, ALT_GLYPH_SZ, nx + 260, baseline, hi_desc or "(plain)", HELP_TEXT_COLOR)
+    end
+
+    --[[ The Alt+punctuation symbols, under the letters. Read from char.alt_symbols - the same table
+    the key handler polls - so this section cannot fall out of step with the keys either. ]]
+    local sym_top = row0_top + 13 * row_h + 24
+    vc.ImGui_AddText({x=col_key, y=sym_top - 20}, HELP_TEXT_COLOR,
+            "Alt+ (symbols)                                   Alt+Shift+")
+    for i, sym in ipairs(char.alt_symbols) do
+        local row_top = sym_top + (i - 1) * row_h
+        local baseline = row_top - gm.baseline_shift
+        vc.ImGui_AddText({x=col_key, y=row_top}, HELP_TEXT_COLOR, sym.label)
+
+        local lo = char.find_by_desc(sym.plain)
+        if lo then
+            fontset:char_draw({size=ALT_GLYPH_SZ, code=lo.ncod}, {x=col_glyph, y=baseline},
+                    HELP_TEXT_COLOR, false, 0)
+        end
+        draw_label(fontset, ALT_GLYPH_SZ, col_name, baseline, sym.plain, HELP_TEXT_COLOR)
+
+        if sym.shift then
+            local hi = char.find_by_desc(sym.shift)
+            if hi then
+                fontset:char_draw({size=ALT_GLYPH_SZ, code=hi.ncod},
+                        {x=col_glyph + 260, y=baseline}, HELP_TEXT_COLOR, false, 0)
+            end
+            draw_label(fontset, ALT_GLYPH_SZ, col_name + 260, baseline, sym.shift, HELP_TEXT_COLOR)
+        end
     end
 end
 
@@ -711,7 +753,7 @@ function content.draw(state, fontset, pos)
     -- A box spans the full width available to it, stopping RIGHT_MARGIN short of the display's own
     -- right edge - and that margin MATCHES the gap on the left between the rail and the box
     -- (BOX_LEFT - RAIL_OFFSET), so the content sits in an evenly inset column rather than being
-    -- noticeably tighter on one side. Reported live, 2026-09-05: "the content box stopped extending
+    -- noticeably tighter on one side. Reported live: "the content box stopped extending
     -- to the end of the window (not glued, but with a space (similar to the space from the content
     -- box to the vertical line))".
     local RIGHT_MARGIN = BOX_LEFT - RAIL_OFFSET

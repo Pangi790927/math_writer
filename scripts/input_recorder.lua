@@ -1,5 +1,5 @@
 --[[
-input_recorder.lua - a "flight recorder" for real input, requested live 2026-09-05: "I crashed, make
+input_recorder.lua - a "flight recorder" for real input, requested live: "I crashed, make
 something to record the motions I do, such that on a crash (not a segfault one, but a normal
 exception) those will be all available for you to inspect".
 
@@ -21,7 +21,7 @@ neither gets re-proposed:
 Moving the writing off the frame dissolves the trade instead of splitting it: because the flush now
 happens somewhere that is not the frame, it goes back to being per-line, so every event is durable
 the moment the writer picks it up and the app pays nothing at all. A kill loses only what was still
-in flight; a normal exit waits for the queue to drain (see close()) - verified 2026-09-05 by sending
+in flight; a normal exit waits for the queue to drain (see close()) - verified by sending
 the debug pipe's `quit` milliseconds after the last keystroke and finding every line present.
 
 main.lua's own test_draw() additionally wraps the real per-frame logic in a pcall and, on failure,
@@ -63,6 +63,16 @@ local WATCHED_KEY_NAMES = {
     "ImGuiKey_UpArrow", "ImGuiKey_DownArrow", "ImGuiKey_Enter", "ImGuiKey_KeypadEnter",
     "ImGuiKey_Escape", "ImGuiKey_Home", "ImGuiKey_End", "ImGuiKey_Space",
     "ImGuiKey_Equal", "ImGuiKey_Minus", "ImGuiKey_Slash", "ImGuiKey_F1", "ImGuiKey_F2",
+    "ImGuiKey_Period", "ImGuiKey_Comma", "ImGuiKey_GraveAccent", "ImGuiKey_Apostrophe",
+    "ImGuiKey_Semicolon", "ImGuiKey_LeftBracket", "ImGuiKey_RightBracket", "ImGuiKey_Backslash",
+    --[[ The digit row, watched not because anything binds a bare digit but because two accent
+    shortcuts are defined in terms of what a US layout puts on one: "^" is Shift+6 and "~" is
+    Shift+`. On any other layout those characters live on different physical keys, the binding
+    never fires, and the symptom is a keypress that does nothing at all - with the recorder silent,
+    because it wasn't watching. Reported live: "a, ctrl+^ does nothing". Now a run says
+    which key was actually pressed, instead of leaving it to be guessed from the layout. ]]
+    "ImGuiKey_0", "ImGuiKey_1", "ImGuiKey_2", "ImGuiKey_3", "ImGuiKey_4",
+    "ImGuiKey_5", "ImGuiKey_6", "ImGuiKey_7", "ImGuiKey_8", "ImGuiKey_9",
 }
 for key_name in pairs(char.greek_keys) do
     WATCHED_KEY_NAMES[#WATCHED_KEY_NAMES + 1] = key_name
@@ -72,7 +82,7 @@ end
 
 virt_composer's bm_t<ImGuiKey> parameter accepts either, and the two are not remotely equivalent:
 the string path builds an fkyaml::node per call just to look the enum up, the integer path is a
-lua_tointegerx. Measured in the real app 2026-09-05, 20000 calls each:
+lua_tointegerx. Measured in the real app, 20000 calls each:
 
     "ImGuiKey_Backspace"    180.83us per call
     vc.ImGuiKey_Backspace     0.22us per call      (822x)
@@ -102,7 +112,7 @@ end
 
 A failure that leaves the app in a bad state throws again every single frame (see this file's own
 top comment), and unfiltered that buries the events which caused it under thousands of copies - a
-real session on 2026-09-05 logged the same line 1140 times, and the six keystrokes that actually
+real session on logged the same line 1140 times, and the six keystrokes that actually
 mattered were the ones just above it. The first occurrence is written immediately, as always; the
 repeats are counted and summarised when something else finally happens. ]]
 local last_err, last_err_count = nil, 0

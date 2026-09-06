@@ -92,7 +92,8 @@ function run_test()
                 mexpru.u(children[1]).bracket ~= nil and mexpru.u(children[3]).bracket ~= nil)
 
         local latex = mformula_new.to_latex({root = root})
-        check("tall pair round-trips as (a^{i}) - NOT \"!\"", latex == "(a^{i})", latex)
+        check("tall pair round-trips, grown - NOT \"!\"",
+                latex == "\\left(a^{i}\\right)", latex)
         check("no stray '!' anywhere in the output", not latex:find("!", 1, true), latex)
     end
 
@@ -109,7 +110,8 @@ function run_test()
         mexpru.update_positions(root)
 
         local latex = mformula_new.to_latex({root = root})
-        check("nested pairs round-trip as ((a^{i}))", latex == "((a^{i}))", latex)
+        check("nested pairs round-trip, both grown",
+                latex == "\\left(\\left(a^{i}\\right)\\right)", latex)
     end
 
     print("checks: " .. checks_run .. ", failed: " .. checks_failed)
