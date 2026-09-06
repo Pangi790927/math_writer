@@ -6,10 +6,16 @@ An interactive, WYSIWYG mathematical expression editor built on
 [Dear ImGui](https://github.com/ocornut/imgui), with a C++ rendering core and a math model written
 entirely in Lua.
 
-This is the third rewrite of the underlying model. Two earlier attempts are preserved under `old/`;
-both turned out too complicated to serialize or transform cleanly, which is why the current AST is
-deliberately dumb - plain tuples, each with a unique id - and everything interesting lives in Lua,
-where it can be changed without recompiling.
+This is the third rewrite of the underlying model. Two earlier attempts turned out too complicated
+to serialize or transform cleanly, which is why the current AST is deliberately dumb - plain tuples,
+each with a unique id - and everything interesting lives in Lua, where it can be changed without
+recompiling.
+
+Those attempts were kept in the tree until commit `1e201f7` ("old is superseeded"), which removed
+them once everything still wanted from them had been written down in `TODO.md` and
+`docs/phase2_design.md`. Both of those stand on their own and need nothing from the deleted code.
+Some comments in `scripts/` still name those files as the source of a ported algorithm ("a Lua port
+of `old/comments.h`'s `comment_box_t`") - read them as attribution, not as a live path.
 
 ## Intent
 
@@ -209,8 +215,7 @@ math_writer/
 ├── math_writer.yaml            Config: points virt_composer at scripts/main.lua
 ├── makefile / linux.makefile / windows.makefile
 ├── GLFW/, glfw3.dll, glfw3.lib Windows build's bundled GLFW 3.4 headers + import lib
-├── experiment_copac/           A separate small experiment, its own main and makefile
-└── old/                        Two earlier, abandoned attempts at this project
+└── experiment_copac/           A separate small experiment, its own main and makefile
 ```
 
 ### External dependencies (sibling checkouts, not vendored here)

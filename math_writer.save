@@ -1,4 +1,5 @@
-1991
+formula 0
+text 1991
 $$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)\ $$ 
 
 $$\vec{a}\ \vec{m}\ \vec{F}\ \vec{I}$$
@@ -23,5 +24,5 @@ $$\mathop{\bigcup }\limits_{I\subseteq \R }M$$
 
 $$\bigcup \limits_{M\subset \R }M\ =\ \R $$
 
-Houses for everyone! Ok what is next?22
+Houses for everyone! Ok what is next?text 22
 Editor stage 1 is done

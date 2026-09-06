@@ -35,7 +35,6 @@ BACKEND_SRC += ${IMGUI}/backends/imgui_impl_opengl3.cpp
 
 INCLCUDES := /I${UTILS} /I${UTILS}/ap /I${UTILS}/co /I${UTILS}/generic /I.
 INCLCUDES += /I${IMGUI} /I${IMGUI}/backends/ /I${IMPLOT}
-INCLCUDES += /I./old/
 
 # This is a header-only project 
 DEPS      := $(wildcard ./*.h)

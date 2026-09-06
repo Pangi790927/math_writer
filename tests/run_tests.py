@@ -43,7 +43,6 @@ INCLUDES = [
     f"/I{IMGUI}",
     f"/I{IMGUI / 'backends'}",
     f"/I{IMPLOT}",
-    f"/I{REPO_ROOT / 'old'}",
 ]
 
 CXX_FLAGS = [

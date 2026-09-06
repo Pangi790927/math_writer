@@ -1401,8 +1401,8 @@ core, user-written rules possibly later) rather than reversal, but that reading 
 3. **Are cells ever pruned?** The only thing that would actually reclaim space, at the cost of the
    proof of anything downstream (12).
    *Partly answered for the newest cell.* Undo needs no machinery of its own: it is dropping the
-   last cell. This was written down as a design target in 2025 - `old/experiment_copac/main.lua`,
-   verbatim: *"obs: There needs not be any complicated ctrl+z because the steps are allways above,
+   last cell. This was written down as a design target in 2025, in the archived copy of
+   `experiment_copac/main.lua` (removed with the earlier rewrites in commit `1e201f7`), verbatim: *"obs: There needs not be any complicated ctrl+z because the steps are allways above,
    so a ctrl+z is practically: remove the current eq-state and goto prev one"* - and under the
    immutable-cell DAG of section 1 it is no longer a target but a RESULT: a cell with no children
    has nothing depending on it, so dropping it invalidates nothing. What stays open is pruning a
@@ -1420,9 +1420,10 @@ core, user-written rules possibly later) rather than reversal, but that reading 
 
 ## 17b. The acceptance corpus — what "we will see by example" means
 
-Recovered 2026-09-06 from `old/main.cpp`, where it sat under the heading `/* All of those must
-work: */`. It predates every design decision in this document by two rewrites, and it is the
-concrete target the whole of part two is abstract about:
+Recovered 2026-09-06 from the second rewrite's `main.cpp`, where it sat under the heading
+`/* All of those must work: */`. That code was removed in commit `1e201f7`, so the list is
+reproduced here in full and nothing needs retrieving. It predates every design decision in this
+document by two rewrites, and it is the concrete target the whole of part two is abstract about:
 
 ```
 (a+b)^2 = a^2+2ab+b^2
@@ -1443,7 +1444,7 @@ They are also the natural first tests. Per `CLAUDE.md`, a test records an ASSUMP
 output - so what each of these pins is not "the answer is `a^2+2ab+b^2`" but "this manipulation is
 expressible as a sequence of checked steps, with these rules active".
 
-`old/main.cpp` also carries a pointer to a wider corpus, verbatim:
+That same file also carried a pointer to a wider corpus, verbatim:
 
 > /* TODO: sa mearga toate manipularile de aici: https://www.youtube.com/@tesan3377/playlists */
 

@@ -20,6 +20,9 @@ local BOX_LEFT    = 80   -- box left edge, relative to pos.x
 local BOX_GAP     = 24   -- vertical gap between boxes
 local BOX_PADDING = 12
 local BOX_WIDTH   = 760
+-- Height of a box with nothing in it: the floor for a text box, and the whole height of a
+-- formula/definition placeholder, which has no content to measure at all.
+local EMPTY_BOX_HEIGHT = 50
 local NODE_RADIUS = 6
 -- state.font_size (below, new_shell()) starts here - a char.lua m_font_sizes table index (1 =
 -- biggest/360pt, 18 = smallest/8pt - see that table's own comment), not a pixel size. mexpru's own
@@ -33,6 +36,87 @@ local CLOSE_SIZE  = 16   -- close ("x") button, sits just above each box's top-r
 local WIREFRAME_SIZE = 16 -- wireframe-toggle button, sits just left of the close button
 local GRAPH_SIZE = 16    -- graph-toggle button, sits just left of the wireframe button
 local RAIL_CLICK_RADIUS = 16 -- how close to the rail line counts as "clicking the rail"
+
+--[[ Box kinds. Until now every box was the text editor; a box is now tagged with which of three
+kinds it is, chosen from the radial menu (see RADIAL_* below). Only KIND_TEXT has any controls -
+the other two are placeholders that draw as a coloured box and swallow no input at all, which is
+deliberate for now: they exist so the radial menu has something real to spawn and so the seam
+content.insert_box's own comment already promised is actually exercised.
+
+The eventual meaning of the other two is in docs/phase2_design.md section 1 - a formula cell and a
+definition cell, both immutable and checked, reached through a one-way promotion door. Nothing of
+that exists yet; today they are coloured rectangles. ]]
+local KIND_TEXT       = "text"
+local KIND_FORMULA    = "formula"
+local KIND_DEFINITION = "definition"
+
+--[[ Colours are ImGui's IM_COL32 packing, which is 0xAABBGGRR - alpha, then BLUE, green, red.
+Easy to get backwards (0xff66ccff below is orange, not the light blue it reads as), so the RGB is
+spelled out in a comment next to each one. ]]
+local KIND_COLORS = {
+    -- fill  = the box background, translucent so the page shows through, as it always was.
+    -- menu  = the radial wedge. FULLY OPAQUE, and it has to be: the wedges are drawn as
+    --         half-overlapping quads to hide antialiasing seams (see draw_radial), and any alpha
+    --         below ff makes each overlap blend twice and show up as a BRIGHTER spoke instead -
+    --         which is exactly what 0xee looked like when this was tried.
+    -- hover = the same wedge while hovered, brighter.
+    [KIND_TEXT] = {                                              -- gray
+        fill = 0x33ffffff, menu = 0xff888888, hover = 0xffcccccc },
+    [KIND_FORMULA] = {                                           -- blue  ( 68,136,255)
+        fill = 0x33ff8844, menu = 0xffcc6622, hover = 0xffff9955 },
+    [KIND_DEFINITION] = {                                        -- green ( 68,204, 85)
+        fill = 0x3355cc44, menu = 0xff339922, hover = 0xff66dd55 },
+}
+
+--[[ The radial menu that picks a kind, replacing the old "insert a text box immediately" on both
+Ctrl+N and a rail click. Geometry settled 2026-09-06 (see TODO.md, which carries the full spec):
+a centre circle, three 120-degree sectors radiating out of it to 3x the centre radius, growing to
+3.2x when hovered. The first sector is centred on the UP direction - straight up, not the up-right
+diagonal - and since all three are 120 wide that fixes the other two at 210 and 330, i.e.
+lower-left and lower-right, with boundaries at 30/150/270.
+
+Angles here are ordinary maths angles: 0 = right, 90 = up, counter-clockwise. Screen y grows
+DOWNWARD, so every conversion below is (cx + r*cos, cy - r*sin) - the minus is not a typo. ]]
+local RADIAL_INNER       = 50            -- centre circle radius; also the "cancel" zone
+local RADIAL_OUTER       = RADIAL_INNER * 3.0
+local RADIAL_OUTER_HOVER = RADIAL_INNER * 3.2
+local RADIAL_SPAN        = 120           -- degrees per sector
+--[[ Drawn slightly narrower than the span so neighbouring sectors read as separate wedges instead
+of one disc. HIT TESTING USES THE FULL SPAN - the gap is ink, not a dead zone, so there is no thin
+strip between sectors where a click does nothing. ]]
+local RADIAL_DRAW_GAP    = 2             -- degrees trimmed from each side, drawing only
+local RADIAL_STEPS       = 18            -- quads per sector: no arc/convex-poly fill is exposed to
+                                         -- Lua (imgui_composer.h has lines, rects, circles,
+                                         -- triangles, quads), so an annular sector is built from a
+                                         -- strip of AddQuadFilled - which is what ImGui's own
+                                         -- convex fill does internally anyway.
+--[[ How far the mouse must travel from the button-down point before a rail press counts as a
+drag rather than a click. See radial_handle_input()'s own comment - it is measured from the press
+point, not the menu centre, because the two differ whenever the menu gets clamped on screen. ]]
+local RADIAL_ARM_DIST    = 24
+--[[ The centre circle as a SELECTABLE thing, for the keyboard: Down selects it and Enter/Space
+then cancels. Deliberately a sentinel rather than nil, so "nothing is selected yet" and "cancel is
+selected" stay distinguishable - only the second one draws the centre highlighted. ]]
+local RADIAL_CANCEL      = "cancel"
+local RADIAL_CENTER_FILL = 0xdd1a1a1a
+--[[ The centre while it is the thing about to be picked - see draw_radial's own comment on why it
+grows its X instead of growing outward like a wedge. ]]
+-- Neutral lighter gray (85,85,85), deliberately not tinted: the wedges are gray/blue/green, and a
+-- coloured centre reads as one of them. Remember the packing is 0xAABBGGRR - the first attempt at
+-- a warm tint here came out navy.
+local RADIAL_CENTER_FILL_ON = 0xff555555
+local RADIAL_CENTER_EDGE_ON = 0xffffffff
+local RADIAL_X_COLOR_ON     = 0xffffffff
+local RADIAL_X_ARM          = 10
+local RADIAL_X_ARM_ON       = 22
+local RADIAL_EDGE_COLOR  = 0xff000000
+
+--[[ Order matters only for reading; each entry carries its own centre angle. ]]
+local RADIAL_SECTORS = {
+    {kind = KIND_TEXT,       angle = 90},   -- up
+    {kind = KIND_FORMULA,    angle = 210},  -- lower-left
+    {kind = KIND_DEFINITION, angle = 330},  -- lower-right
+}
 
 local RAIL_COLOR         = 0xff777777
 local BOX_BORDER_COLOR   = 0xff777777
@@ -91,6 +175,8 @@ local function new_shell()
         font_size = DEFAULT_FONT_SIZE, -- Ctrl+MouseWheel (handle_input()) adjusts this - global, same
                                  -- reasoning as show_wireframe just above. A char.lua size-table
                                  -- index, not a pixel size (DEFAULT_FONT_SIZE's own comment).
+        radial = nil,          -- the open "which kind of box?" menu, or nil - see radial_open().
+                               -- While non-nil it owns all input for the frame.
         scroll_y = 0,          -- how far the whole stack is scrolled up (0 = pinned to the top)
         last_total_height = 0, -- filled by draw(), used to clamp scroll_y in handle_input()
     }
@@ -103,11 +189,22 @@ function content.new()
     return state
 end
 
---[[ Inserts a new (empty) box at `index` (1..#boxes+1), fixing up active_index if it was at or
-after the insertion point, and returns `index`. The seam for adding other box kinds later: right
-now every box is just {editor = editor.new()}. ]]
-function content.insert_box(state, index)
-    table.insert(state.boxes, index, {editor = editor.new()})
+--[[ Inserts a new (empty) box of `kind` at `index` (1..#boxes+1), fixing up active_index if it was
+at or after the insertion point, and returns `index`. `kind` defaults to KIND_TEXT, so every
+existing caller keeps its old behaviour unchanged.
+
+Only a text box gets an `editor`; the other two kinds are `{kind = ...}` and nothing else. That is
+what makes them inert everywhere without a single "is this kind editable" check scattered around -
+every place that would type into, measure or serialise a box already has to reach through
+`box.editor`, so the absence of the field IS the absence of controls. Guard on `box.editor`, not on
+`box.kind`, when adding code here. ]]
+function content.insert_box(state, index, kind)
+    kind = kind or KIND_TEXT
+    local box = {kind = kind}
+    if kind == KIND_TEXT then
+        box.editor = editor.new()
+    end
+    table.insert(state.boxes, index, box)
     if state.active_index and state.active_index >= index then
         state.active_index = state.active_index + 1
     end
@@ -115,8 +212,8 @@ function content.insert_box(state, index)
 end
 
 --[[ Appends a new (empty) box at the end and returns its index. ]]
-function content.add_box(state)
-    return content.insert_box(state, #state.boxes + 1)
+function content.add_box(state, kind)
+    return content.insert_box(state, #state.boxes + 1, kind)
 end
 
 --[[ Removes box i, fixing up active_index to still point at the same logical box (or nil, if the
@@ -142,8 +239,15 @@ real content, so this sidesteps that question entirely instead of picking one an
 function content.serialize(state)
     local parts = {}
     for _, box in ipairs(state.boxes) do
-        local text = editor.to_text(box.editor)
-        parts[#parts + 1] = tostring(#text) .. "\n" .. text
+        --[[ A box with no editor (the formula/definition placeholders) has no text at all, so it
+        writes a zero-length body and is carried across a save/load purely by its kind. It would
+        have been simpler to just skip them, but silently dropping boxes on save is the kind of
+        thing that gets discovered much later and by losing work. ]]
+        local text = box.editor and editor.to_text(box.editor) or ""
+        --[[ The kind prefix is NEW. Files written before box kinds existed start each record with
+        a bare length ("42\n..."), so deserialize() accepts both and treats a bare length as a text
+        box - old saves keep loading unchanged. ]]
+        parts[#parts + 1] = (box.kind or KIND_TEXT) .. " " .. tostring(#text) .. "\n" .. text
     end
     return table.concat(parts)
 end
@@ -162,14 +266,33 @@ function content.deserialize(text, fontset)
     local pos = 1
     while pos <= #text do
         local nl = text:find("\n", pos, true)
-        local len = nl and tonumber(text:sub(pos, nl - 1))
+        if not nl then
+            break
+        end
+        local header = text:sub(pos, nl - 1)
+        --[[ Two accepted headers, see serialize(): "<kind> <len>" (current) and a bare "<len>"
+        (written before box kinds existed, read back as a text box). An unrecognised kind is also
+        read as a text box rather than rejected - same leniency the length parse already has. ]]
+        local kind, len = header:match("^(%a+) (%d+)$")
+        if kind then
+            len = tonumber(len)
+            if not KIND_COLORS[kind] then
+                kind = KIND_TEXT
+            end
+        else
+            len = tonumber(header)
+            kind = KIND_TEXT
+        end
         if not len then
             break
         end
         local box_text = text:sub(nl + 1, nl + len)
-        local ed = editor.new()
-        editor.from_text(ed, box_text, fontset)
-        table.insert(state.boxes, {editor = ed})
+        local box = {kind = kind}
+        if kind == KIND_TEXT then
+            box.editor = editor.new()
+            editor.from_text(box.editor, box_text, fontset)
+        end
+        table.insert(state.boxes, box)
         pos = nl + 1 + len
     end
     if #state.boxes == 0 then
@@ -231,6 +354,279 @@ frame's (see the cursor-follow block in handle_input, which stores them in the e
 transient field that isn't part of the model) is how that block tells "the caret actually moved"
 apart from "nothing changed, some OTHER frame just ran" without a real equality check on the whole
 editor state. ]]
+-- #################################################################################################
+-- The radial "which kind of box?" menu
+-- #################################################################################################
+
+--[[ Where box `index` would START, in screen y - i.e. where a box inserted at that index lands.
+Reads LAST frame's layout, like every other mouse-facing helper here; nil before the first draw().
+For an index past the end this is the bottom of the stack, which is exactly where Ctrl+N at the end
+should put its menu. ]]
+local function insertion_y(state, index)
+    local L = state.last_layout
+    if not L or #L == 0 then
+        return nil
+    end
+    if index <= 1 then
+        return L[1].y
+    end
+    local r = L[math.min(index - 1, #L)]
+    return r.y + r.h + BOX_GAP
+end
+
+--[[ Opens the menu for an insertion at `index`, centred as close to (cx, cy) as it can be while
+staying fully on screen.
+
+The clamp is not cosmetic: the rail sits RAIL_OFFSET (40px) from the left edge and a box starts at
+BOX_LEFT (80px), while the menu needs RADIAL_OUTER_HOVER (160px) of room in every direction. Centred
+literally on the rail, the whole lower-left sector - formula - would be off screen and unclickable.
+So the menu drifts right/down/up as needed and the caller's (cx, cy) is a preference, not a
+promise. ]]
+local function radial_open(state, index, cx, cy, from_drag, press_x, press_y)
+    local disp = vc.ImGui_GetDisplaySize()
+    local margin = RADIAL_OUTER_HOVER + 8
+    if disp then
+        cx = math.max(margin, math.min(cx, math.max(margin, disp.x - margin)))
+        cy = math.max(margin, math.min(cy, math.max(margin, disp.y - margin)))
+    else
+        cx = math.max(margin, cx)
+        cy = math.max(margin, cy)
+    end
+    --[[ press_x/press_y are where the button actually went down, which after the clamp above is
+    NOT the menu's centre - see radial_handle_input's arming, which needs the real press point and
+    got this wrong once by assuming the two were the same. ]]
+    state.radial = {cx = cx, cy = cy, index = index, from_drag = from_drag or false,
+            press_x = press_x, press_y = press_y, armed = false,
+            selected = nil}  -- keyboard selection; mouse hover is `hover`, set per frame
+end
+
+--[[ Smallest absolute angular distance between two degree values, 0..180. ]]
+local function angle_delta(a, b)
+    local d = math.abs((a - b) % 360)
+    if d > 180 then
+        d = 360 - d
+    end
+    return d
+end
+
+--[[ Which sector the point (mx, my) is over, or nil for the centre circle / outside the disc.
+Hit testing uses the FULL RADIAL_SPAN, ignoring RADIAL_DRAW_GAP - the drawn gap is there to make
+the wedges read as separate, and turning it into a dead zone the click can fall into would be a
+worse menu than one with no gap at all.
+
+`math.atan(y, x)` is Lua 5.4's two-argument form (atan2 in older Lua) - and the y it is handed is
+negated, because screen y grows downward while the sector angles are ordinary maths angles. ]]
+local function radial_sector_at(radial, mx, my)
+    local dx, dy = mx - radial.cx, my - radial.cy
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist < RADIAL_INNER or dist > RADIAL_OUTER_HOVER then
+        return nil
+    end
+    local ang = math.deg(math.atan(-dy, dx)) % 360
+    for _, sec in ipairs(RADIAL_SECTORS) do
+        if angle_delta(ang, sec.angle) <= RADIAL_SPAN / 2 then
+            return sec
+        end
+    end
+    return nil
+end
+
+--[[ Creates the chosen kind at the menu's insertion index and closes. A text box becomes active
+(there is something to type into); the other two do not - activating a box with no editor would
+just be a state nothing can act on, and it would take the caret away from wherever it was. ]]
+local function radial_choose(state, kind)
+    local index = content.insert_box(state, state.radial.index, kind)
+    if kind == KIND_TEXT then
+        state.active_index = index
+    end
+    state.radial = nil
+end
+
+--[[ Runs while the menu is open, and swallows the whole frame's input either way - the caller
+returns immediately after, so nothing types into a box behind it or clicks one.
+
+Two ways in, and they end differently. Ctrl+N opens a menu that STAYS: it is a click-then-click
+menu, since there is no button held down to release. A press on the rail opens one that lives only
+as long as the button - drag out to a sector, release to pick it - which is the "drag-clicking"
+half of the gesture. Escape and a click on the centre both cancel. ]]
+local function radial_handle_input(state)
+    local radial = state.radial
+    local mpos = vc.ImGui_GetMousePos()
+    local sec = mpos and radial_sector_at(radial, mpos.x, mpos.y) or nil
+    radial.hover = sec and sec.kind or nil
+
+    --[[ The centre is hoverable in its own right, not just "not a sector" - it is the cancel
+    target, and it lights up like one. ]]
+    radial.over_center = false
+    if mpos then
+        local dx, dy = mpos.x - radial.cx, mpos.y - radial.cy
+        radial.over_center = (dx * dx + dy * dy) <= RADIAL_INNER * RADIAL_INNER
+    end
+
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Escape, false) then
+        state.radial = nil
+        return
+    end
+
+    --[[ KEYBOARD SELECTION. The arrows point at where each wedge actually is on screen: Up is the
+    gray text wedge (centred straight up), Left the blue formula one (lower-left), Right the green
+    definition one (lower-right), and Down is the centre "x", i.e. cancel. Enter, keypad Enter or
+    Space commits whatever is selected.
+
+    Moving the MOUSE drops the keyboard selection, so hover takes back over - otherwise a stale
+    arrow-key choice would sit lit up while the pointer is somewhere else entirely. Checked before
+    the arrows below, so pressing an arrow in the same frame as a mouse twitch still wins. ]]
+    if mpos and radial.last_mx and (mpos.x ~= radial.last_mx or mpos.y ~= radial.last_my) then
+        radial.selected = nil
+    end
+    if mpos then
+        radial.last_mx, radial.last_my = mpos.x, mpos.y
+    end
+
+    local pick
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_UpArrow, false) then
+        pick = KIND_TEXT
+    elseif vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, false) then
+        pick = KIND_FORMULA
+    elseif vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, false) then
+        pick = KIND_DEFINITION
+    elseif vc.ImGui_IsKeyPressed(vc.ImGuiKey_DownArrow, false) then
+        pick = RADIAL_CANCEL
+    end
+    if pick then
+        radial.selected = pick
+    end
+
+    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Enter, false)
+            or vc.ImGui_IsKeyPressed(vc.ImGuiKey_KeypadEnter, false)
+            or vc.ImGui_IsKeyPressed(vc.ImGuiKey_Space, false) then
+        local sel = radial.selected
+        if sel and sel ~= RADIAL_CANCEL then
+            radial_choose(state, sel)
+        else
+            -- Nothing selected, or the "x" selected: both mean close without creating anything.
+            state.radial = nil
+        end
+        return
+    end
+
+    if state.radial.from_drag then
+        --[[ ARMING. A drag only counts as a drag once the mouse has moved RADIAL_ARM_DIST from
+        where the button went DOWN. Until then a release means "that was a click, not a drag" and
+        the menu stays open in click-then-click mode, so a plain rail click still gets you
+        somewhere instead of looking like it did nothing.
+
+        Measured from the press point, NOT from the menu centre, and that distinction is the whole
+        reason this exists: radial_open() clamps the menu on screen, so pressing on the rail (x=64)
+        puts the centre at x=168 and leaves the cursor 104px away - already deep inside the
+        lower-left wedge. Testing against the centre made a bare click on the rail spawn a formula
+        box instantly. ]]
+        if not state.radial.armed and mpos and state.radial.press_x then
+            local dx = mpos.x - state.radial.press_x
+            local dy = mpos.y - state.radial.press_y
+            if dx * dx + dy * dy > RADIAL_ARM_DIST * RADIAL_ARM_DIST then
+                state.radial.armed = true
+            end
+        end
+        -- Nothing reads as hovered until the drag is armed, so the wedge the clamp happens to put
+        -- under the cursor does not light up as if it were about to be chosen.
+        if not state.radial.armed then
+            state.radial.hover = nil
+        end
+
+        if vc.ImGui_IsMouseReleased("ImGuiMouseButton_Left") then
+            if not state.radial.armed then
+                state.radial.from_drag = false
+            elseif sec then
+                radial_choose(state, sec.kind)
+            else
+                state.radial = nil
+            end
+        end
+        return
+    end
+
+    if vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false) then
+        if sec then
+            radial_choose(state, sec.kind)
+        else
+            state.radial = nil
+        end
+    end
+end
+
+--[[ Draws the menu: the centre circle, then one annular wedge per sector.
+
+Each wedge is a strip of RADIAL_STEPS quads between RADIAL_INNER and the outer radius, because no
+arc or convex-polygon fill is exposed to Lua (see RADIAL_STEPS' own comment). The hovered wedge
+simply uses the larger outer radius - that IS the grow-on-hover, no animation state anywhere. ]]
+local function draw_radial(state)
+    local radial = state.radial
+    local cx, cy = radial.cx, radial.cy
+
+    --[[ What reads as active: the keyboard selection if there is one, otherwise the mouse hover.
+    RADIAL_CANCEL is the centre, not a wedge, so it leaves every wedge unlit. ]]
+    local active_kind = radial.selected
+    if active_kind == RADIAL_CANCEL then
+        active_kind = nil
+    end
+    active_kind = active_kind or radial.hover
+
+    for _, sec in ipairs(RADIAL_SECTORS) do
+        local hovered = (active_kind == sec.kind)
+        local outer = hovered and RADIAL_OUTER_HOVER or RADIAL_OUTER
+        local colors = KIND_COLORS[sec.kind]
+        local color = hovered and colors.hover or colors.menu
+        local a_start = sec.angle - RADIAL_SPAN / 2 + RADIAL_DRAW_GAP
+        local a_end   = sec.angle + RADIAL_SPAN / 2 - RADIAL_DRAW_GAP
+        local step = (a_end - a_start) / RADIAL_STEPS
+        for k = 0, RADIAL_STEPS - 1 do
+            --[[ Each quad is stretched half a step past its neighbour's start (except the last,
+            which stops square on the sector edge). Without the overlap the strip shows thin radial
+            seams: ImGui antialiases every filled shape's edge, so two quads meeting exactly on a
+            shared edge blend to slightly-transparent along it and the background shows through as
+            a spoke. Overlapping hides that, and costs nothing visually because these colours are
+            opaque - it WOULD show, as a brighter spoke, if they were translucent. ]]
+            local a0 = math.rad(a_start + step * k)
+            local a1_deg = a_start + step * (k + 1)
+            if k < RADIAL_STEPS - 1 then
+                a1_deg = a1_deg + step * 0.5
+            end
+            local a1 = math.rad(a1_deg)
+            -- cy MINUS the sine: screen y grows downward, sector angles do not.
+            local i0 = {x = cx + RADIAL_INNER * math.cos(a0), y = cy - RADIAL_INNER * math.sin(a0)}
+            local i1 = {x = cx + RADIAL_INNER * math.cos(a1), y = cy - RADIAL_INNER * math.sin(a1)}
+            local o0 = {x = cx + outer * math.cos(a0),        y = cy - outer * math.sin(a0)}
+            local o1 = {x = cx + outer * math.cos(a1),        y = cy - outer * math.sin(a1)}
+            vc.ImGui_AddQuadFilled(i0, o0, o1, i1, color)
+        end
+        -- A thin outline on the hovered wedge only, so the grown one reads as picked rather than
+        -- just bigger.
+        if hovered then
+            local a0, a1 = math.rad(a_start), math.rad(a_end)
+            vc.ImGui_AddLine({x = cx + RADIAL_INNER * math.cos(a0), y = cy - RADIAL_INNER * math.sin(a0)},
+                    {x = cx + outer * math.cos(a0), y = cy - outer * math.sin(a0)}, RADIAL_EDGE_COLOR, 2)
+            vc.ImGui_AddLine({x = cx + RADIAL_INNER * math.cos(a1), y = cy - RADIAL_INNER * math.sin(a1)},
+                    {x = cx + outer * math.cos(a1), y = cy - outer * math.sin(a1)}, RADIAL_EDGE_COLOR, 2)
+        end
+    end
+
+    --[[ The centre is the cancel target and gets the same "you are about to pick this" feedback the
+    wedges do - it just cannot grow outward the way they do, since its size is what the wedges start
+    from. So instead the X ITSELF grows and lights up: longer arms, thicker strokes, a brighter
+    circle and a white cross. Active when the mouse is inside it, or when Down has selected it. ]]
+    local center_active = radial.over_center or (radial.selected == RADIAL_CANCEL)
+    vc.ImGui_AddCircleFilled({x = cx, y = cy}, RADIAL_INNER,
+            center_active and RADIAL_CENTER_FILL_ON or RADIAL_CENTER_FILL)
+    vc.ImGui_AddCircle({x = cx, y = cy}, RADIAL_INNER,
+            center_active and RADIAL_CENTER_EDGE_ON or RAIL_COLOR, center_active and 3 or 2)
+    local arm       = center_active and RADIAL_X_ARM_ON or RADIAL_X_ARM
+    local thickness = center_active and 4 or 2
+    local x_color   = center_active and RADIAL_X_COLOR_ON or CLOSE_COLOR
+    vc.ImGui_AddLine({x = cx - arm, y = cy - arm}, {x = cx + arm, y = cy + arm}, x_color, thickness)
+    vc.ImGui_AddLine({x = cx + arm, y = cy - arm}, {x = cx - arm, y = cy + arm}, x_color, thickness)
+end
+
 local function cursor_sig(editor_state)
     local f = editor_state.active_formula
     if f then
@@ -300,6 +696,14 @@ function content.handle_input(state, fontset, pos)
         return
     end
 
+    --[[ While the radial menu is open it owns the frame - checked here, after the F1/F2/F3 panels
+    (which are more global still) but ahead of every box-facing shortcut and the whole mouse block,
+    so nothing types into or clicks the box sitting behind it. ]]
+    if state.radial then
+        radial_handle_input(state)
+        return
+    end
+
     -- Ctrl+Up/Down switches which box is active (previous/next in the stack, stopping at either
     -- end rather than wrapping) - each box already remembers its own cursor/selection from when
     -- it was last active (same as clicking a different box does), so switching this way doesn't
@@ -323,11 +727,18 @@ function content.handle_input(state, fontset, pos)
         return
     end
 
-    -- Ctrl+N: a new empty box right after the current one (or at the end, if none is active),
-    -- activated straight away - the keyboard equivalent of clicking the rail just below it.
+    --[[ Ctrl+N opens the radial menu at the place the new box would appear, rather than inserting
+    a text box outright the way it used to - there are three kinds now and the key cannot say which.
+    Click-then-click, not drag: no mouse button is held down when it opens, so there is nothing to
+    release. The menu is placed on the rail at the insertion point, then clamped on screen by
+    radial_open(). Before the first draw() there is no layout to place it against, so it falls back
+    to the middle of the display. ]]
     if ctrl_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_N, false) then
         local index = (state.active_index or #state.boxes) + 1
-        state.active_index = content.insert_box(state, index)
+        local disp = vc.ImGui_GetDisplaySize()
+        local cx = state.last_rail_x or (pos.x + RAIL_OFFSET)
+        local cy = insertion_y(state, index) or (disp and disp.y / 2) or pos.y
+        radial_open(state, index, cx, cy, false)
         return
     end
 
@@ -351,7 +762,10 @@ function content.handle_input(state, fontset, pos)
             -- Global, not just the active box - confirmed.
             mexpru.set_zoom(state.font_size - DEFAULT_FONT_SIZE)
             for _, box in ipairs(state.boxes) do
-                editor.rescale(box.editor, fontset)
+                -- Skips the kinds that have no editor to rescale (insert_box's own comment).
+                if box.editor then
+                    editor.rescale(box.editor, fontset)
+                end
             end
         end
         return
@@ -401,15 +815,24 @@ function content.handle_input(state, fontset, pos)
             activating = state.active_index ~= hit
             state.active_index = hit
         elseif state.last_rail_x and math.abs(mpos.x - state.last_rail_x) <= RAIL_CLICK_RADIUS then
-            state.active_index = content.insert_box(state, insertion_index_for_y(state, mpos.y))
-            activating = true -- a fresh box has nothing to place a cursor from anyway
+            --[[ A press on the rail opens the radial menu instead of inserting a text box outright.
+            from_drag = true, so the gesture is press-drag-release: the menu lives exactly as long as
+            the button is held. Releasing without leaving the centre cancels, which makes a plain
+            click on the rail a no-op rather than a surprise box. ]]
+            radial_open(state, insertion_index_for_y(state, mpos.y), mpos.x, mpos.y, true,
+                    mpos.x, mpos.y)
+            return
         else
             state.active_index = nil
         end
     end
 
+    --[[ `active.editor` rather than just `active`: a formula/definition placeholder CAN become the
+    active box by being clicked (it is a box like any other for selection purposes), and it has no
+    editor to forward input to. That is what "no controls for now" means in practice - it takes
+    focus and then does nothing with it. ]]
     local active = state.active_index and state.boxes[state.active_index]
-    if active and not activating then
+    if active and active.editor and not activating then
         editor.handle_input(active.editor, fontset, state.font_size)
     end
 
@@ -420,7 +843,7 @@ function content.handle_input(state, fontset, pos)
     -- would fight a deliberate manual scroll-away (mouse wheel, or just leaving a box active while
     -- looking at another one further down) every single frame even though the caret itself never
     -- moved - only a real move should ever pull the view back to it.
-    if active and active.editor.last_cursor_y then
+    if active and active.editor and active.editor.last_cursor_y then
         local a, b, c = cursor_sig(active.editor)
         local ed = active.editor
         local had_prior = ed._cursor_sig_c ~= nil
@@ -798,16 +1221,27 @@ function content.draw(state, fontset, pos)
                 and (box_y + cached_h < viewport_top or box_y > viewport_bottom)
 
         if is_active or not out_of_view then
-            local content_h = editor.draw(box.editor, fontset,
-                    {x=box_x + BOX_PADDING, y=box_y + BOX_PADDING}, state.font_size, content_w, is_active,
-                    state.show_wireframe, state.show_graph)
-            local box_h = math.max((content_h or 0) + 2 * BOX_PADDING, 50)
+            --[[ A box with no editor (formula/definition, for now) has no content to measure and
+            nothing to draw inside it - it is a fixed-height coloured rectangle. See
+            content.insert_box's own comment on why the check is `box.editor` and not `box.kind`. ]]
+            local box_h
+            if box.editor then
+                local content_h = editor.draw(box.editor, fontset,
+                        {x=box_x + BOX_PADDING, y=box_y + BOX_PADDING}, state.font_size, content_w, is_active,
+                        state.show_wireframe, state.show_graph)
+                box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
+            else
+                box_h = EMPTY_BOX_HEIGHT
+            end
 
             -- Fill/border drawn after the text (translucent, same trick as the selection
             -- highlight - stays legible on top) so this frame's actual content height is used,
-            -- not last frame's.
+            -- not last frame's. Only the FILL varies by kind; the border keeps its
+            -- active/inactive meaning across all three, so "which box has focus" still reads the
+            -- same way it always did.
+            local kind_colors = KIND_COLORS[box.kind or KIND_TEXT] or KIND_COLORS[KIND_TEXT]
             vc.ImGui_AddRectFilled({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
-                    BOX_FILL_COLOR, 6)
+                    kind_colors.fill, 6)
             vc.ImGui_AddRect({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
                     is_active and BOX_ACTIVE_COLOR or BOX_BORDER_COLOR, 6, is_active and 2 or 1)
 
@@ -827,11 +1261,18 @@ function content.draw(state, fontset, pos)
             vc.ImGui_AddLine({x=close.x+close.w-pad, y=close.y+pad},
                     {x=close.x+pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
 
+            --[[ The wireframe and graph buttons are editor debugging aids - they visualise mexpr
+            bounding boxes and a formula's reachable-position graph. A box with no editor has
+            neither, so it gets the close button and nothing else. `wf`/`gr` stay nil in that case
+            and go into the layout as nil, which the click handling in handle_input() already
+            guards for (culled boxes have always produced nil buttons). ]]
+            local wf, gr
+            if box.editor then
             -- Wireframe-toggle button: sits just left of the close button, same row. Global (all
             -- boxes share state.show_wireframe - see new_shell()'s own comment), drawn per-box just
             -- so there's always one within reach, same as the close button - toggling any one of
             -- them flips it everywhere.
-            local wf = {x=close.x - WIREFRAME_SIZE - 4, y=box_y - WIREFRAME_SIZE - 2,
+            wf = {x=close.x - WIREFRAME_SIZE - 4, y=box_y - WIREFRAME_SIZE - 2,
                     w=WIREFRAME_SIZE, h=WIREFRAME_SIZE}
             local wf_color = state.show_wireframe and WIREFRAME_ON_COLOR or WIREFRAME_OFF_COLOR
             vc.ImGui_AddRect({x=wf.x, y=wf.y}, {x=wf.x+wf.w, y=wf.y+wf.h}, wf_color, 3, 1)
@@ -848,7 +1289,7 @@ function content.draw(state, fontset, pos)
 
             -- Graph-toggle button: sits just left of the wireframe button, same row - same global/
             -- per-box-button reasoning (this file's own new_shell() comment on show_graph).
-            local gr = {x=wf.x - GRAPH_SIZE - 4, y=box_y - GRAPH_SIZE - 2,
+            gr = {x=wf.x - GRAPH_SIZE - 4, y=box_y - GRAPH_SIZE - 2,
                     w=GRAPH_SIZE, h=GRAPH_SIZE}
             local gr_color = state.show_graph and GRAPH_ON_COLOR or GRAPH_OFF_COLOR
             vc.ImGui_AddRect({x=gr.x, y=gr.y}, {x=gr.x+gr.w, y=gr.y+gr.h}, gr_color, 3, 1)
@@ -864,6 +1305,7 @@ function content.draw(state, fontset, pos)
                 vc.ImGui_AddCircle(gr_p1, 2, gr_color, 1)
                 vc.ImGui_AddCircle(gr_p2, 2, gr_color, 1)
             end
+            end -- box.editor: wireframe/graph buttons
 
             layout[i] = {x=box_x, y=box_y, w=box_w, h=box_h, close=close, wireframe_btn=wf,
                     graph_btn=gr}
@@ -895,6 +1337,12 @@ function content.draw(state, fontset, pos)
     state.last_layout = layout
     state.last_rail_x = rail_x
     state.last_total_height = y - content_start_y
+
+    --[[ Drawn after every box so it sits on top of the one it was opened over, and after
+    last_layout is stored so opening it never disturbs hit testing for the frame after. ]]
+    if state.radial then
+        draw_radial(state)
+    end
 
     overlay()
 end
