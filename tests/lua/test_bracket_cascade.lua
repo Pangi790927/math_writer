@@ -172,6 +172,48 @@ function run_test()
                 pending_bracket:get_obj() == nil)
     end
 
+    --[[ AN EMPTY PAIR TAKES ITS PLACEHOLDER WITH IT.
+
+    The cascade's own rule is that the CONTENT between a pair survives, unwrapped - correct for
+    `(a)` becoming `a`. But `()` has no content: the atom inside it is the placeholder the pair
+    needed in order to exist, and keeping it leaves a stray empty box in the row.
+
+    Reported live 2026-09-07: "I do (,),delete results in an additional empty left around" - typing
+    `a`, `(`, `)`, Backspace left `a` followed by an empty atom, which is both a visible gap and
+    enough to stop a definition's name parsing.
+
+    What is pinned here is the RULE, mformula_new.span_is_lone_placeholder(), not the branch that
+    calls it: that branch lives inside handle_input(), which needs a live ImGui frame and cannot be
+    driven from this harness. The distinction the rule has to keep making is "one placeholder"
+    versus "one of anything else" - get it wrong in the permissive direction and `(a)` loses its
+    `a`. ]]
+    do
+        local mformula_new = require("mformula_new")
+        local open_atom = glyph(fs, "(", SZ)
+        local close_atom = glyph(fs, ")", SZ)
+        local A = glyph(fs, "A", SZ)
+        local empty = mexpru.mexpr_empty(fs, 6, 12, 8)
+        mexpru.u(empty).sz = SZ
+
+        -- ( <empty> )  - the pair is empty; the placeholder goes too.
+        check("empty span IS a lone placeholder",
+                mformula_new.span_is_lone_placeholder({open_atom, empty, close_atom}, 1, 3))
+
+        -- ( A )  - real content; it must survive.
+        check("real content is NOT a lone placeholder",
+                not mformula_new.span_is_lone_placeholder({open_atom, A, close_atom}, 1, 3))
+
+        -- ( A <empty> ) - more than one thing between: not the case this rule is for, and
+        -- removing only part of a span would be worse than removing none of it.
+        check("two-node span is NOT a lone placeholder",
+                not mformula_new.span_is_lone_placeholder({open_atom, A, empty, close_atom}, 1, 4))
+
+        -- Adjacent brackets, nothing between at all - `()` cannot actually be built this way (the
+        -- editor always puts a placeholder in), but the predicate must not claim a span exists.
+        check("adjacent brackets have no span",
+                not mformula_new.span_is_lone_placeholder({open_atom, close_atom}, 1, 2))
+    end
+
     print("checks: " .. checks_run .. ", failed: " .. checks_failed)
     if checks_failed > 0 then
         return false

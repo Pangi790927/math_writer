@@ -27,7 +27,7 @@ those get suggested rather than written here. This test guards the Lua half.
 
 package.path = package.path .. ";./scripts/?.lua"
 
-local editor = require("editor")
+local editor = require("editor_text")
 
 local checks_run, checks_failed = 0, 0
 local function check(name, cond, got)

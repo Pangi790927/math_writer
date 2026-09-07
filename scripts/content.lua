@@ -8,10 +8,14 @@ exists so far, but content.add_box is the seam where other kinds would plug in l
 ]]
 
 local vc = require("virt_composer")
-local editor = require("editor")
+local editor = require("editor_text")
 local prof = require("prof")
 local char = require("char")
 local mexpru = require("mexpru")
+--[[ One editor module per box kind. content.lua knows only that each exposes the same shape -
+new/draw/handle_input/rescale/to_text/from_text - and never what any of them does inside. ]]
+local editor_definition = require("editor_definition")
+local editor_formula = require("editor_formula")
 
 local content = {}
 
@@ -77,7 +81,11 @@ lower-left and lower-right, with boundaries at 30/150/270.
 
 Angles here are ordinary maths angles: 0 = right, 90 = up, counter-clockwise. Screen y grows
 DOWNWARD, so every conversion below is (cx + r*cos, cy - r*sin) - the minus is not a typo. ]]
-local RADIAL_INNER       = 50            -- centre circle radius; also the "cancel" zone
+--[[ One number scales the whole selector. Everything below is derived from RADIAL_INNER, so the
+proportions the geometry was specced at (3x, 3.2x) survive any change to it. Dropped to a third of
+the original size 2026-09-06 - at full size it covered most of a box. ]]
+local RADIAL_SCALE       = 1 / 3
+local RADIAL_INNER       = 50 * RADIAL_SCALE  -- centre circle radius; also the "cancel" zone
 local RADIAL_OUTER       = RADIAL_INNER * 3.0
 local RADIAL_OUTER_HOVER = RADIAL_INNER * 3.2
 local RADIAL_SPAN        = 120           -- degrees per sector
@@ -93,7 +101,7 @@ local RADIAL_STEPS       = 18            -- quads per sector: no arc/convex-poly
 --[[ How far the mouse must travel from the button-down point before a rail press counts as a
 drag rather than a click. See radial_handle_input()'s own comment - it is measured from the press
 point, not the menu centre, because the two differ whenever the menu gets clamped on screen. ]]
-local RADIAL_ARM_DIST    = 24
+local RADIAL_ARM_DIST    = 24 * RADIAL_SCALE
 --[[ The centre circle as a SELECTABLE thing, for the keyboard: Down selects it and Enter/Space
 then cancels. Deliberately a sentinel rather than nil, so "nothing is selected yet" and "cancel is
 selected" stay distinguishable - only the second one draws the centre highlighted. ]]
@@ -107,8 +115,8 @@ grows its X instead of growing outward like a wedge. ]]
 local RADIAL_CENTER_FILL_ON = 0xff555555
 local RADIAL_CENTER_EDGE_ON = 0xffffffff
 local RADIAL_X_COLOR_ON     = 0xffffffff
-local RADIAL_X_ARM          = 10
-local RADIAL_X_ARM_ON       = 22
+local RADIAL_X_ARM          = 10 * RADIAL_SCALE
+local RADIAL_X_ARM_ON       = 22 * RADIAL_SCALE
 local RADIAL_EDGE_COLOR  = 0xff000000
 
 --[[ Order matters only for reading; each entry carries its own centre angle. ]]
@@ -117,6 +125,29 @@ local RADIAL_SECTORS = {
     {kind = KIND_FORMULA,    angle = 210},  -- lower-left
     {kind = KIND_DEFINITION, angle = 330},  -- lower-right
 }
+
+--[[ The derivation curve: a bezier joining a formula box to the box it was derived FROM.
+
+Requested 2026-09-07: "formula boxes will be linked by a beziere curve, the curve will show what
+boxes come from what boxes, the beziere will be positioned on the boxes perpendicular on the boxes,
+on their outsides, the other part than the line on their left".
+
+So it attaches on the RIGHT - the rail and its connector own the left - and leaves each box
+PERPENDICULAR to the edge it leaves, which for a vertical right edge means horizontally. That is
+what the control points do: both are pushed straight out to the right, so the curve leaves the
+parent and enters the child at a right angle to the boxes rather than cutting across them.
+
+Drawn as line segments because no bezier primitive is exposed to Lua (imgui_composer.h has lines,
+rects, circles, triangles, quads) - the same reason the radial menu builds its wedges by hand. ]]
+local CURVE_COLOR        = 0xffb0b0b0
+local CURVE_SEGMENTS     = 24
+local CURVE_OUT_MIN      = 24    -- how far the curve reaches out even for boxes that are adjacent
+local CURVE_OUT_FACTOR   = 0.45  -- ... and how much further per pixel of vertical separation
+--[[ The gutter reserved down the RIGHT of the page for these curves - the mirror of the rail on the
+left, and for the same reason: the links need somewhere of their own to live. Without it the boxes
+run out to the window edge and a curve leaving a box perpendicular has nowhere to go but off
+screen, which is exactly what the first version did. ]]
+local CURVE_GUTTER       = 96
 
 local RAIL_COLOR         = 0xff777777
 local BOX_BORDER_COLOR   = 0xff777777
@@ -203,6 +234,19 @@ function content.insert_box(state, index, kind)
     local box = {kind = kind}
     if kind == KIND_TEXT then
         box.editor = editor.new()
+    elseif kind == KIND_DEFINITION then
+        box.def = editor_definition.new()
+    elseif kind == KIND_FORMULA then
+        --[[ Every formula box gets an id, so a box derived from it can name it as its parent. The
+        counter is derived from what is already in the document rather than stored, so a loaded file
+        cannot hand out an id that is already in use. ]]
+        local next_id = 1
+        for _, b in ipairs(state.boxes) do
+            if b.fml and b.fml.id and b.fml.id >= next_id then
+                next_id = b.fml.id + 1
+            end
+        end
+        box.fml = editor_formula.new(next_id)
     end
     table.insert(state.boxes, index, box)
     if state.active_index and state.active_index >= index then
@@ -230,6 +274,50 @@ function content.remove_box(state, i)
     state.last_layout = nil
 end
 
+--[[ Removes every box DERIVED from `id`, however far down the chain - the whole subtree, not just
+the immediate children.
+
+Called when a formula box is pasted into, which replaces its content and makes it a root
+(editor_formula.lua). Everything below it was derived from what used to be there, so those steps no
+longer follow from anything: leaving them would leave a derivation whose premise had been swapped
+out underneath it, which is the exact failure docs/phase2_design.md section 1's immutability exists
+to prevent. Requested 2026-09-07: "also should remove all childs".
+
+A fixpoint over the parent relation rather than a recursive walk, so it does not depend on children
+appearing after their parents in the document - a box can be moved anywhere in the list and its
+lineage still holds.
+
+DESTRUCTIVE AND NOT UNDOABLE: undo lives inside each editor, and this removes whole boxes. A paste
+into a box with a long derivation under it discards all of it. ]]
+function content.prune_descendants(state, id)
+    if not id then
+        return 0
+    end
+    local doomed, growing = {}, true
+    while growing do
+        growing = false
+        for _, b in ipairs(state.boxes) do
+            local f = b.fml
+            if f and f.id and not doomed[f.id] and f.parent
+                    and (f.parent == id or doomed[f.parent]) then
+                doomed[f.id] = true
+                growing = true
+            end
+        end
+    end
+
+    -- Backwards, so each removal cannot shift an index still to be visited.
+    local removed = 0
+    for i = #state.boxes, 1, -1 do
+        local f = state.boxes[i].fml
+        if f and f.id and doomed[f.id] then
+            content.remove_box(state, i)
+            removed = removed + 1
+        end
+    end
+    return removed
+end
+
 --[[ Every box's full text (editor.to_text() - the same $$LaTeX$$-for-formulas format Ctrl+C
 already produces, so a save is exactly "select all, copy" done to every box in turn), one after
 another. Each box is length-prefixed ("<byte length>\n<that many bytes>") rather than separated by
@@ -243,7 +331,18 @@ function content.serialize(state)
         writes a zero-length body and is carried across a save/load purely by its kind. It would
         have been simpler to just skip them, but silently dropping boxes on save is the kind of
         thing that gets discovered much later and by losing work. ]]
-        local text = box.editor and editor.to_text(box.editor) or ""
+        --[[ Whatever the box's own editor makes of itself. The body is opaque here on purpose:
+        this layer stays "kind, length, bytes" and never learns what a definition or a formula is,
+        so a new box kind changes nothing in this function. A kind with no editor at all (the
+        formula box, today) writes an empty body and is carried across a save by its kind alone. ]]
+        local text = ""
+        if box.editor then
+            text = editor.to_text(box.editor)
+        elseif box.def then
+            text = editor_definition.to_text(box.def)
+        elseif box.fml then
+            text = editor_formula.to_text(box.fml)
+        end
         --[[ The kind prefix is NEW. Files written before box kinds existed start each record with
         a bare length ("42\n..."), so deserialize() accepts both and treats a bare length as a text
         box - old saves keep loading unchanged. ]]
@@ -291,6 +390,12 @@ function content.deserialize(text, fontset)
         if kind == KIND_TEXT then
             box.editor = editor.new()
             editor.from_text(box.editor, box_text, fontset)
+        elseif kind == KIND_DEFINITION then
+            box.def = editor_definition.new()
+            editor_definition.from_text(box.def, box_text, fontset)
+        elseif kind == KIND_FORMULA then
+            box.fml = editor_formula.new()
+            editor_formula.from_text(box.fml, box_text, fontset)
         end
         table.insert(state.boxes, box)
         pos = nl + 1 + len
@@ -436,7 +541,13 @@ end
 just be a state nothing can act on, and it would take the caret away from wherever it was. ]]
 local function radial_choose(state, kind)
     local index = content.insert_box(state, state.radial.index, kind)
-    if kind == KIND_TEXT then
+    --[[ Activate the new box if there is anything in it to type into. Asks which editor field the
+    box got, not which kind it is, for the same reason everything else here does: when
+    editor_formula.lua stops being empty, a formula box starts being activated on creation with no
+    change to this line. Activating a box with no editor at all would just take focus away from
+    wherever it was and give it to something that cannot use it. ]]
+    local box = state.boxes[index]
+    if box.editor or box.def or box.fml then
         state.active_index = index
     end
     state.radial = nil
@@ -762,9 +873,16 @@ function content.handle_input(state, fontset, pos)
             -- Global, not just the active box - confirmed.
             mexpru.set_zoom(state.font_size - DEFAULT_FONT_SIZE)
             for _, box in ipairs(state.boxes) do
-                -- Skips the kinds that have no editor to rescale (insert_box's own comment).
+                -- Every box kind that holds formulas has to catch up, not just text boxes -
+                -- a definition box's slots are formulas too.
                 if box.editor then
                     editor.rescale(box.editor, fontset)
+                end
+                if box.def then
+                    editor_definition.rescale(box.def, fontset)
+                end
+                if box.fml then
+                    editor_formula.rescale(box.fml, fontset)
                 end
             end
         end
@@ -834,6 +952,14 @@ function content.handle_input(state, fontset, pos)
     local active = state.active_index and state.boxes[state.active_index]
     if active and active.editor and not activating then
         editor.handle_input(active.editor, fontset, state.font_size)
+    elseif active and active.def and not activating then
+        editor_definition.handle_input(active.def, fontset, state.font_size)
+    elseif active and active.fml and not activating then
+        --[[ A true return means the box was pasted into: its content was replaced and its parent
+        link dropped. Everything derived from it followed from the OLD content, so it goes. ]]
+        if editor_formula.handle_input(active.fml, fontset, state.font_size) then
+            content.prune_descendants(state, active.fml.id)
+        end
     end
 
     -- Whenever the active box's own caret actually MOVED this frame - typing/Enter growing the
@@ -1184,8 +1310,11 @@ function content.draw(state, fontset, pos)
     -- to the end of the window (not glued, but with a space (similar to the space from the content
     -- box to the vertical line))".
     local RIGHT_MARGIN = BOX_LEFT - RAIL_OFFSET
+    --[[ ... plus the derivation-curve gutter, so a curve leaving a box's right edge has room to
+    bow out and come back without leaving the window. ]]
     local max_box_w = display_size
-            and math.max(BOX_WIDTH, display_size.x - box_x - RIGHT_MARGIN) or BOX_WIDTH
+            and math.max(BOX_WIDTH, display_size.x - box_x - RIGHT_MARGIN - CURVE_GUTTER)
+            or BOX_WIDTH
 
     for i, box in ipairs(state.boxes) do
         local box_y = y
@@ -1230,6 +1359,16 @@ function content.draw(state, fontset, pos)
                         {x=box_x + BOX_PADDING, y=box_y + BOX_PADDING}, state.font_size, content_w, is_active,
                         state.show_wireframe, state.show_graph)
                 box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
+            elseif box.def then
+                local content_h = editor_definition.draw(box.def, fontset,
+                        {x = box_x + BOX_PADDING, y = box_y + BOX_PADDING}, state.font_size,
+                        content_w, is_active, state.show_wireframe, state.show_graph)
+                box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
+            elseif box.fml then
+                local content_h = editor_formula.draw(box.fml, fontset,
+                        {x = box_x + BOX_PADDING, y = box_y + BOX_PADDING}, state.font_size,
+                        content_w, is_active, state.show_wireframe, state.show_graph)
+                box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
             else
                 box_h = EMPTY_BOX_HEIGHT
             end
@@ -1261,13 +1400,14 @@ function content.draw(state, fontset, pos)
             vc.ImGui_AddLine({x=close.x+close.w-pad, y=close.y+pad},
                     {x=close.x+pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
 
-            --[[ The wireframe and graph buttons are editor debugging aids - they visualise mexpr
-            bounding boxes and a formula's reachable-position graph. A box with no editor has
-            neither, so it gets the close button and nothing else. `wf`/`gr` stay nil in that case
-            and go into the layout as nil, which the click handling in handle_input() already
-            guards for (culled boxes have always produced nil buttons). ]]
+            --[[ The wireframe and graph buttons are formula debugging aids - mexpr bounding
+            boxes, and a formula's reachable-position graph. Any box that HOLDS formulas gets them,
+            which today is a text box (inline embeds) or a definition box (its slots); a formula
+            box has nothing yet and gets the close button alone. `wf`/`gr` stay nil in that case and
+            go into the layout as nil, which the click handling in handle_input() already guards for
+            (culled boxes have always produced nil buttons). ]]
             local wf, gr
-            if box.editor then
+            if box.editor or box.def or box.fml then
             -- Wireframe-toggle button: sits just left of the close button, same row. Global (all
             -- boxes share state.show_wireframe - see new_shell()'s own comment), drawn per-box just
             -- so there's always one within reach, same as the close button - toggling any one of
@@ -1317,6 +1457,46 @@ function content.draw(state, fontset, pos)
             layout[i] = {x=box_x, y=box_y, w=box_w, h=cached_h, close=nil, wireframe_btn=nil,
                     graph_btn=nil}
             y = box_y + cached_h + BOX_GAP
+        end
+    end
+
+    --[[ DERIVATION CURVES, drawn after every box so they lie on top of the page rather than under
+    a box that happens to overlap them. Both endpoints come from THIS frame's layout, so a curve can
+    only be drawn when both of its boxes were laid out - a parent scrolled out of view is culled and
+    has no rect, and the curve is simply skipped rather than drawn to a stale position. ]]
+    local by_id = {}
+    for i, box in ipairs(state.boxes) do
+        if box.fml and box.fml.id then
+            by_id[box.fml.id] = i
+        end
+    end
+    for i, box in ipairs(state.boxes) do
+        local parent_i = box.fml and box.fml.parent and by_id[box.fml.parent]
+        local a = parent_i and layout[parent_i]
+        local b = layout[i]
+        if a and b and a.h and b.h then
+            -- Right edge of each, at its vertical middle: the side away from the rail.
+            local ax, ay = a.x + a.w, a.y + a.h / 2
+            local bx, by = b.x + b.w, b.y + b.h / 2
+            --[[ Clamped to the gutter: a long jump between distant boxes would otherwise bow out
+            past the window edge. The curve goes flatter rather than off screen. ]]
+            local reach = math.min(CURVE_OUT_MIN + math.abs(by - ay) * CURVE_OUT_FACTOR,
+                    CURVE_GUTTER - 8)
+            -- Control points straight out to the right: perpendicular to the edges they leave.
+            local c1x, c1y = ax + reach, ay
+            local c2x, c2y = bx + reach, by
+            local px, py = ax, ay
+            for step = 1, CURVE_SEGMENTS do
+                local t = step / CURVE_SEGMENTS
+                local u = 1 - t
+                local qx = u*u*u*ax + 3*u*u*t*c1x + 3*u*t*t*c2x + t*t*t*bx
+                local qy = u*u*u*ay + 3*u*u*t*c1y + 3*u*t*t*c2y + t*t*t*by
+                vc.ImGui_AddLine({x = px, y = py}, {x = qx, y = qy}, CURVE_COLOR, 2)
+                px, py = qx, qy
+            end
+            -- A dot at each end, so which boxes a curve joins reads even where several overlap.
+            vc.ImGui_AddCircleFilled({x = ax, y = ay}, 3, CURVE_COLOR)
+            vc.ImGui_AddCircleFilled({x = bx, y = by}, 3, CURVE_COLOR)
         end
     end
 

@@ -83,8 +83,8 @@ export as `calc` blocks, statements import as roots (section 14).
        |
        |  promote
        v
-  definition cell        immutable, checked              definition_editor.lua  (to write)
-  formula cell           immutable, checked              formula_editor.lua     (to write)
+  definition cell        immutable, checked              editor_definition.lua  (slot 1 exists)
+  formula cell           immutable, checked              editor_formula.lua     (empty stub)
        |
        |  Ctrl+C  ->  LaTeX
        v
@@ -93,6 +93,66 @@ export as `calc` blocks, statements import as roots (section 14).
 
 **Promotion is the checkpoint.** Inside a definition or formula cell you never type freely —
 only *syntactic mutations*, which is where `transforms.lua` belongs.
+
+> **The editors, settled 2026-09-06.** Four files, one `editor_*` family so they sort together
+> (not the `definition_editor.lua` / `formula_editor.lua` order this document first used):
+>
+> | file | |
+> |---|---|
+> | `editor.lua` | **the shared half** — everything needed to render and drive ONE formula in a box: the caret/selection highlight, the reachable-position graph, slot markers, click-and-drag hit-testing, and the version check an undo step keys off |
+> | `editor_text.lua` | the flat text/glyph-stream editor (this was `editor.lua` until the split) |
+> | `editor_definition.lua` | the definition box's slots |
+> | `editor_formula.lua` | empty on purpose — its header records what it will be and what it waits on |
+>
+> **The split was forced, not planned.** `editor_definition.lua` was written first on the reasoning
+> that it shared "the shape of the interface and none of the implementation" with the text editor.
+> That was wrong, and it showed up immediately as a definition box with no selection, no graph
+> view, no wireframe view and no way to click into it — all four of which live in the text editor
+> and none of which has anything to do with a character stream. The rule that fell out: if
+> something is about *a formula in a box*, it belongs in `editor.lua`; if it is about *what kind of
+> box*, it belongs in that kind's own file.
+>
+> **Undo stayed out of the shared half.** The text editor's formula undo is entangled with its own
+> snapshot system, and what an undo step even IS in a definition box is undecided. The shared half
+> reports only whether a keystroke changed the tree; each owner decides what to do about it.
+>
+> **The definition box's form is SETTLED** (2026-09-07: *"this is the general form of a
+> definition, we will use this"*). One row of `NAME : dom, dom, ... -> RET`, arity derived from
+> the name pattern, a generated shorthand on the line below, and every cell diagnosed in place.
+> Changes from here should be treated as revisions to a settled design, not as filling it in.
+>
+> **Numbers.** `mexpr_ast.parse_number()` reads a written decimal as an exact, UNREDUCED
+> rational - `3.14` is 314/100, per section 4.2 - because reducing is a normalisation and
+> normalisations belong to section 9's equality machinery, not to reading a literal.
+>
+> It reads LITERALS only, and that is a smaller thing than a number. Verbatim: *"remember
+> sqrt(2) is also a number"* - and `sqrt(2)` reaches the bridge as `(2)^{1/2}` (section 6c: the
+> radical is rewritten on input and never exists as a node), an EXPRESSION whose value happens
+> to be constant. So numberhood in the useful sense is "has no free variables", which is
+> answerable only once expressions parse and section 6b's triple can be computed. The lexer
+> must not be extended to guess at it.
+>
+> **Parameter cells are memberships, and only that.** Each is a domain restriction written the
+> way it is read - `n \in \N`, naming the variable and the set it comes from - and
+> `mexpr_ast.parse_domain()` refuses anything else, marking the offending character. A second
+> form (`a = <string or constant>`, binding a parameter rather than restricting it) was floated
+> on 2026-09-07 and withdrawn the same day, verbatim: *"yeah we get rid if that"*. Do not re-add
+> the equality case without asking - it was considered and declined.
+>
+> **What exists.** A definition box shows its signature as one clickable row —
+> `NAME : PARAM -> RETURNSET`, or `NAME \in RETURNSET` with no parameters — with the separators
+> drawn as glyphs and every slot independently editable. Slots are positional: `slots[1]` is the
+> name, `slots[#slots]` is the result, everything between is a parameter, so `#slots == n + 2`.
+> **`n` is DERIVED**, by `mexpr_ast.parse_name()` reading the name slot and counting its free
+> variables (literals - quoted strings and numbers - are constants, not parameters). The row
+> reshapes to match: arity 0 renders as `NAME \in RETURNSET`, arity 2 as `NAME : A 	imes B ->
+> RETURNSET`. A name is invalid for most of the time it is being typed, so **the row holds the last
+> valid arity** and the only feedback while it does not parse is a red rule under the name slot,
+> plus per-character marks painted behind the name: green for what the parser read and accepted,
+> blue for what is inside something unfinished (an open bracket, an unterminated quote), red on the
+> character that breaks the rule, and nothing at all on what it never reached - so how far a name
+> got is visible, not just whether it arrived.
+> A formula box still holds nothing.
 
 **Cells are immutable.** Editing is not forbidden, it is *relocated*: you copy out as LaTeX,
 edit in the text editor, and promote again as a new cell. Consequences:

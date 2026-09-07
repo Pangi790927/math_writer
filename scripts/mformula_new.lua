@@ -3809,7 +3809,7 @@ function mformula_new.handle_input(container, fontset, sz)
     -- early releases Lua's claim while that OLD chain still holds its own, so nothing actually
     -- dies - found by this file's own test (test_bracket_cascade.lua) catching exactly that
     -- ordering mistake in an earlier draft of this function.
-    local cut_lo, cut_hi
+    local cut_lo, cut_hi, cut_mid, cascade_span_empty
     if peer_base_owner_idx then
         --[[ The peer is a supsub's own BASE ("(a)^{N}" - victim is the "(", its ")" is the base of
         the supsub at peer_base_owner_idx). Removing the pair therefore means giving that supsub a
@@ -3847,7 +3847,15 @@ function mformula_new.handle_input(container, fontset, sz)
         -- reasons about the hole the removal left, which for a cascade is where the pair used to
         -- begin.
         local lo, hi = math.min(victim_idx, peer_idx), math.max(victim_idx, peer_idx)
+        --[[ An EMPTY pair takes its placeholder with it. "The content survives, unwrapped" is the
+        cascade's rule and it is right for `(a)` -> `a`, but the thing inside `()` is not content -
+        it is the placeholder the pair needed in order to exist at all, and leaving it behind drops
+        a stray empty box into the row (span_is_lone_placeholder's own comment). ]]
+        cascade_span_empty = mformula_new.span_is_lone_placeholder(children, lo, hi)
         cut_hi = table.remove(children, hi)
+        if cascade_span_empty then
+            cut_mid = table.remove(children, lo + 1)
+        end
         cut_lo = table.remove(children, lo)
         i = lo
     else
@@ -3875,6 +3883,10 @@ function mformula_new.handle_input(container, fontset, sz)
         cursor_i = i
     elseif peer_idx and peer_idx < victim_idx then
         cursor_i = victim_idx - 1
+        -- The placeholder between them went too, so one MORE slot before the victim is gone.
+        if cascade_span_empty then
+            cursor_i = cursor_i - 1
+        end
     end
     -- `target`/`victim` are never read again below - only `cut_lo`/`cut_hi`, and only to pass to
     -- mexpru.cut() once it's actually safe to.
@@ -3923,6 +3935,7 @@ function mformula_new.handle_input(container, fontset, sz)
             end
         end
         if cut_hi then mexpru.cut(cut_hi) end
+        if cut_mid then mexpru.cut(cut_mid) end
         mexpru.cut(cut_lo)
     else
         local rebuilt = mexpru.horiz(fontset, children, horiz_sz)
@@ -3932,6 +3945,7 @@ function mformula_new.handle_input(container, fontset, sz)
         -- valid without reassignment: mexpru.horiz()/mexpr_merge_h re-parents its EXISTING
         -- children rather than recreating them, so target's own identity survives the rebuild.
         if cut_hi then mexpru.cut(cut_hi) end
+        if cut_mid then mexpru.cut(cut_mid) end
         mexpru.cut(cut_lo)
     end
     mark_edited(container)
@@ -4340,6 +4354,66 @@ function mformula_new.slot_markers(container, fontset, sz)
     -- LOGICAL -> PHYSICAL before touching real font metrics (mexpru.rescale()'s own comment).
     local min = min_extent(fontset, mexpru.physical_sz(mexpru.u(node).sz))
     return {{x = t.x, y = t.top, w = min.width, h = t.bottom - t.top}}
+end
+
+--[[ Is everything between `lo` and `hi` in `children` exactly ONE empty placeholder?
+
+Asked when a bracket pair is cascaded away. The rule the cascade otherwise follows is that the
+CONTENT between a pair survives, unwrapped - which is right for `(a)` becoming `a`, and wrong for
+`()`, because the placeholder inside an empty pair only ever existed to give the pair something to
+hold. Removing the brackets and keeping it leaves a stray empty box sitting in the row.
+
+Reported live 2026-09-07: "I do (,),delete results in an additional empty left around". Typing `a`,
+then `(`, then `)`, then Backspace left `a` followed by an empty atom instead of just `a` - visible
+as a gap, and enough to make a definition's name stop parsing.
+
+Exported so the rule itself can be tested: the branch that uses it lives inside handle_input(),
+which needs a live ImGui frame and so cannot be driven headlessly. ]]
+function mformula_new.span_is_lone_placeholder(children, lo, hi)
+    if hi - lo ~= 2 then
+        return false
+    end
+    local mid = children[lo + 1]
+    return mid ~= nil and mid.type == vc.MEXPR_TYPE_EMPTY_BOX
+end
+
+--[[ Where each of `nodes` sits, as {x, y, w, h} in the SAME frame draw() is handed as its origin -
+so a caller adds its own draw x/baseline and has a screen rect. Nodes not in this container (or not
+positioned yet) are skipped rather than returned as garbage.
+
+Added for the definition box's per-character parse feedback: it needs to paint behind individual
+atoms it did or did not manage to read, which nothing else here had a reason to ask for. Deliberately
+takes a LIST rather than one node - a Lua table cannot be keyed by an mexpr_p (identity has to go
+through mexpru.same()), so callers carry lists of nodes, not sets. ]]
+function mformula_new.node_rects(fontset, nodes)
+    local out = {}
+    for _, node in ipairs(nodes or {}) do
+        local u = node and mexpru.u(node)
+        if u and u.pos then
+            --[[ Mirrors cursor_target() rather than node_bbox(), and the difference matters:
+            node_bbox() works in the RAW tree frame, but mexpr_symbol re-centres every glyph on the
+            middle of 'a', so a raw bb's y is not baseline-relative and a highlight built from it
+            floats above the text. to_baseline_frame() is the correction, and it has to be applied
+            at the NODE'S OWN size - an atom inside a subscript is smaller than the row around it.
+
+            Horizontally the ink box; vertically the LINE box (baseline_shift .. line_height), the
+            same band the caret occupies - so a run of marked characters paints as one continuous
+            strip instead of a ragged outline tracking each glyph's ascenders. ]]
+            local sz = mexpru.physical_sz(u.sz or (u.base and mexpru.u(u.base).sz))
+            local pos = u.pos
+            local bb = to_baseline_frame(fontset, sz, vc.mexpr_get_bb(node))
+            local cm = cursor_metrics(fontset, sz)
+            out[#out + 1] = {
+                x = pos.x + bb.tl.x,
+                y = pos.y + cm.baseline_shift,
+                w = bb.br.x - bb.tl.x,
+                h = cm.line_height,
+            }
+        else
+            out[#out + 1] = false
+        end
+    end
+    return out
 end
 
 -- LaTeX serialization lives in its own file (mformula_latex.lua) - re-exported here so editor.lua

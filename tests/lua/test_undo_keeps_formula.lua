@@ -20,7 +20,7 @@ local vc = require("virt_composer")
 local char = require("char")
 local mexpru = require("mexpru")
 local mformula = require("mformula_new")
-local editor = require("editor")
+local editor = require("editor_text")
 
 local checks_run, checks_failed = 0, 0
 local function check(name, cond, got)

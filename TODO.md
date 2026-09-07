@@ -168,7 +168,39 @@ easy to get backwards; each entry has its RGB spelled out beside it.
 
 ---
 
-## 3. Fraction-in-fraction spacing
+## 3. Ctrl+Z and accents — DONE 2026-09-07
+
+Reported: "ctrl+z doesn't work on hats, it should", then "also undo from text after putting a hat
+jumps the cursor around".
+
+**Two separate bugs, and neither was about accents.** The first diagnosis in this file was wrong and
+is worth recording as such: it guessed that `mformula_new.clone()` lost the accent, because clone
+walks ANCHORS rather than per-kind fields while an accent's identity lives in the node's `u` table.
+That is not what happens — `rescale_node()`, which clone delegates to, has an explicit `dress`
+branch that rebuilds the decoration through `mexpru.redress()`. Accents survive a clone fine.
+
+What was actually wrong, found by reproducing rather than reading:
+
+1. **The definition box had no undo AT ALL.** Not for accents, not for anything - `editor_definition`
+   forwarded keystrokes to the slot and dropped the "did this change the tree" flag on the floor.
+   Hats were simply the first thing tried there. It now has its own undo/redo stack (Ctrl+Z /
+   Ctrl+Shift+Z, the same binding `editor_text.lua` uses), with the same cached-baseline discipline
+   that file uses — a snapshot per EDIT, never per frame, because cloning every slot 60 times a
+   second is what made the text editor visibly lag once.
+
+2. **Undo changed editing MODE.** Applying an accent inside a formula snapshots a state in which
+   that formula was active. Leaving the formula and pressing Ctrl+Z out in the text restored that
+   flag too, so the caret teleported from where you were typing into the middle of the formula.
+   Undo now restores CONTENT, not mode: if you are in a formula you stay in it, if you are in the
+   text you stay there. It cannot be "always enter" or "always exit" - undoing while still inside a
+   formula must not eject you either.
+
+   Note the code carried a comment claiming undo "always exits back to plain editing on restore".
+   It never did; that comment described an intent the code did not have, and is now corrected.
+
+---
+
+## 4. Fraction-in-fraction spacing
 
 **Open across all three rewrites.** The second rewrite's own TODO, verbatim:
 
