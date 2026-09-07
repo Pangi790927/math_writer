@@ -36,6 +36,8 @@ local input_recorder_warn = nil
 -- at the bottom of this file: draw() calls prof.begin/stop directly, and a local declared below a
 -- function is not in that function's scope - it would read a nil global instead.
 local prof = require("prof")
+local keymap = require("keymap")
+local glyphmap = require("glyphmap")
 
 local mformula_new = {}
 
@@ -792,7 +794,29 @@ function mformula_new.make_supsub(container, fontset, slot)
         supsub_node = mexpru.supsub(fontset, target, nil, new_horiz)
     end
 
-    local children = mexpru.u(original_parent).children
+    --[[ original_parent MUST be a horiz, and until 2026-09-07 nobody checked.
+
+    make_bigop() a few lines down has carried this exact guard from the start; this function never
+    grew one, and the asymmetry was invisible for as long as every reachable target happened to sit
+    in a horiz. A BIG OPERATOR'S BASE does not: its parent is the bigop itself, which has no
+    children list at all, so this line threw
+    "attempt to index a nil value (local 'children')" - and threw it AFTER mexpru.supsub() above
+    had already reparented `target` into a new node. That is what made it so much worse than a
+    no-op: the throw left the tree half-edited with the cursor naming something no longer in it, so
+    every arrow key afterwards died in mexpru.u(nil) and the keyboard appeared to stop working.
+    Reported 2026-09-07 ("the arrows got stuck"), one error per keypress in the recorder.
+
+    Refusing here restores "the key does nothing" as the worst case. Filling a bigop's free side
+    the way handle_input() already fills a supsub's is a real feature and a separate decision -
+    this is only the guard. ]]
+    local op_u = original_parent and mexpru.u(original_parent)
+    if not op_u or op_u.kind ~= "horiz" then
+        print("mformula_new: ignoring Ctrl+Shift+=/- here - this atom is not in a row "
+                .. "(a big operator's base, for instance); nothing was changed")
+        return
+    end
+
+    local children = op_u.children
     children[target_idx] = supsub_node
     local rebuilt = mexpru.horiz(fontset, children, mexpru.u(original_parent).sz)
     container.root = mexpru.propagate_rebuild(fontset, original_parent, rebuilt)
@@ -1175,6 +1199,20 @@ function mformula_new.make_bigop(container, fontset, slot)
     local target = container.cursor_pos:get_obj()
     local tkind = target and mexpru.u(target).kind
     if not target or tkind == "horiz" then
+        return
+    end
+    --[[ An EMPTY slot cannot take a limit: a limit sits on an operator, and there is no operator
+    here to sit on. Without this guard the empty atom itself became the base of a SECOND bigop,
+    nested inside the first - reported 2026-09-07 as "inside a bigop-sup and empty I can't delete
+    it", which is exactly what that produced. The two nested empties draw identically to one, so
+    the formula looked unchanged while Backspace had to collapse an invisible inner structure
+    first and appeared to do nothing at all.
+
+    The same shape of guard as the sup/sub path's own refusals just below (a supsub's base, an
+    open bracket): refuse, and say why, rather than building something that cannot be undone. ]]
+    if target.type == vc.MEXPR_TYPE_EMPTY_BOX then
+        print("mformula_new: ignoring Ctrl+Shift+[/] in an empty slot - a limit needs an "
+                .. "operator to sit on; type one first")
         return
     end
     local base_sz = mexpru.u(target).sz
@@ -2023,9 +2061,10 @@ end
 local exit_horiz_leftward, move_left_within
 
 --[[ Exits `horiz` to the LEFT: if horiz has no parent (it's root), nothing further left. Otherwise
-horiz's parent is EITHER a supsub or a frac (the only two things a horiz can ever sit inside, besides
-being root itself):
-  - supsub: land on ITS base (unique to supsub - a frac has no equivalent, see below).
+horiz's parent is a supsub, a BIGOP, a frac or a vert (this list said "either a supsub or a frac"
+and was wrong on both counts - vert was added later without updating it, and bigop was never
+handled at all; see the bigop note below):
+  - supsub or bigop: land on ITS base (a frac has no equivalent, see below).
   - frac (horiz is num or den - reached only after Up/Down entered it, Left/Right never dive into
     num/den directly): no base to land on - the whole frac reads as ONE opaque atom for Left/Right
     (this file's own model/2026-09-04 fraction design discussion), so exiting leftward from INSIDE
@@ -2045,7 +2084,18 @@ exit_horiz_leftward = function(container, horiz)
         return
     end
     local hp_u = mexpru.u(horiz_parent)
-    if hp_u.kind == "supsub" then
+    --[[ "bigop" as well as "supsub", and its absence was a hard lock rather than a wrong landing:
+    a bigop's limit is a horiz whose parent is a bigop, which matched NO branch here, so the
+    function returned having done nothing and the cursor stayed on that horiz forever. Reported
+    2026-09-07 as losing "the ability to exit the integral area to the left", with the session's
+    flight recorder showing 31 consecutive LeftArrows and no movement.
+
+    A bigop carries exactly the same base/sup/sub slots as a supsub - only the limits are drawn
+    above and below instead of beside - so it lands the same way: on the operator itself. This is
+    the same distinction collapsible_supsub() calls out in its own comment ("is_supsub, not a bare
+    kind check: a BIGOP carries the same base/sup/sub slots"); that check is a kind comparison
+    rather than is_supsub() only because is_supsub is declared further down this file. ]]
+    if hp_u.kind == "supsub" or hp_u.kind == "bigop" then
         container.cursor_pos = vc.wref_mexpr(hp_u.base)
     elseif hp_u.kind == "frac" or hp_u.kind == "vert" then
         -- Both have no base to reach toward, so leaving one leftward means leaving the WHOLE
@@ -2083,7 +2133,18 @@ move_left_within = function(container, horiz, node)
 end
 
 function mformula_new.move_left(container)
-    local target = container.cursor_pos:get_obj()
+    --[[ live_cursor(), not cursor_pos:get_obj() directly. A dangling cursor - a wref to a node
+    some rebuild has since destroyed - makes get_obj() return nil, and every branch below then
+    indexes it, so the FIRST thing an arrow key did was throw
+    "mexpru.lua:42: attempt to index a nil value (local 'ref')". main.lua's pcall caught it, the
+    frame was abandoned, and from the outside the arrow keys simply stopped working - reported
+    2026-09-07 as "the arrows got stuck", with the recorder showing one error per keypress.
+
+    live_cursor() is this file's own answer to that and already existed: it recovers to the
+    formula root and reports it through the flight recorder, so a dangling cursor costs you your
+    place rather than the use of the keyboard. Movement is exactly where that recovery has to
+    happen, since it is the first thing anyone presses when something has gone wrong. ]]
+    local target = live_cursor(container)
 
     if is_horiz(target) then
         exit_horiz_leftward(container, target)
@@ -2148,7 +2209,8 @@ local function move_right_within(container, horiz, node)
 end
 
 function mformula_new.move_right(container)
-    local target = container.cursor_pos:get_obj()
+    -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
+    local target = live_cursor(container)
 
     if is_horiz(target) then
         local first = mexpru.u(target).children[1]
@@ -2246,10 +2308,29 @@ local function collapsible_supsub(container)
     if not (in_sup or in_sub) then
         return nil
     end
-    if not (slot_is_untyped(u.sup) and slot_is_untyped(u.sub)) then
-        return nil
+    --[[ Two outcomes, not one.
+
+    BOTH slots untyped -> the whole spawn is undone and the base is left ("collapse").
+
+    Only THIS slot untyped, while the other one holds something -> just this side is removed
+    ("drop"). That case used to return nil, i.e. Backspace did nothing at all, and it is what
+    reached the user as "I can't delete it": add a limit above a sum that already has a limit
+    below, change your mind, and there was no way back - the empty slot could not be removed
+    because its sibling had content, and it could not be typed away because it was already empty.
+    A loaded formula hit the same wall from the other side: open a saved sum whose limits are both
+    filled, clear one, and the now-empty slot was stuck for the same reason.
+
+    The original rule survives inside the collapse case, and it still matters there: both slots
+    must ALREADY be untyped when the key is pressed, so backspacing the "B" out of "x^{B}" clears
+    the B and leaves the superscript, rather than taking the whole thing in one keystroke. ]]
+    local this_slot = in_sup and "sup" or "sub"
+    if slot_is_untyped(u.sup) and slot_is_untyped(u.sub) then
+        return supsub, "collapse", this_slot
     end
-    return supsub
+    if slot_is_untyped(in_sup and u.sup or u.sub) then
+        return supsub, "drop", this_slot
+    end
+    return nil
 end
 
 --[[ Backspace in a sup/sub that was never typed into: undo the whole spawn, leaving just the base.
@@ -2257,12 +2338,17 @@ end
 Ported from mformula.lua's collapse_if_both_empty(), which the new model lost - reported live
 : "delete from an empty horiz no longer deletes sup when on empty horiz x^[empty]".
 
-Its two conditions come across unchanged, and both matter. BACKSPACE only, never Delete: Delete
-elsewhere in this file means "the thing after the cursor", and there is no such thing in an empty
-slot. And BOTH slots have to be untyped ALREADY, at the moment the key is pressed - not merely
-become empty because of this press - or backspacing the "B" out of "x^{B}" would take the whole
-superscript with it in one keystroke instead of just clearing what was typed. A second Backspace,
-on the now-empty slot, is what removes the structure.
+EITHER DELETE KEY reaches this, since 2026-09-07. It was Backspace only, because Delete elsewhere
+in this file means "the thing after the cursor" and an empty slot has nothing after it - true, but
+the consequence was that Delete did nothing at all in an empty slot, which reads as a broken key
+rather than as a consistent model. Ruled: "if the horiz is empty it should delete, only when the
+horiz has something else than an empty should it not" - which is exactly the condition below, so
+the caller needs no extra test.
+
+The other condition is unchanged and still matters: a slot must be untyped ALREADY, at the moment
+the key is pressed - not merely become empty because of this press - or backspacing the "B" out of
+"x^{B}" would take the whole superscript with it in one keystroke instead of just clearing what was
+typed. A second press, on the now-empty slot, is what removes the structure.
 
 The cursor lands on the base, which is where the compound used to sit.
 
@@ -2270,12 +2356,40 @@ Returns whether it did anything, and is public so a test can drive it - handle_i
 branch needs real keypresses, the same reason every other handle_input-adjacent test here works one
 level down. ]]
 function mformula_new.collapse_empty_supsub(container, fontset)
-    local supsub = collapsible_supsub(container)
+    local supsub, mode, side = collapsible_supsub(container)
     if not supsub then
         return false
     end
-    local base = mexpru.u(supsub).base
-    container.root = mexpru.propagate_rebuild(fontset, supsub, base)
+    local u = mexpru.u(supsub)
+    local base = u.base
+    if mode == "collapse" then
+        container.root = mexpru.propagate_rebuild(fontset, supsub, base)
+    else
+        --[[ Remove only the side the cursor is in, keeping the other one and its content. Rebuilt
+        through the same constructor that made it, so a bigop stays a bigop (limits above/below)
+        and a supsub stays a supsub (beside) - passing one through the other's constructor would
+        silently move the surviving limit to the wrong place. ]]
+        local new_sup = (side == "sup") and nil or u.sup
+        local new_sub = (side == "sub") and nil or u.sub
+        local rebuilt
+        if u.kind == "bigop" then
+            rebuilt = mexpru.bigop(fontset, base, new_sup, new_sub, u.sz)
+        else
+            rebuilt = mexpru.supsub(fontset, base, new_sup, new_sub)
+        end
+        container.root = mexpru.propagate_rebuild(fontset, supsub, rebuilt)
+        --[[ Take the base back OUT of the rebuilt node rather than reusing the handle captured
+        before it. The constructor may or may not adopt the node it was handed, and the rebuild
+        that follows tears down the old subtree - so the pre-rebuild handle can name something that
+        no longer exists, and pointing the cursor at it produces a DANGLING cursor. That is not a
+        theoretical hazard: it showed up in a live session's flight recorder as
+        "WARN cursor_pos was dangling - recovered to the formula root", after which arrow keys had
+        nothing sensible to move through and Left stopped leaving the operator at all.
+
+        Reading it back from `rebuilt` is correct whichever way the constructor behaved. ]]
+        base = mexpru.u(rebuilt).base or rebuilt
+    end
+    -- Either way the cursor lands on the base, which is where the removed part used to hang.
     container.cursor_pos = vc.wref_mexpr(base)
     mark_edited(container)
     return true
@@ -2329,7 +2443,8 @@ local function apply_walk(container, node, sup_or_sub)
 end
 
 function mformula_new.move_down(container)
-    local target = container.cursor_pos:get_obj()
+    -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
+    local target = live_cursor(container)
 
     if is_supsub(target) then
         local sub = mexpru.u(target).sub
@@ -2439,7 +2554,8 @@ function mformula_new.move_down(container)
 end
 
 function mformula_new.move_up(container)
-    local target = container.cursor_pos:get_obj()
+    -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
+    local target = live_cursor(container)
 
     -- Through a dress for the DESCENT branches only, exactly as move_down() does - see unwrap().
     local inner = unwrap(target)
@@ -2795,7 +2911,8 @@ Only fractions need it. A supsub already reciprocates - the last element of a su
 the supsub itself, and base <-> sup/sub round-trips. Where there is no non-reciprocal road to
 reverse, these fall through to the plain move, so Alt+arrow is never a dead key. ]]
 function mformula_new.move_down_reverse(container)
-    local target = container.cursor_pos:get_obj()
+    -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
+    local target = live_cursor(container)
     local owner = frac_slot_owner(target, "num") or (select(1, vert_slot_of(target)))
     if owner then
         container.cursor_pos = vc.wref_mexpr(owner)
@@ -2805,7 +2922,8 @@ function mformula_new.move_down_reverse(container)
 end
 
 function mformula_new.move_up_reverse(container)
-    local target = container.cursor_pos:get_obj()
+    -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
+    local target = live_cursor(container)
     local owner = frac_slot_owner(target, "den") or (select(1, vert_slot_of(target)))
     if owner then
         container.cursor_pos = vc.wref_mexpr(owner)
@@ -3091,16 +3209,16 @@ local function handle_arrows(container, alt, sprint, selecting)
     -- leave its row (see the SELECTION comment above), so Up/Down keep their plain meaning and
     -- simply drop the selection like any other move.
     if selecting then
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, true) then
+        if keymap.pressed("math.select_left") then
             go(function(c) extend_selection(c, -1) end)
             return true
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, true) then
+        if keymap.pressed("math.select_right") then
             go(function(c) extend_selection(c, 1) end)
             return true
         end
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, true) then
+    if keymap.pressed("nav.left") or keymap.pressed("math.sprint_left") then
         go(function(c)
             if not (sprint and sprint_horizontal(c, -1)) then
                 mformula_new.move_left(c)
@@ -3108,7 +3226,7 @@ local function handle_arrows(container, alt, sprint, selecting)
         end)
         return true
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, true) then
+    if keymap.pressed("nav.right") or keymap.pressed("math.sprint_right") then
         go(function(c)
             if not (sprint and sprint_horizontal(c, 1)) then
                 mformula_new.move_right(c)
@@ -3116,7 +3234,7 @@ local function handle_arrows(container, alt, sprint, selecting)
         end)
         return true
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_UpArrow, true) then
+    if keymap.pressed("nav.up") or keymap.pressed("math.back_up") then
         go(function(c)
             if alt then
                 mformula_new.move_up_reverse(c)
@@ -3126,7 +3244,7 @@ local function handle_arrows(container, alt, sprint, selecting)
         end)
         return true
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_DownArrow, true) then
+    if keymap.pressed("nav.down") or keymap.pressed("math.back_down") then
         go(function(c)
             if alt then
                 mformula_new.move_down_reverse(c)
@@ -3201,12 +3319,18 @@ function mformula_new.handle_input(container, fontset, sz)
     -- instead: a real structural change (the supsub's own bb changes - an empty side still reserves
     -- real layout space, per math_expr_composer.h), so it goes through the same
     -- rebuild-and-propagate-up path as every other edit, not treated as a lighter-weight operation.
-    local ctrl_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
-    local shift_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
-    local alt_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftAlt) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightAlt)
-    if ctrl_down and shift_down and not target_is_horiz then
-        local sup_pressed = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Equal, false)
-        local sub_pressed = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Minus, false)
+    -- Raw modifier state is still needed: the Alt+letter / Alt+punctuation glyph families below
+    -- are whole key families rather than single actions, and handle_arrows() takes the flags as
+    -- parameters to choose plain vs sprint vs reverse movement.
+    local ctrl_down, shift_down, alt_down = keymap.mods()
+    --[[ No modifier test on this block any more. It used to gate on ctrl/shift before checking
+    which key, and keeping that would have quietly defeated the whole customiser: rebind one of
+    these to Alt+something in F2 and the outer guard would swallow it before the binding was ever
+    consulted. Each keymap.pressed() below matches modifiers exactly on its own, so the gate is
+    redundant as well as harmful. Ordering between the blocks is unchanged. ]]
+    if not target_is_horiz then
+        local sup_pressed = keymap.pressed("math.sup")
+        local sub_pressed = keymap.pressed("math.sub")
         if sup_pressed or sub_pressed then
             if target_is_supsub_base then
                 local supsub_node = target_parent
@@ -3271,9 +3395,14 @@ function mformula_new.handle_input(container, fontset, sz)
     selection_to_text() uses for a whole formula embed - so one fragment round-trips BOTH ways: back
     into a formula (the paste path below unwraps it) and out into plain text, where "$$...$$" is
     already what becomes an embed. Cut refuses exactly where delete does, and for the same reason. ]]
-    if ctrl_down and not shift_down then
-        local copy = vc.ImGui_IsKeyPressed(vc.ImGuiKey_C, false)
-        local cut = vc.ImGui_IsKeyPressed(vc.ImGuiKey_X, false)
+    --[[ No modifier test on this block any more. It used to gate on ctrl/shift before checking
+    which key, and keeping that would have quietly defeated the whole customiser: rebind one of
+    these to Alt+something in F2 and the outer guard would swallow it before the binding was ever
+    consulted. Each keymap.pressed() below matches modifiers exactly on its own, so the gate is
+    redundant as well as harmful. Ordering between the blocks is unchanged. ]]
+    do
+        local copy = keymap.pressed("edit.copy")
+        local cut = keymap.pressed("edit.cut")
         if copy or cut then
             local horiz, lo, hi = mformula_new.selection_range(container)
             if horiz then
@@ -3291,7 +3420,7 @@ function mformula_new.handle_input(container, fontset, sz)
         end
     end
 
-    if ctrl_down and not shift_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_V, false) then
+    if keymap.pressed("edit.paste") then
         local text = vc.ImGui_GetClipboardText()
         local body = text and (text:match("^%s*%$%$(.*)%$%$%s*$") or text)
         if not body or body == "" then
@@ -3338,12 +3467,17 @@ function mformula_new.handle_input(container, fontset, sz)
     subscript, and on a US layout "+" IS Shift+Equal, so the literal reading of "ctrl+'+'" collides
     with the sup binding outright. Ruled in favour of the plain Equal/Minus keys, which
     were free and read as the same family as the sup/sub pair. ]]
-    if ctrl_down and not shift_down then
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Equal, false) then
+    --[[ No modifier test on this block any more. It used to gate on ctrl/shift before checking
+    which key, and keeping that would have quietly defeated the whole customiser: rebind one of
+    these to Alt+something in F2 and the outer guard would swallow it before the binding was ever
+    consulted. Each keymap.pressed() below matches modifiers exactly on its own, so the gate is
+    redundant as well as harmful. Ordering between the blocks is unchanged. ]]
+    do
+        if keymap.pressed("math.stack_grow") then
             mformula_new.make_vert(container, fontset, target_sz)
             return
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Minus, false) then
+        if keymap.pressed("math.stack_shrink") then
             mformula_new.shrink_vert(container, fontset)
             return
         end
@@ -3355,15 +3489,15 @@ function mformula_new.handle_input(container, fontset, sz)
         A context-dependent Ctrl+- (bar on a plain atom, shrink inside a stack) was considered and
         rejected: a key whose meaning depends on where the cursor is is the hardest kind to remap
         coherently, and these are due to become customisable. ]]
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_G, false) then
+        if keymap.pressed("math.accent_bar") then
             mformula_new.toggle_accent(container, fontset, "bar")
             return
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Period, false) then
+        if keymap.pressed("math.dot_add") then
             mformula_new.adjust_dots(container, fontset, 1)
             return
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Comma, false) then
+        if keymap.pressed("math.dot_remove") then
             mformula_new.adjust_dots(container, fontset, -1)
             return
         end
@@ -3372,7 +3506,7 @@ function mformula_new.handle_input(container, fontset, sz)
         asked for - and moved on the report "ctrl+6, my bad, no ctrl+shift+6": every
         other accent here (Ctrl+G, Ctrl+. , Ctrl+,) is reachable without Shift, and reaching for it
         on just this one is the odd move out. Nothing else binds a bare Ctrl+digit. ]]
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_6, false) then
+        if keymap.pressed("math.accent_hat") then
             mformula_new.toggle_accent(container, fontset, "hat")
             return
         end
@@ -3380,7 +3514,7 @@ function mformula_new.handle_input(container, fontset, sz)
         UNDERNEATH" modifier across the whole family - it could not go on keeping Shift just because
         "~" happens to be Shift+` on a US layout, or the one accent whose unshifted form was free
         would have been the odd one out in both directions at once. ]]
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_GraveAccent, false) then
+        if keymap.pressed("math.accent_tilde") then
             mformula_new.toggle_accent(container, fontset, "tilde")
             return
         end
@@ -3392,25 +3526,30 @@ function mformula_new.handle_input(container, fontset, sz)
 
     This block shares the Ctrl+Shift space with the superscript/subscript pair further up, but not
     the keys - those are Equal and Minus - so the order of the two does not matter. ]]
-    if ctrl_down and shift_down then
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_GraveAccent, false) then
+    --[[ No modifier test on this block any more. It used to gate on ctrl/shift before checking
+    which key, and keeping that would have quietly defeated the whole customiser: rebind one of
+    these to Alt+something in F2 and the outer guard would swallow it before the binding was ever
+    consulted. Each keymap.pressed() below matches modifiers exactly on its own, so the gate is
+    redundant as well as harmful. Ordering between the blocks is unchanged. ]]
+    do
+        if keymap.pressed("math.accent_tilde_below") then
             mformula_new.toggle_accent(container, fontset, "tilde", "below")
             return
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_6, false) then
+        if keymap.pressed("math.accent_hat_below") then
             mformula_new.toggle_accent(container, fontset, "hat", "below")
             return
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_G, false) then
+        if keymap.pressed("math.accent_bar_below") then
             mformula_new.toggle_accent(container, fontset, "bar", "below")
             return
         end
         -- Ctrl+Shift+[ / Ctrl+Shift+] : a limit above / below - see make_bigop().
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftBracket, false) then
+        if keymap.pressed("math.limit_above") then
             mformula_new.make_bigop(container, fontset, "sup")
             return
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightBracket, false) then
+        if keymap.pressed("math.limit_below") then
             mformula_new.make_bigop(container, fontset, "sub")
             return
         end
@@ -3420,11 +3559,11 @@ function mformula_new.handle_input(container, fontset, sz)
         These are the one place Shift does NOT mean "underneath". The dot pair (Ctrl+. / Ctrl+,) is
         add/remove rather than above/below and never had a shifted form, so the shifted pair was
         free - and a leftward arrow is a different accent, not the same one somewhere else. ]]
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Period, false) then
+        if keymap.pressed("math.vec") then
             mformula_new.toggle_accent(container, fontset, "vec")
             return
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Comma, false) then
+        if keymap.pressed("math.vec_left") then
             mformula_new.toggle_accent(container, fontset, "vecleft")
             return
         end
@@ -3438,7 +3577,7 @@ function mformula_new.handle_input(container, fontset, sz)
         If it declines - the innermost unclosed bracket is a different type, or the cursor has
         wandered out of the closable region - the press opens a new bar instead, which is what this
         key has always meant when there was nothing to close. ]]
-        if BAR_BRACKET and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Backslash, false) then
+        if BAR_BRACKET and keymap.pressed("math.bar_bracket") then
             if try_close_bracket(container, fontset, BAR_BRACKET) then
                 -- closed by the call above
             elseif target_is_supsub_base then
@@ -3453,7 +3592,7 @@ function mformula_new.handle_input(container, fontset, sz)
         end
     end
 
-    if ctrl_down and not shift_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Slash, false) then
+    if keymap.pressed("math.frac") then
         if target_is_supsub_base then
             print("mformula_new: ignoring Ctrl+/ on a supsub's own base - fractions have no base to attach to")
         else
@@ -3485,7 +3624,7 @@ function mformula_new.handle_input(container, fontset, sz)
     typed inside a formula at all - "a", Space, "b" came out "ab" (measured, porting
     audit). Inserted as an ordinary glyph like any other character; slot_markers() is what keeps it
     visible despite having no ink of its own. ]]
-    if not ctrl_down and not alt_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Space, true) then
+    if keymap.pressed("text.space") then
         -- Space first completes a "\name" if one is being typed - see try_resolve_command().
         if mformula_new.try_resolve_command(container, fontset) then
             return
@@ -3517,7 +3656,11 @@ function mformula_new.handle_input(container, fontset, sz)
         Alt+Shift+,  subset-or-equal   Alt+Shift+.  superset-or-equal
 
     Requested 2026-09-06. Each is an ordinary glyph, inserted exactly as a typed character is. ]]
-    if alt_down then
+    -- `not ctrl_down`, added 2026-09-07 - the same ruling editor_text.lua's Greek loop carries:
+    -- Alt+letter is Greek, Ctrl+Alt+letter is not, and AltGr (which reports as Ctrl+Alt) therefore
+    -- no longer produces one. Both glyph families stay raw ImGui polls because they are FAMILIES,
+    -- destined for F2's glyph-binding section rather than the shortcut registry.
+    if alt_down and not ctrl_down then
         -- char.alt_symbols, not a table of its own: F2's legend draws from the same one.
         for _, sym in ipairs(char.alt_symbols) do
             if vc.ImGui_IsKeyPressed(sym.key_id, true) then
@@ -3533,10 +3676,20 @@ function mformula_new.handle_input(container, fontset, sz)
                 end
             end
         end
-        for key_id, letter in pairs(char.greek_key_ids) do
-            if vc.ImGui_IsKeyPressed(key_id, true) then
-                local desc = shift_down and char.greek_alt_shift[letter] or char.greek_alt[letter]
-                local entry = desc and char.find_by_desc(desc)
+                --[[ Iterated from the GLYPH MAP, not from char.greek_key_ids, and keyed by the
+                physical key rather than by a letter. char.lua's table assumes the key labelled Q
+                types "q", which is only true on a US layout - keying by position is what lets a
+                row be moved onto whatever key a person actually has. char.greek_key_ids remains
+                the source of the DEFAULTS, one layer down in glyphmap.lua. ]]
+        local handled = false
+        glyphmap.each(function(key_name, _)
+            if handled then return end
+            if vc.ImGui_IsKeyPressed(keymap.key_of(key_name), true) then
+                local letter = (key_name:gsub("^ImGuiKey_", "")):lower()
+                -- glyphmap, not char.lua's tables - see editor_text.lua's own note. Both paths
+                -- must read the same live map, or Alt+letter would mean different things inside
+                -- a formula and outside one.
+                local entry = glyphmap.entry(key_name, true, shift_down)
                 if not entry then
                     entry = char.find_by_ascii(shift_down and letter:upper() or letter)
                 end
@@ -3548,10 +3701,14 @@ function mformula_new.handle_input(container, fontset, sz)
                     mexpru.u(new_glyph).sz = target_sz
                     insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
                             target_is_empty, target_is_supsub_base, target_sz, new_glyph)
+                    --[[ `handled`, not a bare return: this is inside the per-key callback now, so
+                    returning only ends that one row's turn. Without the flag the walk continues
+                    and a second row bound to the same key would insert a second glyph. ]]
+                    handled = true
                     return
                 end
             end
-        end
+        end)
         return
     end
 
@@ -3567,8 +3724,46 @@ function mformula_new.handle_input(container, fontset, sz)
     The whole cursor state has to be re-derived per character (cursor_state()), because inserting
     one rebuilds the spine and moves the cursor - `target` and its companions are stale immediately
     after. That is the entire reason this could not just have its `return`s deleted. ]]
+    --[[ KEYS WITH A `plain` OVERRIDE, before the character queue - the same gap editor_text.lua
+    describes in its own copy of this, and it has to be closed in both or a remapped key would type
+    one thing in prose and another inside a formula.
+
+    Characters arrive from ImGui's queue carrying no idea which key produced them, so a remapped
+    key is invisible there; it has to be polled. A key that fires here suppresses the queue for
+    this frame, since the queue is about to deliver that same key's character too. ]]
+    local overridden = false
+    glyphmap.each(function(key_name, slots)
+        if overridden or not slots.plain then
+            return
+        end
+        if vc.ImGui_IsKeyPressed(keymap.key_of(key_name), true) then
+            local entry = glyphmap.entry(key_name, false, false)
+            if entry then
+                local t, tp, t_horiz, t_empty, t_base, t_sz = cursor_state(container)
+                if t then
+                    local new_glyph = mexpru.mexpr_symbol(fontset,
+                            {size = mexpru.physical_sz(t_sz), code = entry.ncod}, true)
+                    mexpru.u(new_glyph).sz = t_sz
+                    insert_glyph_at_cursor(container, fontset, t, tp, t_horiz, t_empty, t_base,
+                            t_sz, new_glyph)
+                    -- Counted, not frame-skipped - see editor_text.lua's note: the key event and
+                    -- its character need not arrive in the same frame, and skipping one frame let
+                    -- both through.
+                    container.suppress_chars = (container.suppress_chars or 0) + 1
+                    overridden = true
+                end
+            end
+        end
+    end)
+    --[[ NOT returning here. The character this key produces may still be sitting in the queue, or
+    may arrive next frame; either way the loop below is what swallows it, and returning early would
+    leave the count owing and the next ordinary character eaten in its place. ]]
+
     for _, cp in ipairs(vc.ImGui_input_queue_chars()) do
-        if cp > 32 and cp < 256 then
+        if cp > 32 and cp < 256 and (container.suppress_chars or 0) > 0 then
+            -- Belongs to a key an override already handled; swallow exactly one per override.
+            container.suppress_chars = container.suppress_chars - 1
+        elseif cp > 32 and cp < 256 then
             local ch = string.char(cp)
             target, target_parent, target_is_horiz, target_is_empty, target_is_supsub_base,
                     target_sz = cursor_state(container)
@@ -3636,8 +3831,8 @@ function mformula_new.handle_input(container, fontset, sz)
     -- Backspace removes the atom cursor_pos itself names; Delete removes whichever atom comes
     -- right after it. Neither does anything while cursor_pos is on a horiz or an empty atom (see
     -- this file's own model comment) - there's no atom AT that position for either key to act on.
-    local backspace = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Backspace, true)
-    local fwd_delete = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Delete, true)
+    local backspace = keymap.pressed("text.backspace")
+    local fwd_delete = keymap.pressed("text.delete")
     -- A selection takes precedence over either key's ordinary meaning, and BEFORE the horiz/empty
     -- guard below: a selection can legitimately start at slot 0 (cursor resting on the horiz), which
     -- that guard would otherwise turn into a no-op.
@@ -3645,9 +3840,20 @@ function mformula_new.handle_input(container, fontset, sz)
         return
     end
     --[[ Before the horiz/empty guard below, which would otherwise swallow it: in a still-untyped
-    sup/sub the cursor IS on a horiz or an empty atom, and the whole point is that Backspace there
-    undoes the spawn. See collapse_empty_supsub(). ]]
-    if backspace and mformula_new.collapse_empty_supsub(container, fontset) then
+    sup/sub the cursor IS on a horiz or an empty atom, and the whole point is that either delete
+    key there undoes the spawn. See collapse_empty_supsub().
+
+    DELETE AS WELL AS BACKSPACE since 2026-09-07. It was Backspace only, on the reasoning that
+    Delete means "the thing after the cursor" and an empty slot has none - which is consistent, and
+    still left Delete doing NOTHING WHATSOEVER in an empty slot, so the key simply appeared broken
+    there. Ruled: "if the horiz is empty it should delete, only when the horiz has something else
+    than an empty should it not".
+
+    No guard is needed here for that second half: collapsible_supsub() only returns a target when
+    the cursor's own slot is untyped, so a slot with content in it declines on its own and Delete
+    falls through to its ordinary forward-delete meaning below. ]]
+    if (backspace or fwd_delete)
+            and mformula_new.collapse_empty_supsub(container, fontset) then
         return
     end
     if (not (backspace or fwd_delete)) or target_is_horiz or target_is_empty then
@@ -3752,9 +3958,26 @@ function mformula_new.handle_input(container, fontset, sz)
         return
     end
 
+    --[[ target_parent is not always a row, and everything below assumes it is.
+
+    A cursor resting on a BIG OPERATOR'S BASE has the bigop itself as its parent, which carries
+    base/sup/sub and no children list at all - so the read below produced nil and the first
+    indexing of it threw "attempt to index a nil value (local 'children')". Reported 2026-09-07 as
+    "still can't delete the sup": the Delete handler died before it could do anything, so the key
+    looked inert while actually taking the whole frame down with it.
+
+    This is the third place the same assumption has bitten (make_supsub() above, and
+    exit_horiz_leftward()'s missing bigop branch): a bigop is structurally a supsub, and code that
+    only pattern-matches "atom inside a horiz" keeps meeting one and falling over. Refusing here
+    restores a plain no-op, which is the correct answer anyway - there is no "next atom" to forward
+    delete when the cursor is on a slot of a compound rather than in a row. ]]
     local horiz = target_parent
-    local horiz_sz = mexpru.u(horiz).sz
-    local children = mexpru.u(horiz).children
+    local horiz_u = horiz and mexpru.u(horiz)
+    if not horiz_u or horiz_u.kind ~= "horiz" then
+        return
+    end
+    local horiz_sz = horiz_u.sz
+    local children = horiz_u.children
     -- target:get_parent_idx() - safe, `children` is a fresh, unmutated read of target's own parent.
     local i = target:get_parent_idx()
 

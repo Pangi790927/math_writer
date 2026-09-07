@@ -31,6 +31,8 @@ local mexpru = require("mexpru")
 local mformula = require("mformula_new")
 local prof = require("prof")
 local editor = require("editor")  -- the shared formula host; see its header
+local keymap = require("keymap")
+local glyphmap = require("glyphmap")
 
 local editor_text = {}
 
@@ -491,9 +493,15 @@ function editor_text.handle_input(state, fontset, sz)
     -- Ctrl+Z/Ctrl+Shift+Z: checked first, ahead of even the active-formula dispatch below, so
     -- undo/redo works the same way regardless of whether a formula currently owns input - see
     -- undo_or_redo()'s own comment on why it restores content without changing modes.
-    if (vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl))
-            and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Z, false) then
-        undo_or_redo(state, vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift))
+    -- Two actions now, not one key with a Shift test: edit.undo and edit.redo are separately
+    -- rebindable, and redo is checked FIRST because it is the more specific of the two - with
+    -- exact matching they cannot both match, but the order makes that independent of the rule.
+    if keymap.pressed("edit.redo") then
+        undo_or_redo(state, true)
+        return
+    end
+    if keymap.pressed("edit.undo") then
+        undo_or_redo(state, false)
         return
     end
 
@@ -506,8 +514,8 @@ function editor_text.handle_input(state, fontset, sz)
     -- moves ITS cursor there - see mformula.hit_test()'s comment for how "which glyph" is
     -- decided. -----------------------------------------------------------------------
     if state.active_formula then
-        local ctrl_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
-        local escaped = vc.ImGui_IsKeyPressed(vc.ImGuiKey_Escape, false)
+        local ctrl_down = keymap.mods()
+        local escaped = keymap.pressed("formula.exit")
         -- Ctrl+Left/Right always leave the formula, regardless of where the cursor is inside it -
         -- plain Left/Right staying parked at the formula's own start/end (mformula.lua's move_left/
         -- move_right do nothing further once there) is intentional, not something arrow keys
@@ -515,9 +523,8 @@ function editor_text.handle_input(state, fontset, sz)
         -- ...but NOT with Shift also held: Ctrl+Shift+Left/Right is the formula's own selection
         -- gesture (mformula_new's own extend_selection()), so intercepting it here would exit the
         -- formula on the very first attempt to select inside one.
-        local shift_here = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
-        local ctrl_left = ctrl_down and not shift_here and vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, false)
-        local ctrl_right = ctrl_down and not shift_here and vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, false)
+        local ctrl_left = keymap.pressed("formula.exit_left")
+        local ctrl_right = keymap.pressed("formula.exit_right")
         local ctrl_arrow_exit = ctrl_left or ctrl_right
         local clicked_outside, clicked_inside_fb = false, nil
         if vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false) then
@@ -617,12 +624,12 @@ function editor_text.handle_input(state, fontset, sz)
         state.cursor_pos = state.cursor_pos + 1
     end
 
-    local is_ctrl = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
-    local is_alt = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftAlt) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightAlt)
-    local is_shift = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
+    -- Still needed as raw state for the Alt+letter Greek family and the selection-extending
+    -- arrows, which are whole families of keys rather than single actions.
+    local is_ctrl, is_shift, is_alt = keymap.mods()
 
     -- Ctrl+M: insert a new formula embed at the cursor and enter it straight away. -------------
-    if is_ctrl and vc.ImGui_IsKeyPressed(vc.ImGuiKey_M, false) then
+    if keymap.pressed("formula.new") then
         push_undo(state, nil)
         -- mexpru.DEFAULT_SIZE (a fixed LOGICAL baseline), NOT the live `sz` - `sz` is content.lua's
         -- CURRENT, possibly-already-zoomed state.font_size; baking that in directly here would
@@ -640,7 +647,7 @@ function editor_text.handle_input(state, fontset, sz)
     -- Ctrl+/: insert a new formula embed here, already containing an empty fraction, and enter
     -- it - mirrors Ctrl+M above, just starting with a frac instead of a blank formula (see
     -- mformula.new_with_frac()'s own comment for why it doesn't wrap anything). -------------
-    if is_ctrl and not is_shift and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Slash, false) then
+    if keymap.pressed("formula.new_frac") then
         push_undo(state, nil)
         -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M just above.
         local formula = mformula.new_with_frac(fontset, mexpru.DEFAULT_SIZE)
@@ -656,7 +663,7 @@ function editor_text.handle_input(state, fontset, sz)
     -- stops being the odd one out that needs a Ctrl+M first. Ctrl+SHIFT+= is superscript and is
     -- handled in the block below - the `not is_shift` guard here is what keeps the two apart, the
     -- same split mformula_new.handle_input() makes for these keys INSIDE a formula. -------------
-    if is_ctrl and not is_shift and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Equal, false) then
+    if keymap.pressed("formula.new_stack") then
         push_undo(state, nil)
         -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M/Ctrl+/ above.
         local formula = mformula.new_with_vert(fontset, mexpru.DEFAULT_SIZE)
@@ -672,11 +679,11 @@ function editor_text.handle_input(state, fontset, sz)
     -- base, so what you see reads as a continuation of what you were already writing (same size,
     -- same baseline) with just a margin box around the new formula. No preceding character (start
     -- of text, or it's a newline/another formula) still works - the base is just left empty. -----
-    if is_ctrl and is_shift then
+    do
         local slot = nil
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Minus, false) then
+        if keymap.pressed("formula.wrap_sub") then
             slot = "sub"
-        elseif vc.ImGui_IsKeyPressed(vc.ImGuiKey_Equal, false) then
+        elseif keymap.pressed("formula.wrap_sup") then
             slot = "sup"
         end
         if slot then
@@ -700,13 +707,13 @@ function editor_text.handle_input(state, fontset, sz)
     end
 
     -- Ctrl+A/C/X/V: select all, copy, cut, paste -----------------------------------------------
-    if is_ctrl then
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_A, false) then
+    do
+        if keymap.pressed("edit.select_all") then
             state.selection_anchor = 0
             state.cursor_pos = #state.chars
         end
-        local copy = vc.ImGui_IsKeyPressed(vc.ImGuiKey_C, false)
-        local cut = vc.ImGui_IsKeyPressed(vc.ImGuiKey_X, false)
+        local copy = keymap.pressed("edit.copy")
+        local cut = keymap.pressed("edit.cut")
         if copy or cut then
             local lo, hi = selection_range(state)
             if lo then
@@ -717,7 +724,7 @@ function editor_text.handle_input(state, fontset, sz)
                 end
             end
         end
-        if vc.ImGui_IsKeyPressed(vc.ImGuiKey_V, false) then
+        if keymap.pressed("edit.paste") then
             local text = vc.ImGui_GetClipboardText()
             if selection_range(state) or (text and #text > 0) then
                 push_undo(state, nil)
@@ -731,18 +738,42 @@ function editor_text.handle_input(state, fontset, sz)
 
     -- Space, handled explicitly rather than trusting it to show up via
     -- vc.ImGui_input_queue_chars() below (it doesn't always). ------------------------------------
-    if not is_ctrl and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Space, true) then
+    --[[ The "not Ctrl" guard is gone (2026-09-07). text.space is bound "Space+All", and a bind
+    that says ALL while the code still refuses one modifier is a bind that lies to whoever reads it
+    in the customiser. Consequence, flagged rather than hidden: Ctrl+Space now inserts a space,
+    where before it did nothing. Nothing else binds Ctrl+Space. ]]
+    if keymap.pressed("text.space") then
         push_undo(state, "type")
         delete_selection(state)
         insert_ncod(char.find_by_ascii(" ").ncod)
     end
 
     -- Typing -------------------------------------------------------------------------------------
-    if is_alt then
-        for key_id, letter in pairs(char.greek_key_ids) do
-            if vc.ImGui_IsKeyPressed(key_id, true) then
-                local desc = is_shift and char.greek_alt_shift[letter] or char.greek_alt[letter]
-                local entry = desc and char.find_by_desc(desc)
+    --[[ `not is_ctrl`, added 2026-09-07. Alt+letter is Greek; Ctrl+Alt+letter is NOT, and used to
+    be only because this branch tested Alt and never looked at Ctrl. Ruled: "let's not, only
+    alt+letter greek". The practical effect is that AltGr+letter (AltGr reports as Ctrl+Alt on
+    Windows and Linux) no longer inserts a Greek letter on layouts that have one.
+
+    Still a raw ImGui poll rather than keymap actions: this is a FAMILY of 24 keys sharing one
+    meaning, and it becomes F2's own glyph-binding section rather than 24 entries in the shortcut
+    registry - see keymap.lua's header. ]]
+    if is_alt and not is_ctrl then
+                --[[ Iterated from the GLYPH MAP, not from char.greek_key_ids, and keyed by the
+                physical key rather than by a letter. char.lua's table assumes the key labelled Q
+                types "q", which is only true on a US layout - keying by position is what lets a
+                row be moved onto whatever key a person actually has. char.greek_key_ids remains
+                the source of the DEFAULTS, one layer down in glyphmap.lua. ]]
+        local handled = false
+        glyphmap.each(function(key_name, _)
+            if handled then return end
+            if vc.ImGui_IsKeyPressed(keymap.key_of(key_name), true) then
+                local letter = (key_name:gsub("^ImGuiKey_", "")):lower()
+                --[[ glyphmap, not char.lua's tables directly: what a letter key produces is
+                customisable now (F2's Letters section), and char.greek_alt/greek_alt_shift stay
+                the FACTORY copy that "back to default" restores from. The fallback below is
+                unchanged and still matters - a letter with no glyph mapped falls back to the
+                plain Latin one rather than inserting nothing. ]]
+                local entry = glyphmap.entry(key_name, true, is_shift)
                 if not entry then
                     -- No distinct greek glyph for this letter (or none mapped) - fall back to
                     -- the plain/uppercase Latin letter, same as old/comments.h did.
@@ -752,15 +783,63 @@ function editor_text.handle_input(state, fontset, sz)
                     push_undo(state, "type")
                     delete_selection(state)
                     insert_ncod(entry.ncod, char.size_delta_by_desc[entry.desc])
+                    -- One key per press: without this the walk carries on and a second row bound
+                    -- to the same key would insert twice.
+                    handled = true
                 end
             end
-        end
+        end)
     else
+        --[[ KEYS WITH A `plain` OVERRIDE, checked before the character queue.
+
+        Ordinary typing arrives as CHARACTERS from ImGui's queue, not as key presses, and a
+        character carries no idea of which key produced it - so a key remapped to type something
+        else could never be noticed there. That is why setting the Types column appeared to do
+        nothing at all: the Alt columns are polled per key and worked, while plain typing went
+        straight past the map. Reported 2026-09-07: "writing didn't respect the new configuration".
+
+        A key that fired here SUPPRESSES the queue for this frame. The queue would otherwise also
+        deliver the character that same key produced, and inserting both is worse than the rare
+        cost of a second character typed within one frame having to wait for the next one. Only
+        rows that actually carry an override are polled, so an unmodified setup pays one table
+        walk over an empty set. ]]
+        local overridden = false
+        glyphmap.each(function(key_name, slots)
+            if overridden or not slots.plain then
+                return
+            end
+            if vc.ImGui_IsKeyPressed(keymap.key_of(key_name), true) then
+                local entry = glyphmap.entry(key_name, false, false)
+                if entry then
+                    push_undo(state, "type")
+                    delete_selection(state)
+                    insert_ncod(entry.ncod, char.size_delta_by_desc[entry.desc])
+                    --[[ COUNT the character this key is about to produce, do not skip a frame.
+
+                    The first attempt suppressed the queue for the frame the key fired in, which is
+                    wrong because a key event and the character it produces need not arrive in the
+                    same frame - ImGui queues them separately, and on a real keyboard the character
+                    routinely lands a frame later. The override inserted, the character arrived
+                    afterwards, and the key produced BOTH glyphs. Reported 2026-09-07.
+
+                    A count is exact where a frame window is a guess: one override fires, one
+                    character is swallowed, whenever it turns up. Nothing typed afterwards is at
+                    risk, which a two-frame window could not promise. ]]
+                    state._suppress_chars = (state._suppress_chars or 0) + 1
+                    overridden = true
+                end
+            end
+        end)
+
         local codepoints = vc.ImGui_input_queue_chars()
         for _, cp in ipairs(codepoints) do
             -- > 32, not >= : space is handled explicitly above (the char queue doesn't always
             -- carry it), so skip it here to avoid inserting it twice on a frame where it does.
-            if cp > 32 and cp < 256 then
+            if cp > 32 and cp < 256 and (state._suppress_chars or 0) > 0 then
+                -- This character belongs to a key an override already handled. Swallow exactly
+                -- one per override, whichever frame it arrives in.
+                state._suppress_chars = state._suppress_chars - 1
+            elseif cp > 32 and cp < 256 then
                 local entry = char.find_by_ascii(string.char(cp))
                 if entry then
                     push_undo(state, "type")
@@ -772,7 +851,7 @@ function editor_text.handle_input(state, fontset, sz)
     end
 
     -- Deletion -------------------------------------------------------------------------------------
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Backspace, true) then
+    if keymap.pressed("text.backspace") then
         -- Consecutive backspaces coalesce into one undo step (deleting a whole word this way
         -- comes back in one Ctrl+Z), but not with typing before them - a plain key mismatch
         -- against "type" already ensures that, no extra bookkeeping needed.
@@ -784,7 +863,7 @@ function editor_text.handle_input(state, fontset, sz)
             state.cursor_pos = state.cursor_pos - 1
         end
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Delete, true) then
+    if keymap.pressed("text.delete") then
         if selection_range(state) or state.cursor_pos < #state.chars then
             push_undo(state, "delete")
         end
@@ -794,7 +873,7 @@ function editor_text.handle_input(state, fontset, sz)
     end
 
     -- Enter ----------------------------------------------------------------------------------------
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Enter, true) or vc.ImGui_IsKeyPressed(vc.ImGuiKey_KeypadEnter, true) then
+    if keymap.pressed("text.newline") then
         push_undo(state, nil)
         delete_selection(state)
         table.insert(state.chars, state.cursor_pos + 1, {newline=true})
@@ -804,7 +883,8 @@ function editor_text.handle_input(state, fontset, sz)
     -- Left/Right, with Ctrl word-skip (port of old/comments.h's whitespace-then-alnum scan).
     -- A plain (non-shift) arrow with an active selection collapses to that selection's edge,
     -- same as most editors, instead of moving one char from the current cursor. -----------------
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, true) then
+    if keymap.pressed("nav.left") or keymap.pressed("nav.select_left")
+            or keymap.pressed("nav.word_left") or keymap.pressed("nav.select_word_left") then
         local lo = selection_range(state)
         local adjacent_formula = state.cursor_pos > 0 and state.chars[state.cursor_pos].formula
         if lo and not is_shift then
@@ -833,7 +913,8 @@ function editor_text.handle_input(state, fontset, sz)
             end
         end
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, true) then
+    if keymap.pressed("nav.right") or keymap.pressed("nav.select_right")
+            or keymap.pressed("nav.word_right") or keymap.pressed("nav.select_word_right") then
         local _, hi = selection_range(state)
         local adjacent_formula = state.cursor_pos < #state.chars and state.chars[state.cursor_pos+1].formula
         if hi and not is_shift then
@@ -862,13 +943,13 @@ function editor_text.handle_input(state, fontset, sz)
     end
 
     -- Home/End (not in old, cheap to add) -----------------------------------------------------------
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Home, true) then
+    if keymap.pressed("nav.home") or keymap.pressed("nav.select_home") then
         update_selection_for_move(state, is_shift)
         while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
             state.cursor_pos = state.cursor_pos - 1
         end
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_End, true) then
+    if keymap.pressed("nav.end") or keymap.pressed("nav.select_end") then
         update_selection_for_move(state, is_shift)
         while state.cursor_pos ~= #state.chars and not is_newline(state.chars[state.cursor_pos+1]) do
             state.cursor_pos = state.cursor_pos + 1
@@ -877,7 +958,7 @@ function editor_text.handle_input(state, fontset, sz)
 
     -- Up/Down: preserve column distance across the nearest newline markers (port of
     -- old/comments.h's algorithm) ----------------------------------------------------------------
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_UpArrow, true) then
+    if keymap.pressed("nav.up") or keymap.pressed("nav.select_up") then
         update_selection_for_move(state, is_shift)
         local dist = 0
         while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
@@ -894,7 +975,7 @@ function editor_text.handle_input(state, fontset, sz)
         end
         state.cursor_pos = state.cursor_pos + math.min(dist, maxdist)
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_DownArrow, true) then
+    if keymap.pressed("nav.down") or keymap.pressed("nav.select_down") then
         update_selection_for_move(state, is_shift)
         local dist = 0
         while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do

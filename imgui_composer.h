@@ -10,6 +10,10 @@ namespace virt_composer {
 
 extern inline std::unordered_map<std::string, ImGuiKey> imgui_key_from_str;
 extern inline std::unordered_map<std::string, ImGuiMouseButton_> imgui_mousebtn_from_str;
+extern inline std::unordered_map<std::string, ImGuiTableFlags_> imgui_table_flags_from_str;
+extern inline std::unordered_map<std::string, ImGuiTableColumnFlags_> imgui_table_col_flags_from_str;
+extern inline std::unordered_map<std::string, ImGuiChildFlags_> imgui_child_flags_from_str;
+extern inline std::unordered_map<std::string, ImGuiSelectableFlags_> imgui_selectable_flags_from_str;
 
 template <> inline ImGuiKey get_enum_val<ImGuiKey>(fkyaml::node &n);
 template <> inline ImGuiMouseButton_ get_enum_val<ImGuiMouseButton_>(fkyaml::node &n);
@@ -28,6 +32,30 @@ inline std::vector<uint32_t> input_queue_chars() {
 
 inline ImVec2 get_display_size() {
     return ImGui::GetIO().DisplaySize;
+}
+
+/*! Every ImGuiKey name paired with its integer value, as a Lua array of {name, id} pairs -
+ * `{{"ImGuiKey_A", 546}, {"ImGuiKey_Tab", 512}, ...}`.
+ *
+ * Added 2026-09-07 for scripts/keymap.lua, whose F1 panel lets a binding be typed as text
+ * ("Ctrl+Shift+K") and therefore has to know which key names actually exist before it can accept
+ * one. Lua can already read any SINGLE constant as `vc.ImGuiKey_A` (add_lua_flag_mapping puts them
+ * all on the vc table below), but it cannot ENUMERATE them, and it has no way back from an id to a
+ * name - which is what displaying a loaded binding needs. Both directions come from this one call.
+ *
+ * Returns the same `imgui_key_from_str` table that already backs those constants and
+ * get_enum_val<ImGuiKey>, rather than a second list to keep in sync - the pattern
+ * add_lua_flag_mapping's own doc asks for.
+ *
+ * A vector-of-pairs, not the map itself: luaw_returner_t has no unordered_map specialization (it
+ * covers vector, tuple and pair), and this needs no new conversion machinery to work. Called once
+ * at load, never per frame. */
+inline std::vector<std::pair<std::string, int>> key_names() {
+    std::vector<std::pair<std::string, int>> out;
+    out.reserve(vc::imgui_key_from_str.size());
+    for (const auto &[name, key] : vc::imgui_key_from_str)
+        out.emplace_back(name, (int)key);
+    return out;
 }
 
 /*! This frame's vertical mouse wheel delta (positive = away from the user, the usual "scroll up"
@@ -101,6 +129,88 @@ inline void add_text(ImVec2 pos, uint32_t col, const char *text) {
         dl->AddText(pos, col, text);
 }
 
+/*! Every ImGuiKey that went down THIS FRAME, as a Lua array of ids.
+ *
+ * Added 2026-09-07 for the F2 keybind recorder, whose rule is "when you press a key, it adds it to
+ * the recording". A PRESS, not a held state, is what that asks for: press-and-release Ctrl, then
+ * press E, and Ctrl still belongs to the combo - which a "what is currently held" query would have
+ * already forgotten by the time E arrives. The recorder unions this into its accumulator each
+ * frame and commits only when the user clicks the tick.
+ *
+ * Scans the whole named-key range (~165 keys) per call, so call it ONCE a frame and only while
+ * actually recording - never per binding. */
+inline std::vector<int> keys_pressed() {
+    std::vector<int> out;
+    for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++)
+        if (ImGui::IsKeyPressed((ImGuiKey)k, false))
+            out.push_back(k);
+    return out;
+}
+
+/*! True while ImGui itself wants the keyboard - i.e. a text field has focus.
+ *
+ * IMPORTANT for every caller: ImGui taking the keyboard does NOT stop ImGui_IsKeyPressed() from
+ * returning true, so without checking this, typing "z" into a bind field also triggers the app's
+ * own undo. The F1/F2 panels swallow input while open, so they are safe today; anything that puts
+ * a widget on screen ALONGSIDE the editor has to stand its own key handling down on this. */
+inline bool want_capture_keyboard() {
+    return ImGui::GetIO().WantCaptureKeyboard;
+}
+
+/*! Checkbox, as a value in / (changed, value) out pair - ImGui takes a bool* it writes through,
+ * which Lua has no way to hand it. Same shape as input_text() below. */
+inline std::pair<bool, bool> checkbox(const char *label, bool v) {
+    bool changed = ImGui::Checkbox(label, &v);
+    return {changed, v};
+}
+
+/*! Text field, as a string in / (changed, text) out pair - same pointer problem as checkbox().
+ *
+ * The buffer is local and rebuilt every frame from `text`, which is correct rather than merely
+ * convenient: ImGui keeps its own editing state internally, keyed by the widget's id, and writes
+ * the result back into whatever buffer it is handed. The caller passes the value it is holding and
+ * stores what comes back. `max_len` bounds the edit; anything longer is truncated by ImGui. */
+inline std::pair<bool, std::string> input_text(const char *label, const char *text, int max_len) {
+    if (max_len < 1)
+        max_len = 1;
+    std::vector<char> buf((size_t)max_len + 1, 0);
+    std::snprintf(buf.data(), buf.size(), "%s", text ? text : "");
+    bool changed = ImGui::InputText(label, buf.data(), buf.size());
+    return {changed, std::string(buf.data())};
+}
+
+/*! ImGui::Text() is printf-style, and these labels carry user-entered LaTeX names that can contain
+ * a '%'. The makefiles pass -Wno-format-security, so the compiler will NOT warn about it. Always
+ * TextUnformatted - there is deliberately no Text() binding. */
+inline void text_unformatted(const char *text) {
+    ImGui::TextUnformatted(text ? text : "");
+}
+
+/*! Size-only font push. ImGui 1.92's PushFont(font, size) takes NULL as "keep the current font"
+ * and a size as "use this size", which is exactly the knob the help page wants - the widget font
+ * here is ImGui's own, entirely separate from char_draw_composer's glyph fontset. */
+inline void push_font_size(float size) {
+    ImGui::PushFont(NULL, size);
+}
+
+/*! The layout cursor in ABSOLUTE (screen) coordinates, which is the space the ImGui_Add* draw
+ * functions work in - GetCursorPos() is window-relative and cannot be used to place a drawn shape
+ * next to a widget. Needed by the F2 panel's record indicator, which is a real circle drawn beside
+ * a button rather than a character in the font. */
+inline ImVec2 get_cursor_screen_pos() {
+    return ImGui::GetCursorScreenPos();
+}
+
+/*! The current font's size in pixels. Exposed so a panel can ask for "twice the normal size"
+ * rather than hard-coding 26 and silently becoming wrong the day the base font changes. */
+inline float get_font_size() {
+    return ImGui::GetFontSize();
+}
+
+inline ImVec2 calc_text_size(const char *text) {
+    return ImGui::CalcTextSize(text ? text : "");
+}
+
 inline int register_meta(vc::virt_state_t *vs) {
     DBG_SCOPE();
 
@@ -124,6 +234,139 @@ inline int register_meta(vc::virt_state_t *vs) {
         >},
         {"ImGui_input_queue_chars", vc::luaw_function_wrapper<
                /* FN:    */ input_queue_chars
+        >},
+        {"ImGui_key_names", vc::luaw_function_wrapper<
+               /* FN:    */ key_names
+        >},
+        {"ImGui_keys_pressed", vc::luaw_function_wrapper<
+               /* FN:    */ keys_pressed
+        >},
+        {"ImGui_WantCaptureKeyboard", vc::luaw_function_wrapper<
+               /* FN:    */ want_capture_keyboard
+        >},
+
+        /* Widgets ------------------------------------------------------------------------------ */
+        /* Added 2026-09-07 for the F1 help page and the F2 keybind customiser, which need real
+         * interactive widgets rather than the draw-list output everything else here produces.
+         * Overloaded ImGui entry points are disambiguated with static_cast, same as the key and
+         * mouse blocks above. */
+        {"ImGui_Button", vc::luaw_function_wrapper<
+               /* FN:    */ static_cast<bool(*)(const char *, const ImVec2 &)>(ImGui::Button),
+               /* PARAMS:*/ const char *, ImVec2
+        >},
+        {"ImGui_SmallButton", vc::luaw_function_wrapper<
+               ImGui::SmallButton, const char *
+        >},
+        {"ImGui_Selectable", vc::luaw_function_wrapper<
+               static_cast<bool(*)(const char *, bool, ImGuiSelectableFlags, const ImVec2 &)>(
+                       ImGui::Selectable),
+               const char *, bool, int, ImVec2
+        >},
+        {"ImGui_Checkbox", vc::luaw_function_wrapper<
+               /* FN:    */ checkbox, const char *, bool
+        >},
+        {"ImGui_InputText", vc::luaw_function_wrapper<
+               /* FN:    */ input_text, const char *, const char *, int
+        >},
+        {"ImGui_Text", vc::luaw_function_wrapper<
+               /* FN:    */ text_unformatted, const char *
+        >},
+        {"ImGui_Separator", vc::luaw_function_wrapper<
+               ImGui::Separator
+        >},
+        {"ImGui_SameLine", vc::luaw_function_wrapper<
+               ImGui::SameLine, float, float
+        >},
+        {"ImGui_Spacing", vc::luaw_function_wrapper<
+               ImGui::Spacing
+        >},
+        {"ImGui_SetCursorPos", vc::luaw_function_wrapper<
+               ImGui::SetCursorPos, ImVec2
+        >},
+        {"ImGui_GetCursorPos", vc::luaw_function_wrapper<
+               ImGui::GetCursorPos
+        >},
+        {"ImGui_SetKeyboardFocusHere", vc::luaw_function_wrapper<
+               ImGui::SetKeyboardFocusHere, int
+        >},
+        {"ImGui_IsItemActive", vc::luaw_function_wrapper<
+               ImGui::IsItemActive
+        >},
+        {"ImGui_CalcTextSize", vc::luaw_function_wrapper<
+               /* FN:    */ calc_text_size, const char *
+        >},
+        {"ImGui_GetFontSize", vc::luaw_function_wrapper<
+               /* FN:    */ get_font_size
+        >},
+        {"ImGui_GetCursorScreenPos", vc::luaw_function_wrapper<
+               /* FN:    */ get_cursor_screen_pos
+        >},
+        /* Reserves a rectangle of layout space without drawing anything - the correct way to make
+         * room for something drawn straight onto the draw list (the help page's formulas). Moving
+         * the cursor with SetCursorPos() instead asserts the moment it passes the content edge:
+         * "Code uses SetCursorPos() to extend window boundaries. Please submit an item e.g.
+         * Dummy() afterwards". */
+        {"ImGui_Dummy", vc::luaw_function_wrapper<
+               ImGui::Dummy, ImVec2
+        >},
+        /* Scroll state of the CURRENT window (so, inside a BeginChild, that child's). Added
+         * 2026-09-07 so the help page's arrows can scroll the page first and only change chapter
+         * once there is nothing left to scroll - which needs to know both where the scroll is and
+         * where it ends. */
+        {"ImGui_GetScrollY", vc::luaw_function_wrapper<
+               ImGui::GetScrollY
+        >},
+        {"ImGui_GetScrollMaxY", vc::luaw_function_wrapper<
+               ImGui::GetScrollMaxY
+        >},
+        {"ImGui_SetScrollY", vc::luaw_function_wrapper<
+               static_cast<void(*)(float)>(ImGui::SetScrollY), float
+        >},
+        /* PushID/PopID is NOT optional in either panel: an ImGui widget's identity IS its label,
+         * so N table rows each holding a field labelled "##bind" are all the SAME widget - typing
+         * in row 3 edits row 1. Every row must push its own id. */
+        {"ImGui_PushID", vc::luaw_function_wrapper<
+               static_cast<void(*)(const char *)>(ImGui::PushID), const char *
+        >},
+        {"ImGui_PopID", vc::luaw_function_wrapper<
+               ImGui::PopID
+        >},
+        {"ImGui_PushFont", vc::luaw_function_wrapper<
+               /* FN:    */ push_font_size, float
+        >},
+        {"ImGui_PopFont", vc::luaw_function_wrapper<
+               ImGui::PopFont
+        >},
+        {"ImGui_BeginChild", vc::luaw_function_wrapper<
+               static_cast<bool(*)(const char *, const ImVec2 &, ImGuiChildFlags,
+                       ImGuiWindowFlags)>(ImGui::BeginChild),
+               const char *, ImVec2, int, int
+        >},
+        {"ImGui_EndChild", vc::luaw_function_wrapper<
+               ImGui::EndChild
+        >},
+
+        /* Tables ------------------------------------------------------------------------------- */
+        {"ImGui_BeginTable", vc::luaw_function_wrapper<
+               ImGui::BeginTable, const char *, int, int, ImVec2, float
+        >},
+        {"ImGui_EndTable", vc::luaw_function_wrapper<
+               ImGui::EndTable
+        >},
+        {"ImGui_TableNextRow", vc::luaw_function_wrapper<
+               ImGui::TableNextRow, int, float
+        >},
+        {"ImGui_TableNextColumn", vc::luaw_function_wrapper<
+               ImGui::TableNextColumn
+        >},
+        {"ImGui_TableSetColumnIndex", vc::luaw_function_wrapper<
+               ImGui::TableSetColumnIndex, int
+        >},
+        {"ImGui_TableSetupColumn", vc::luaw_function_wrapper<
+               ImGui::TableSetupColumn, const char *, int, float, unsigned int
+        >},
+        {"ImGui_TableHeadersRow", vc::luaw_function_wrapper<
+               ImGui::TableHeadersRow
         >},
 
         /* Mouse -------------------------------------------------------------------------------- */
@@ -217,6 +460,13 @@ inline int register_meta(vc::virt_state_t *vs) {
     ASSERT_FN(add_lua_tab_funcs(vs, imgui_tab_funcs));
 
     vc::add_lua_flag_mapping(vs, vc::imgui_key_from_str);
+    /* Added 2026-09-07 alongside the widget/table block, so Lua writes
+     * vc.ImGuiTableFlags_Borders rather than a magic integer into ImGui_BeginTable(). Same
+     * one-table-backs-both pattern the key map already uses. */
+    vc::add_lua_flag_mapping(vs, vc::imgui_table_flags_from_str);
+    vc::add_lua_flag_mapping(vs, vc::imgui_table_col_flags_from_str);
+    vc::add_lua_flag_mapping(vs, vc::imgui_child_flags_from_str);
+    vc::add_lua_flag_mapping(vs, vc::imgui_selectable_flags_from_str);
     vc::add_lua_flag_mapping(vs, vc::imgui_mousebtn_from_str);
 
     return vc::VC_ERROR_OK;
@@ -225,6 +475,36 @@ inline int register_meta(vc::virt_state_t *vs) {
 } /* namespace imgui_composer */
 
 namespace virt_composer {
+
+inline std::unordered_map<std::string, ImGuiTableFlags_> imgui_table_flags_from_str = {
+    { "ImGuiTableFlags_None",             ImGuiTableFlags_None },
+    { "ImGuiTableFlags_Resizable",        ImGuiTableFlags_Resizable },
+    { "ImGuiTableFlags_RowBg",            ImGuiTableFlags_RowBg },
+    { "ImGuiTableFlags_Borders",          ImGuiTableFlags_Borders },
+    { "ImGuiTableFlags_BordersInnerV",    ImGuiTableFlags_BordersInnerV },
+    { "ImGuiTableFlags_BordersOuter",     ImGuiTableFlags_BordersOuter },
+    { "ImGuiTableFlags_ScrollY",          ImGuiTableFlags_ScrollY },
+    { "ImGuiTableFlags_SizingFixedFit",   ImGuiTableFlags_SizingFixedFit },
+    { "ImGuiTableFlags_SizingStretchProp",ImGuiTableFlags_SizingStretchProp },
+};
+
+inline std::unordered_map<std::string, ImGuiTableColumnFlags_> imgui_table_col_flags_from_str = {
+    { "ImGuiTableColumnFlags_None",         ImGuiTableColumnFlags_None },
+    { "ImGuiTableColumnFlags_WidthFixed",   ImGuiTableColumnFlags_WidthFixed },
+    { "ImGuiTableColumnFlags_WidthStretch", ImGuiTableColumnFlags_WidthStretch },
+    { "ImGuiTableColumnFlags_NoResize",     ImGuiTableColumnFlags_NoResize },
+};
+
+inline std::unordered_map<std::string, ImGuiChildFlags_> imgui_child_flags_from_str = {
+    { "ImGuiChildFlags_None",    ImGuiChildFlags_None },
+    { "ImGuiChildFlags_Borders", ImGuiChildFlags_Borders },
+};
+
+inline std::unordered_map<std::string, ImGuiSelectableFlags_> imgui_selectable_flags_from_str = {
+    { "ImGuiSelectableFlags_None",           ImGuiSelectableFlags_None },
+    { "ImGuiSelectableFlags_SpanAllColumns", ImGuiSelectableFlags_SpanAllColumns },
+    { "ImGuiSelectableFlags_AllowDoubleClick", ImGuiSelectableFlags_AllowDoubleClick },
+};
 
 inline std::unordered_map<std::string, ImGuiKey> imgui_key_from_str = {
     { "ImGuiKey_None", ImGuiKey_None },

@@ -15,6 +15,13 @@ it wrong:
 
   - BACKSPACE only, never Delete. Delete everywhere else in this file means "the thing after the
     cursor", and an empty slot has no such thing.
+    NO LONGER TRUE as of 2026-09-07 - Delete removes an empty slot too. The reasoning above was
+    self-consistent and still left Delete doing nothing whatsoever in an empty slot, which reads
+    as a broken key; ruled "if the horiz is empty it should delete, only when the horiz has
+    something else than an empty should it not". This file drives collapse_empty_supsub()
+    directly, so which KEY reaches it is not something these checks can see - the split is made
+    in handle_input(), and test_empty_limit_removable.lua is what pins both keys now. Left here
+    because a stale rule in a header is worse than no header.
   - BOTH slots untyped ALREADY, at the moment the key is pressed - not merely emptied by this
     press. Otherwise backspacing the "B" out of "x^{B}" would take the whole superscript with it in
     one keystroke rather than just clearing what was typed.
@@ -106,9 +113,33 @@ function run_test()
                 mformula.to_latex(c))
     end
 
-    -- ---------------------------------------------------------------- the OTHER slot matters
-    --[[ Both slots have to be untyped. An empty sup on an atom whose SUB has content is not an
-    undo-the-spawn situation - collapsing there would silently delete the subscript. ]]
+    -- ------------------------------------------------------- the OTHER slot: CHANGED 2026-09-07
+    --[[ THIS BLOCK ASSERTED THE OPPOSITE UNTIL 2026-09-07, and the reason it was right then and
+    wrong now is worth having in full, because the assertion itself barely changed.
+
+    It used to read "Backspace in the empty sup does NOT collapse - the sub would go with it", and
+    that was a correct guard against the implementation of the time: collapse had exactly one
+    outcome, drop the whole compound and keep the base, so firing it here really would have taken
+    the typed subscript with it. Refusing was the only safe answer available.
+
+    What changed is the OPERATION, not the safety concern. collapse_empty_supsub() now has two
+    outcomes: with both slots untyped it still drops the whole spawn, and with only the cursor's
+    own slot untyped it removes JUST that side and leaves the sibling alone. The subscript can no
+    longer go with it, so the reason to refuse is gone.
+
+    Why it had to change: refusing left the empty slot unremovable. It could not be deleted,
+    because the sibling had content, and it could not be typed away, because it was already empty.
+    Reported live on 2026-09-07 - "I can't delete it" - with the session's flight recorder showing
+    nine consecutive Backspaces doing nothing at all, and separately as "a loaded bigsup or sup
+    doesn't seem to allow deletion", which is the same wall reached by opening a saved formula and
+    clearing one of its two limits.
+
+    So the assertion is inverted, and the check underneath it is the one that now carries the old
+    guard's intent: the subscript must still be there afterwards. That is what "the sub would go
+    with it" was protecting, and it is still protected - by the result rather than by refusal.
+
+    See also tests/lua/test_empty_limit_removable.lua, which covers the same rule from the big
+    operator side and pins all three outcomes together. ]]
     do
         --[[ Built by hand rather than through make_supsub(): with the cursor on a supsub that WRAPS
         it as a new base ("(x_2)^{}"), which is a different shape entirely. What is wanted here is
@@ -125,9 +156,11 @@ function run_test()
         check("setup: an empty sup over a typed sub", mformula.to_latex(c) == "x_{2}",
                 mformula.to_latex(c))
 
-        check("Backspace in the empty sup does NOT collapse - the sub would go with it",
-                mformula.collapse_empty_supsub(c, fs) == false)
-        check("...and the subscript is still there", mformula.to_latex(c) == "x_{2}",
+        check("Backspace in the empty sup REMOVES that side (was: refused - see above)",
+                mformula.collapse_empty_supsub(c, fs) == true)
+        --[[ The old guard's real intent, now enforced on the result: an empty sup renders as
+        nothing, so "x_{2}" both before and after says the sup went and the sub did not. ]]
+        check("...and the subscript survived it", mformula.to_latex(c) == "x_{2}",
                 mformula.to_latex(c))
     end
 

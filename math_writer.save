@@ -1,4 +1,4 @@
-text 1998
+text 2080
 $$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)\ $$ 
 
 $$\vec{a}\ \vec{m}\ \vec{F}\ \vec{I}$$
@@ -7,13 +7,15 @@ $$F(x)=\frac{T}{2\pi }\int ^{X}_{0}xdx;\ (a+b)^{2}=a^{2}+2ab+b^{2};\ x^{a}\ =\ \
 
 $$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$$$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$$$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$
 
-$$\widehat{\begin{matrix}ABC\end{matrix}}\ =\ \widehat{\begin{matrix}AOC\end{matrix}}\ $$
+$$\widehat{\begin{matrix}ABC\end{matrix}}\ =\ \widehat{\begin{matrix}AOC\end{matrix}}\ $$abfc
 
 $$a\bar{a}\ =\ |a|^{2}\ a\ \not =\ b$$
 
 $$\frac{df(x)}{dx}\ =\ \mathop{\begin{matrix}lim\end{matrix}}\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D\ ;\ \Delta ABC\ \equiv \ \Delta BGD\ $$
 
-$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}$$
+$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ \int \limits_{a}$$
+deeccasdabcdef abcdefgf
+$$\frac{x^{2}}{y}+\frac{2\pi }{T}$$
 
 $$\ \left\lvert \widehat{\begin{matrix}\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \end{matrix}}\right\rvert \ \widehat{\begin{matrix}\left\lvert \begin{matrix}\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \end{matrix}\right\rvert \end{matrix}}\ $$
 
@@ -45,7 +47,27 @@ n\in \N 3
 20
 a:\N \rightarrow \R 1
 10
-definition 16
+formula 31
+3
+20
+a:\N \rightarrow \R 1
+21
+1formula 31
+3
+20
+a:\N \rightarrow \R 1
+31
+2formula 31
+3
+20
+a:\N \rightarrow \R 1
+41
+3formula 31
+3
+20
+a:\N \rightarrow \R 1
+51
+4definition 16
 2
 1
 x9

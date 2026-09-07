@@ -138,7 +138,9 @@ bool capture_screenshot(const char *path) {
     return write_bmp(path, w, h, pixels.data());
 }
 
-constexpr uint16_t PORT = 47821;
+/* Which port this run actually bound - set by init(), read by listening_port(). The two choices
+themselves live in the header (TEST_PORT / USER_PORT) so callers can name them. */
+uint16_t g_port = 0;
 
 std::atomic<bool> g_running{false};
 std::thread g_thread;
@@ -295,6 +297,29 @@ void dispatch_line(const std::string& line) {
     }
 }
 
+/*! Whether the last socket error was "would have blocked" - i.e. the receive timeout expired
+ * rather than the connection failing. */
+static bool errno_is_timeout() {
+#ifdef _WIN32
+    int e = WSAGetLastError();
+    return e == WSAETIMEDOUT || e == WSAEWOULDBLOCK;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+#endif
+}
+
+/*! Whether a new connection is sitting in the listen backlog, without accepting it. Used to
+ * decide that a silent client has died: somebody is knocking and nobody is answering. */
+static bool connection_pending() {
+    if (g_listen_fd == INVALID_SOCK)
+        return false;
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(g_listen_fd, &fds);
+    struct timeval zero; zero.tv_sec = 0; zero.tv_usec = 0;
+    return select((int)g_listen_fd + 1, &fds, nullptr, nullptr, &zero) > 0;
+}
+
 void server_loop() {
     while (g_running.load()) {
         sockaddr_in client_addr{};
@@ -308,11 +333,46 @@ void server_loop() {
             break; /* listen socket closed by uninit(), or a real error - either way, stop */
         g_client_fd = client;
 
+        /*  A one-second receive timeout, so recv() cannot block forever.
+
+        This server is deliberately serial - one client at a time, which is all a debug pipe needs
+        - and that made a dead client fatal: if a controller's process died without closing its
+        socket, no FIN ever arrived, recv() blocked indefinitely, and the pipe stopped accepting
+        anything ever again. Observed 2026-09-07 with the port in LISTEN, a backlog of two
+        unaccepted connections, and every new connect timing out; the only way back was restarting
+        the app. An agent driving this thing gets killed mid-command fairly regularly, so "the
+        controller vanished" is a normal event here, not an exceptional one.
+
+        The timeout alone would not fix it - an idle client is also silent - so a wake-up is used
+        to ask whether somebody else is waiting to connect (see below). A live client keeps the
+        pipe; a dead one loses it to whoever knocks next. */
+        {
+#ifdef _WIN32
+            DWORD tv = 1000;
+#else
+            struct timeval tv; tv.tv_sec = 1; tv.tv_usec = 0;
+#endif
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+        }
+
         std::string buffer;
         char chunk[512];
         while (g_running.load()) {
             int n = recv(client, chunk, sizeof(chunk), 0);
-            if (n <= 0)
+            if (n < 0) {
+                /*  Timed out rather than failed: the client is simply quiet. Keep it, UNLESS
+                someone else is already waiting to connect - in which case this one is presumed
+                gone and the newcomer gets the pipe. A live controller reconnecting is exactly how
+                this situation is meant to be resolved, and it costs a silent-but-alive client
+                nothing as long as nobody else is knocking. */
+                if (errno_is_timeout()) {
+                    if (connection_pending())
+                        break;
+                    continue;
+                }
+                break;
+            }
+            if (n == 0)
                 break;
             buffer.append(chunk, (size_t)n);
 
@@ -334,7 +394,12 @@ void server_loop() {
 
 } /* anonymous namespace */
 
-int init() {
+unsigned short listening_port() {
+    return g_running.load() ? g_port : 0;
+}
+
+int init(unsigned short port) {
+    g_port = port;
 #ifdef _WIN32
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
@@ -355,10 +420,10 @@ int init() {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons(g_port);
 
     if (bind(g_listen_fd, (sockaddr *)&addr, sizeof(addr)) != 0) {
-        DBG("debug_input_pipe: bind() failed on 127.0.0.1:%d", (int)PORT);
+        DBG("debug_input_pipe: bind() failed on 127.0.0.1:%d", (int)g_port);
         CLOSESOCK(g_listen_fd);
         g_listen_fd = INVALID_SOCK;
         return -1;
@@ -374,8 +439,12 @@ int init() {
     g_running = true;
     g_thread = std::thread(server_loop);
 
-    DBG("debug_input_pipe: listening on 127.0.0.1:%d", (int)PORT);
+    DBG("debug_input_pipe: listening on 127.0.0.1:%d", (int)g_port);
     return 0;
+}
+
+bool is_listening() {
+    return g_running.load();
 }
 
 void pump() {

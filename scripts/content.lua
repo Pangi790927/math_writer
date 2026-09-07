@@ -15,12 +15,18 @@ local mexpru = require("mexpru")
 --[[ One editor module per box kind. content.lua knows only that each exposes the same shape -
 new/draw/handle_input/rescale/to_text/from_text - and never what any of them does inside. ]]
 local editor_definition = require("editor_definition")
+local keymap = require("keymap")
+local panel_help = require("panel_help")
+local panel_keymap = require("panel_keymap")
 local editor_formula = require("editor_formula")
 
 local content = {}
 
 local RAIL_OFFSET = 40   -- rail x, relative to pos.x
 local BOX_LEFT    = 80   -- box left edge, relative to pos.x
+-- Extra room kept beyond the caret in the direction a box was just moved, so the move visibly
+-- goes somewhere instead of parking the caret against the edge it arrived at.
+local MOVE_FOLLOW_LEAD = 90
 local BOX_GAP     = 24   -- vertical gap between boxes
 local BOX_PADDING = 12
 local BOX_WIDTH   = 760
@@ -192,8 +198,14 @@ local function new_shell()
         active_index = nil,
         last_layout = nil,    -- filled by draw(), read by handle_input() next frame
         last_rail_x = nil,
-        show_help = false,     -- F1 toggles a full-screen keybinding panel in place of the boxes
-        show_alt_help = false, -- F2 toggles the Alt+letter/Alt+Shift+letter glyph reference
+        show_help = false,     -- F1 toggles the full-screen help page in place of the boxes
+        show_alt_help = false, -- F2 toggles the keybind customiser
+        help_state = panel_help.new_state(),
+        keymap_state = panel_keymap.new_state(),
+        -- Bumped whenever the customiser closes. The help page caches each chapter with its key
+        -- names already substituted in, and this is the cache key - without it a rebinding would
+        -- not show up in the help until the chapter was switched away from and back.
+        keymap_rev = 0,
         show_wireframe = false, -- toggled by the small button next to each box's close ("x") button -
                                  -- global, not per-box: whether mexpr drawing shows its debug bounding
                                  -- boxes (vc.mexpr_draw's own draw_bb) everywhere, off by default so
@@ -272,6 +284,61 @@ function content.remove_box(state, i)
     -- Indices shifted - drop the stale layout so a same-frame click can't mis-hit-test against
     -- last frame's positions; draw() rebuilds it before the next handle_input() runs anyway.
     state.last_layout = nil
+end
+
+--[[ Moves the box at `i` one place up (dir -1) or down (dir +1), taking the caret with it.
+
+Returns the box's new index, or nil when it could not move (already at an end). The caller uses the
+return to keep the active box active - the point of the gesture is to carry a box somewhere, so
+focus follows the box rather than staying at the position.
+
+Reordering is SAFE with respect to derivations, and not by luck: a derived box points at its parent
+by `fml.id`, never by position, and content.prune_descendants() is a fixpoint over that relation
+rather than a walk in document order - as its own comment says, "a box can be moved anywhere in the
+list and its lineage still holds". A parent may therefore end up below its child; the curve between
+them simply draws the other way.
+
+Not undoable, exactly like content.remove_box(): undo lives inside a box and knows nothing about
+the document's shape. Moving is reversible by moving back, which is a good deal cheaper than
+teaching undo about it. ]]
+function content.move_box(state, i, dir)
+    local j = i + dir
+    if not state.boxes[i] or not state.boxes[j] then
+        return nil
+    end
+    state.boxes[i], state.boxes[j] = state.boxes[j], state.boxes[i]
+    -- Same reason remove_box() drops it: the indices this frame's layout was built against no
+    -- longer describe the stack, so a click arriving before the next draw() must not hit-test
+    -- against it.
+    state.last_layout = nil
+    return j
+end
+
+--[[ Derives a new formula box from the one at `i` by the IDENTITY transformation: the new box
+holds exactly what the old one holds, and records that it came from it.
+
+The identity is a real derivation, not a placeholder for one - "this follows from that, unchanged"
+is a legitimate step, and it is the only transformation that needs no machinery at all: because the
+input and the output are the same expression, there is nothing to convert. No mexpr -> ast ->
+transform -> ast -> mexpr round trip happens here, and none is needed; the LaTeX is copied and the
+parent recorded. Every later transformation will differ from this one only in what it does between
+those two points.
+
+The new box goes directly BELOW its source, which is where a derivation reads. Returns its index,
+or nil when the box at `i` is not a formula box with content to derive from.
+
+The id comes from content.insert_box(), which derives the next one from what is already in the
+document - so a derived box can never collide with an id already in use. ]]
+function content.derive_identity(state, i)
+    local src = state.boxes[i]
+    if not (src and src.fml and src.fml.latex and src.fml.latex ~= "") then
+        return nil
+    end
+    content.insert_box(state, i + 1, KIND_FORMULA)
+    local made = state.boxes[i + 1]
+    made.fml.latex = src.fml.latex
+    made.fml.parent = src.fml.id
+    return i + 1
 end
 
 --[[ Removes every box DERIVED from `id`, however far down the chain - the whole subtree, not just
@@ -432,6 +499,29 @@ switches the active box to one that might currently be scrolled out of view, so 
 doesn't leave you looking at a box you can't actually see. Reads LAST frame's own layout (like the
 mouse-wheel handling below already does) - a frame of lag on box positions is imperceptible here
 too. A silent no-op before the very first draw() has ever run (last_layout still nil). ]]
+--[[ Scrolls the least amount that brings the span y..y+h inside the viewport, with `lead` pixels
+of extra room on the side being travelled towards (negative = upwards, positive = downwards, 0 =
+none). The lead is what makes a move feel like it went somewhere: landing the caret exactly on the
+edge it entered from tells you nothing about what is beyond it.
+
+Shared by the caret-follow at the end of handle_input and by the box-move follow, so "bring this
+into view" has one definition and one clamp. ]]
+local function scroll_span_into_view(state, pos, y, h, lead)
+    local display_size = vc.ImGui_GetDisplaySize()
+    local viewport_top = pos.y
+    local viewport_bottom = display_size and display_size.y or (pos.y + 700)
+    lead = lead or 0
+    local want_top = y - (lead < 0 and -lead or 0)
+    local want_bottom = y + h + (lead > 0 and lead or 0)
+    if want_top < viewport_top then
+        state.scroll_y = state.scroll_y - (viewport_top - want_top)
+    elseif want_bottom > viewport_bottom then
+        state.scroll_y = state.scroll_y + (want_bottom - viewport_bottom)
+    end
+    local max_scroll = math.max(0, state.last_total_height - (viewport_bottom - viewport_top))
+    state.scroll_y = math.max(0, math.min(max_scroll, state.scroll_y))
+end
+
 local function scroll_into_view(state, pos, index)
     local r = state.last_layout and state.last_layout[index]
     if not r then
@@ -574,7 +664,7 @@ local function radial_handle_input(state)
         radial.over_center = (dx * dx + dy * dy) <= RADIAL_INNER * RADIAL_INNER
     end
 
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Escape, false) then
+    if keymap.pressed("radial.cancel") then
         state.radial = nil
         return
     end
@@ -595,22 +685,20 @@ local function radial_handle_input(state)
     end
 
     local pick
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_UpArrow, false) then
+    if keymap.pressed("radial.text") then
         pick = KIND_TEXT
-    elseif vc.ImGui_IsKeyPressed(vc.ImGuiKey_LeftArrow, false) then
+    elseif keymap.pressed("radial.formula") then
         pick = KIND_FORMULA
-    elseif vc.ImGui_IsKeyPressed(vc.ImGuiKey_RightArrow, false) then
+    elseif keymap.pressed("radial.definition") then
         pick = KIND_DEFINITION
-    elseif vc.ImGui_IsKeyPressed(vc.ImGuiKey_DownArrow, false) then
+    elseif keymap.pressed("radial.dismiss") then
         pick = RADIAL_CANCEL
     end
     if pick then
         radial.selected = pick
     end
 
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_Enter, false)
-            or vc.ImGui_IsKeyPressed(vc.ImGuiKey_KeypadEnter, false)
-            or vc.ImGui_IsKeyPressed(vc.ImGuiKey_Space, false) then
+    if keymap.pressed("radial.commit") then
         local sel = radial.selected
         if sel and sel ~= RADIAL_CANCEL then
             radial_choose(state, sel)
@@ -671,8 +759,11 @@ end
 Each wedge is a strip of RADIAL_STEPS quads between RADIAL_INNER and the outer radius, because no
 arc or convex-polygon fill is exposed to Lua (see RADIAL_STEPS' own comment). The hovered wedge
 simply uses the larger outer radius - that IS the grow-on-hover, no animation state anywhere. ]]
-local function draw_radial(state)
-    local radial = state.radial
+--[[ Takes the RADIAL TABLE rather than the whole state (changed 2026-09-07), so the F1 help can
+hand it a made-up one and get the real menu drawn - same wedges, same colours, same geometry - with
+no copy of this code living in the help page. content.draw_demo_radial() below is that entry
+point. ]]
+local function draw_radial_at(radial)
     local cx, cy = radial.cx, radial.cy
 
     --[[ What reads as active: the keyboard selection if there is one, otherwise the mouse hover.
@@ -765,29 +856,49 @@ clicked. Only once a box is already active does clicking inside it move the curs
 against an active formula's own geometry - see its own comment). `pos` is the same draw origin
 draw() itself takes - needed here only to size/clamp the scroll range against the current viewport
 (see the mouse-wheel handling below). ]]
+--[[ Whether the F2 customiser is on screen. Exists for main.lua, which saves the keymap only once
+the panel is closed (see its own comment) - it needs to ask without reaching into this module's
+state table for a field name that is nobody else's business. ]]
+function content.customiser_open(state)
+    return state.show_alt_help == true
+end
+
 function content.handle_input(state, fontset, pos)
     -- F1/F2 each toggle their own full-screen panel on/off; while either is showing, every other
     -- input this frame is swallowed here (nothing forwarded to any box) so it can't be typed into
     -- or clicked through from behind the panel. Opening one closes the other, rather than letting
     -- them stack - only one overlay makes sense on screen at a time.
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_F1, false) then
+    if keymap.pressed("app.help") then
         state.show_help = not state.show_help
         state.show_alt_help = false
         return
     end
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_F2, false) then
+    if keymap.pressed("app.customiser") then
         state.show_alt_help = not state.show_alt_help
         state.show_help = false
+        if not state.show_alt_help then
+            --[[ Closing drops any half-finished recording so it cannot reappear next time, and
+            bumps the revision so the help page re-resolves its key names. The SAVE itself is
+            main.lua's job - it watches keymap.dirty() - because this file owns no file paths, and
+            because saving on close rather than per keystroke is the point: a half-typed binding
+            must never reach disk. ]]
+            panel_keymap.closed(state.keymap_state)
+            state.keymap_rev = state.keymap_rev + 1
+        end
         return
     end
     --[[ F3 toggles the profiler (prof.lua / perf_composer.h); Shift+F3 clears its worst-frame
     record. Deliberately NOT one of the full-screen panels above and deliberately NOT `return`ing:
     the overlay has to be readable WHILE the app is being used, since the whole point is to catch a
     spike as it happens. Everything else this frame carries on as normal. ]]
-    if vc.ImGui_IsKeyPressed(vc.ImGuiKey_F3, false) then
-        local shift = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
-        local ctrl = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
-        if ctrl then
+    --[[ Three separate actions now (app.profiler / app.profiler_reset / app.profiler_record)
+    rather than one key plus modifier tests. Each is independently rebindable, and the order below
+    is unchanged from when Ctrl and Shift were read off F3 directly: record first, then reset, then
+    the plain toggle. With exact matching they can no longer overlap anyway, but the order is kept
+    so behaviour does not depend on that. ]]
+    if keymap.pressed("app.profiler_record") or keymap.pressed("app.profiler_reset")
+            or keymap.pressed("app.profiler") then
+        if keymap.pressed("app.profiler_record") then
             --[[ Ctrl+F3 - spike RECORDING, the mode for actually hunting a lag: it keeps running
             with the overlay hidden, so watching costs nothing and the numbers aren't the watcher's.
             Every frame over the threshold lands in PROF_SPIKE_PATH with its full breakdown and its
@@ -797,13 +908,32 @@ function content.handle_input(state, fontset, pos)
             else
                 prof.record_start(PROF_SPIKE_PATH, PROF_SPIKE_MS)
             end
-        elseif shift then
+        elseif keymap.pressed("app.profiler_reset") then
             prof.reset()
         else
             prof.set_enabled(not prof.enabled())
         end
     end
+    --[[ Escape closes whichever panel is open, as well as its own F-key. The customiser gets
+    first refusal (panel_keymap.escape): while a binding is being recorded or typed, Escape means
+    "abandon that", not "throw away the panel and every other uncommitted edit with it".
+
+    Closing here does the same bookkeeping the F2 toggle does - drop any abandoned recording, bump
+    the revision so the help re-resolves its key names - because main.lua's save watches
+    content.customiser_open(), and a panel closed by Escape has to look exactly like one closed by
+    its own key or the keymap would never reach disk. ]]
     if state.show_help or state.show_alt_help then
+        if keymap.pressed("panel.close") then
+            if state.show_alt_help then
+                if not panel_keymap.escape(state.keymap_state) then
+                    state.show_alt_help = false
+                    panel_keymap.closed(state.keymap_state)
+                    state.keymap_rev = state.keymap_rev + 1
+                end
+            else
+                state.show_help = false
+            end
+        end
         return
     end
 
@@ -822,15 +952,18 @@ function content.handle_input(state, fontset, pos)
     -- view if it wasn't already. Checked here, ahead of any box-specific handling (including
     -- whether a formula inside the active box currently owns input), so it's always available as
     -- a global shortcut, not something a formula's own plain Up/Down could ever shadow.
-    local ctrl_down = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
-    if ctrl_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_UpArrow, false) then
+    --[[ Ctrl+MouseWheel zoom is a MODIFIER-GATED MOUSE gesture, not a key binding, so it asks
+    keymap for the live modifier state rather than owning an action of its own - there is no key
+    here to rebind. keymap.mods() is the same cached read every binding match uses. ]]
+    local ctrl_down = keymap.mods()
+    if keymap.pressed("box.prev") then
         if state.active_index and state.active_index > 1 then
             state.active_index = state.active_index - 1
             scroll_into_view(state, pos, state.active_index)
         end
         return
     end
-    if ctrl_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_DownArrow, false) then
+    if keymap.pressed("box.next") then
         if state.active_index and state.active_index < #state.boxes then
             state.active_index = state.active_index + 1
             scroll_into_view(state, pos, state.active_index)
@@ -844,12 +977,75 @@ function content.handle_input(state, fontset, pos)
     release. The menu is placed on the rail at the insertion point, then clamped on screen by
     radial_open(). Before the first draw() there is no layout to place it against, so it falls back
     to the middle of the display. ]]
-    if ctrl_down and vc.ImGui_IsKeyPressed(vc.ImGuiKey_N, false) then
+    --[[ Moving a box within the stack, as opposed to moving the caret between boxes. Placed
+    with the other box-level shortcuts and ahead of anything box-specific, so it works wherever
+    the caret happens to be - including inside a formula, which owns input for every other key. ]]
+    if keymap.pressed("box.move_up") then
+        if state.active_index then
+            local moved = content.move_box(state, state.active_index, -1)
+            if moved then
+                state.active_index = moved
+                -- Followed next frame, once draw() has put the box in its new slot - see the
+                -- caret-follow block at the end of this function.
+                state.follow_caret = -1
+            end
+        end
+        return
+    end
+    if keymap.pressed("box.move_down") then
+        if state.active_index then
+            local moved = content.move_box(state, state.active_index, 1)
+            if moved then
+                state.active_index = moved
+                -- Followed next frame, once draw() has put the box in its new slot - see the
+                -- caret-follow block at the end of this function.
+                state.follow_caret = 1
+            end
+        end
+        return
+    end
+
+    --[[ Derive a new formula box from this one. Sits with the other box-level shortcuts, and
+    does nothing at all on a box that is not a formula - there is no expression to derive from. ]]
+    if keymap.pressed("formula.derive") then
+        if state.active_index then
+            local made = content.derive_identity(state, state.active_index)
+            if made then
+                state.active_index = made
+                state.follow_caret = 1
+            end
+        end
+        return
+    end
+
+    if keymap.pressed("box.new") then
         local index = (state.active_index or #state.boxes) + 1
         local disp = vc.ImGui_GetDisplaySize()
         local cx = state.last_rail_x or (pos.x + RAIL_OFFSET)
         local cy = insertion_y(state, index) or (disp and disp.y / 2) or pos.y
         radial_open(state, index, cx, cy, false)
+        return
+    end
+
+    --[[ box.close (Ctrl+W) - the keyboard counterpart of clicking a box's own "x".
+
+    Goes through content.remove_box() rather than removing the box here, so the two routes cannot
+    disagree about what closing means (the active_index fixup, dropping the stale layout).
+
+    Focus then moves to whatever box slid into that slot - the one after it, or the last one if the
+    closed box was at the end - instead of the nil remove_box() leaves behind. Clicking an "x" can
+    afford to leave nothing active, because the pointer is already somewhere and the user is looking
+    at it; a keyboard close has no pointer, and landing with no active box means the next keystroke
+    goes nowhere at all.
+
+    NOT undoable, exactly like the "x" button: undo lives inside each editor, so removing a whole
+    box takes its history with it. ]]
+    if keymap.pressed("box.close") and state.active_index then
+        local closing = state.active_index
+        content.remove_box(state, closing)
+        if #state.boxes > 0 then
+            state.active_index = math.min(closing, #state.boxes)
+        end
         return
     end
 
@@ -969,25 +1165,35 @@ function content.handle_input(state, fontset, pos)
     -- would fight a deliberate manual scroll-away (mouse wheel, or just leaving a box active while
     -- looking at another one further down) every single frame even though the caret itself never
     -- moved - only a real move should ever pull the view back to it.
+    --[[ A formula or definition box has no text caret to follow, so a move of one falls back to
+    its own top edge. Checked before the caret branch, which would otherwise leave follow_caret
+    set forever on a box that can never satisfy it. ]]
+    if state.follow_caret and not (active and active.editor and active.editor.last_cursor_y) then
+        if state.active_index then
+            scroll_into_view(state, pos, state.active_index)
+        end
+        state.follow_caret = nil
+    end
+
     if active and active.editor and active.editor.last_cursor_y then
         local a, b, c = cursor_sig(active.editor)
         local ed = active.editor
         local had_prior = ed._cursor_sig_c ~= nil
         local moved = had_prior and (a ~= ed._cursor_sig_a or b ~= ed._cursor_sig_b or c ~= ed._cursor_sig_c)
         ed._cursor_sig_a, ed._cursor_sig_b, ed._cursor_sig_c = a, b, c
-        if moved then
-            local display_size = vc.ImGui_GetDisplaySize()
-            local viewport_top = pos.y
-            local viewport_bottom = display_size and display_size.y or (pos.y + 700)
-            local cy, ch = active.editor.last_cursor_y, active.editor.last_cursor_h or 0
-            if cy < viewport_top then
-                state.scroll_y = state.scroll_y - (viewport_top - cy)
-            elseif cy + ch > viewport_bottom then
-                state.scroll_y = state.scroll_y + (cy + ch - viewport_bottom)
-            end
-            local max_scroll = math.max(0, state.last_total_height - (viewport_bottom - viewport_top))
-            state.scroll_y = math.max(0, math.min(max_scroll, state.scroll_y))
+        --[[ `follow_caret` is a box MOVE asking to be followed, and it is honoured even though
+        the caret itself did not move: the box moved out from under it. It cannot be done at the
+        moment of the move, because the caret's screen position then still describes the slot the
+        box just left - draw() has to run once before last_cursor_y means anything again. One
+        frame of lag, which is the same bargain scroll_into_view() and the mouse wheel already
+        make with last_layout. ]]
+        local follow = state.follow_caret
+        if moved or follow then
+            scroll_span_into_view(state, pos, active.editor.last_cursor_y,
+                    active.editor.last_cursor_h or 0,
+                    follow and (follow * MOVE_FOLLOW_LEAD) or 0)
         end
+        state.follow_caret = nil
     end
 end
 
@@ -1273,7 +1479,70 @@ end
 state.show_help/show_alt_help is set (F1/F2), that panel instead, covering the whole display so
 nothing underneath shows or can be mistaken for still being interactive (handle_input() already
 backs that up by swallowing input while either is up). ]]
-function content.draw(state, fontset, pos)
+--[[ A box's own CHROME: the coloured fill, the focus border, the connector out to the rail and
+the close "x". Everything about a box that is not its content.
+
+Split out of content.draw()'s layout loop 2026-09-07 so the F1 help can draw a real example box
+rather than a hand-made imitation of one. That is the whole point of it being a function: the help
+shows what the editor actually paints, so a change to the box style reaches the documentation on
+the same commit and cannot silently drift out of date.
+
+`rail_x` nil draws no connector (the help's standalone examples), otherwise the node and the line
+to it are drawn as in the document. Returns the close button's rect, which the real caller stores
+in its layout for hit-testing and the help simply ignores. ]]
+function content.draw_box_chrome(box_x, box_y, box_w, box_h, kind, is_active, rail_x)
+    local kind_colors = KIND_COLORS[kind or KIND_TEXT] or KIND_COLORS[KIND_TEXT]
+    vc.ImGui_AddRectFilled({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
+            kind_colors.fill, 6)
+    vc.ImGui_AddRect({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
+            is_active and BOX_ACTIVE_COLOR or BOX_BORDER_COLOR, 6, is_active and 2 or 1)
+
+    -- Connector: a node on the rail, and a line from it to the box.
+    if rail_x then
+        local node_y = box_y + 20
+        vc.ImGui_AddCircle({x=rail_x, y=node_y}, NODE_RADIUS, RAIL_COLOR, 1)
+        vc.ImGui_AddLine({x=rail_x, y=node_y}, {x=box_x, y=node_y}, RAIL_COLOR, 1)
+    end
+
+    -- Close button: a small "x" sitting just above the box's top-right corner.
+    local close = {x=box_x + box_w - CLOSE_SIZE, y=box_y - CLOSE_SIZE - 2,
+            w=CLOSE_SIZE, h=CLOSE_SIZE}
+    vc.ImGui_AddRect({x=close.x, y=close.y}, {x=close.x+close.w, y=close.y+close.h},
+            RAIL_COLOR, 3, 1)
+    local pad = 4
+    vc.ImGui_AddLine({x=close.x+pad, y=close.y+pad},
+            {x=close.x+close.w-pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
+    vc.ImGui_AddLine({x=close.x+close.w-pad, y=close.y+pad},
+            {x=close.x+pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
+    return close
+end
+
+--[[ Draws the radial new-box menu at an arbitrary point, for the F1 help.
+
+Goes through the SAME draw_radial_at() the live menu uses - the fields it reads are exactly the
+four this builds, and nothing about the wedges, colours or geometry is restated here. If the menu
+gains a fourth sector or changes colour, the help picture changes with it.
+
+`hover` names a sector to light up (content.box_kinds() supplies the names), or nil for none. The
+result is inert by construction: this only draws, and the menu's behaviour lives entirely in
+radial_handle_input(), which the help never calls. ]]
+function content.draw_demo_radial(cx, cy, hover)
+    draw_radial_at({cx = cx, cy = cy, hover = hover, selected = nil, over_center = false})
+end
+
+--[[ How much room a drawn menu needs around its centre - the help uses it to reserve space
+without knowing the geometry. ]]
+function content.radial_extent()
+    return RADIAL_OUTER_HOVER
+end
+
+--[[ The kinds, in the order the radial menu offers them, for the help's own example. Exposed
+rather than duplicated so a fourth kind appears in the documentation automatically. ]]
+function content.box_kinds()
+    return {KIND_TEXT, KIND_FORMULA, KIND_DEFINITION}
+end
+
+function content.draw(state, fontset, pos, opts)
     --[[ Drawn LAST, on top of everything, including the F1/F2 panels - so opening one of those
     doesn't take the numbers away mid-investigation. Hence the flag rather than a straight call:
     the early returns below would otherwise skip it. ]]
@@ -1283,13 +1552,21 @@ function content.draw(state, fontset, pos)
         end
     end
 
+    --[[ F1 is the help page, F2 the keybind customiser. They swapped roles 2026-09-07: F2 used to
+    be the Alt+glyph legend, which is now a chapter of the help instead, and F1 used to be the flat
+    key list, which the help page replaces by resolving key names out of the registry as it draws.
+
+    Both own the whole screen, and handle_input() has already returned early for this frame, so the
+    panels can use real ImGui widgets without the editor underneath reacting to the same clicks.
+    The profiler overlay still goes on top of either - it has to stay readable while the app is in
+    use, which is the whole reason it exists. ]]
     if state.show_help then
-        draw_help()
+        panel_help.draw(state.help_state, state.keymap_rev, fontset)
         overlay()
         return
     end
     if state.show_alt_help then
-        draw_alt_help(fontset)
+        panel_keymap.draw(state.keymap_state)
         overlay()
         return
     end
@@ -1312,9 +1589,16 @@ function content.draw(state, fontset, pos)
     local RIGHT_MARGIN = BOX_LEFT - RAIL_OFFSET
     --[[ ... plus the derivation-curve gutter, so a curve leaving a box's right edge has room to
     bow out and come back without leaving the window. ]]
+    --[[ `opts.max_width` caps how wide a box may get. The document itself never passes it - a box
+    is as wide as the column allows, which is the whole point of the width rule above - but the F1
+    help draws a real miniature document inside its own page, where "as wide as the display" would
+    run straight off the edge of the text column it sits in. ]]
     local max_box_w = display_size
             and math.max(BOX_WIDTH, display_size.x - box_x - RIGHT_MARGIN - CURVE_GUTTER)
             or BOX_WIDTH
+    if opts and opts.max_width then
+        max_box_w = math.min(max_box_w, opts.max_width)
+    end
 
     for i, box in ipairs(state.boxes) do
         local box_y = y
@@ -1378,27 +1662,8 @@ function content.draw(state, fontset, pos)
             -- not last frame's. Only the FILL varies by kind; the border keeps its
             -- active/inactive meaning across all three, so "which box has focus" still reads the
             -- same way it always did.
-            local kind_colors = KIND_COLORS[box.kind or KIND_TEXT] or KIND_COLORS[KIND_TEXT]
-            vc.ImGui_AddRectFilled({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
-                    kind_colors.fill, 6)
-            vc.ImGui_AddRect({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
-                    is_active and BOX_ACTIVE_COLOR or BOX_BORDER_COLOR, 6, is_active and 2 or 1)
-
-            -- Connector: a node on the rail, and a line from it to the box.
-            local node_y = box_y + 20
-            vc.ImGui_AddCircle({x=rail_x, y=node_y}, NODE_RADIUS, RAIL_COLOR, 1)
-            vc.ImGui_AddLine({x=rail_x, y=node_y}, {x=box_x, y=node_y}, RAIL_COLOR, 1)
-
-            -- Close button: a small "x" sitting just above the box's top-right corner.
-            local close = {x=box_x + box_w - CLOSE_SIZE, y=box_y - CLOSE_SIZE - 2,
-                    w=CLOSE_SIZE, h=CLOSE_SIZE}
-            vc.ImGui_AddRect({x=close.x, y=close.y}, {x=close.x+close.w, y=close.y+close.h},
-                    RAIL_COLOR, 3, 1)
-            local pad = 4
-            vc.ImGui_AddLine({x=close.x+pad, y=close.y+pad},
-                    {x=close.x+close.w-pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
-            vc.ImGui_AddLine({x=close.x+close.w-pad, y=close.y+pad},
-                    {x=close.x+pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
+            local close = content.draw_box_chrome(box_x, box_y, box_w, box_h,
+                    box.kind or KIND_TEXT, is_active, rail_x)
 
             --[[ The wireframe and graph buttons are formula debugging aids - mexpr bounding
             boxes, and a formula's reachable-position graph. Any box that HOLDS formulas gets them,
@@ -1521,7 +1786,7 @@ function content.draw(state, fontset, pos)
     --[[ Drawn after every box so it sits on top of the one it was opened over, and after
     last_layout is stored so opening it never disturbs hit testing for the frame after. ]]
     if state.radial then
-        draw_radial(state)
+        draw_radial_at(state.radial)
     end
 
     overlay()

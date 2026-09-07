@@ -7,6 +7,8 @@ local mexpr = require("mexpr")
 local editor = require("editor_text")
 local content = require("content")
 local input_recorder = require("input_recorder")
+local keymap = require("keymap")
+local glyphmap = require("glyphmap")
 local prof = require("prof")
 
 local fontset = nil
@@ -19,6 +21,15 @@ math_writer.save with whatever the test had typed, and nearly every run had to b
 so a harness that only loads part of the app still works. ]]
 local DATA_PREFIX = (vc.app_data_prefix and vc.app_data_prefix()) or ""
 local SAVE_PATH = DATA_PREFIX .. "math_writer.save"
+--[[ The keymap lives in its own file, NOT inside math_writer.save. It is configuration, not
+document: a .save copied to somebody else, or checked in, should not drag one person's keyboard
+habits along with it. Same DATA_PREFIX, so a --test instance writes test_run/keymap.save and cannot
+touch the real one. ]]
+local KEYMAP_PATH = DATA_PREFIX .. "keymap.save"
+--[[ The letter map, in its own file beside the keymap for the same reason the keymap is beside the
+document: it is configuration, and a keymap and a glyph map are separately useful - someone may
+want one and not the other, and merging them would mean a change to either rewriting both. ]]
+local GLYPHMAP_PATH = DATA_PREFIX .. "glyphmap.save"
 
 --[[ Whole-file read via Lua's own io library (enabled per-project in the makefiles -
 VIRT_COMPOSER_ENABLE_LUA_IO - rather than a custom C++ binding, since io.* already does exactly
@@ -81,6 +92,20 @@ function test_init()
     -- content.new()'s own single-empty-box default is exactly the right fallback when there's
     -- nothing to load yet - not a special case.
     content_state = saved and content.deserialize(saved, fontset) or content.new()
+    --[[ Before content.new() would matter either way, but read here rather than at require() time
+    so a missing or unreadable file is a normal empty start rather than something that happens
+    while keymap.lua is still loading. deserialize() begins from a fresh set of defaults, so an
+    action the file no longer mentions goes back to factory rather than keeping a stale value. ]]
+    local km = read_file(KEYMAP_PATH)
+    if km then
+        keymap.deserialize(km, function(msg) input_recorder.log_event(msg) end)
+    end
+    keymap.clear_dirty()
+    local gm = read_file(GLYPHMAP_PATH)
+    if gm then
+        glyphmap.deserialize(gm, function(msg) input_recorder.log_event(msg) end)
+    end
+    glyphmap.clear_dirty()
     input_recorder.init()
 end
 
@@ -108,18 +133,48 @@ function test_draw()
     input_recorder.poll()
     prof.stop("lua.input_recorder.poll")
 
-    --[[ Ctrl+S - handled HERE rather than in content.lua because this is where SAVE_PATH,
+    --[[ Must run before the first keymap.pressed() of the frame: keymap caches the Ctrl/Shift/Alt
+    state for one frame (it is asked dozens of times per frame and each answer is a C++ round trip)
+    and this is what tells it the frame turned over. Here rather than inside keymap itself because
+    only this file knows where a frame begins. ]]
+    keymap.begin_frame()
+
+    --[[ doc.save (Ctrl+S) - handled HERE rather than in content.lua because this is where SAVE_PATH,
     write_file() and content_state all live, and where the exit-save already happens; routing it
     through content.lua would mean handing that file a save callback for one keybinding.
 
     Before content.handle_input(), but NOT consuming the key: nothing downstream binds Ctrl+S (the
     editor's Ctrl set is A/C/X/V/Z/M//,= and the plain-typing path filters codepoints below 32, so
     Ctrl+S never reaches it as text), and Alt+S is sigma, which is a different modifier entirely.
-    Integer key constants, not the "ImGuiKey_S" string form - see char.lua's greek_key_ids comment
-    for why (180us vs 0.22us per call). ]]
-    local ctrl = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
-    if ctrl and vc.ImGui_IsKeyPressed(vc.ImGuiKey_S, false) then
+
+    Goes through keymap now rather than polling ImGui directly, so the binding is customisable
+    (keymap.lua's own header). keymap resolves the key id once at load for the same reason the old
+    code used an integer constant here - see char.lua's greek_key_ids comment (180us vs 0.22us). ]]
+    if keymap.pressed("doc.save") then
         save_document()
+    end
+
+    --[[ Write the keymap when it has changed AND the customiser is closed - ruled 2026-09-07,
+    "on any change the settings should be saved when the f2 pannel closes". Watching the two
+    conditions here rather than taking a callback from content.lua keeps every file path in this
+    one file, the same reason Ctrl+S is handled here.
+
+    Checked BEFORE the pcall below, so a keymap edit is safely on disk even if the very next frame
+    of editing throws. keymap.dirty() is cleared by the write, so this costs one comparison per
+    frame in the normal case. ]]
+    if not content.customiser_open(content_state) then
+        if keymap.dirty() then
+            write_file(KEYMAP_PATH, keymap.serialize())
+            keymap.clear_dirty()
+            input_recorder.log_event("saved " .. KEYMAP_PATH)
+        end
+        -- Same rule, same moment, separate file: written only once the customiser is closed, so a
+        -- half-typed glyph name never reaches disk.
+        if glyphmap.dirty() then
+            write_file(GLYPHMAP_PATH, glyphmap.serialize())
+            glyphmap.clear_dirty()
+            input_recorder.log_event("saved " .. GLYPHMAP_PATH)
+        end
     end
 
     local ok, err = pcall(function()

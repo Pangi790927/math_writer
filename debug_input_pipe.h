@@ -20,9 +20,29 @@
  */
 namespace debug_input_pipe {
 
+/*! The two ports this module can listen on, and why there are two.
+ *
+ * TEST_PORT is the automated one: a --test instance binds it at startup and a session's tooling
+ * connects to it. USER_PORT is the one a PRESENTATION instance opens when its owner arms it by
+ * hand (Ctrl+Shift+D).
+ *
+ * They are deliberately different, added 2026-09-07 after the single shared port caused exactly
+ * the collision it invites: a session's --test instance held 47821, so the developer's own
+ * instance could not bind when they armed it, and - because the arming path ignored init()'s
+ * result at the time - it reported the pipe open when nothing was listening. Two ports means the
+ * two never compete for the same resource, and a test run can no longer take the developer's
+ * link away from them. */
+constexpr unsigned short TEST_PORT = 47821;
+constexpr unsigned short USER_PORT = 47822;
+
 /*! Starts listening on a background thread. Call once, after the ImGui context exists.
+ * @param port which port to bind - TEST_PORT for an automated run, USER_PORT for a hand-armed
+ *        presentation instance.
  * @return 0 on success. */
-int init();
+int init(unsigned short port = TEST_PORT);
+
+/*! The port currently being listened on, or 0 when not listening. */
+unsigned short listening_port();
 
 /*! Applies any commands received since the last call, by calling into ImGui. Must be called once
  * per frame, from the main thread, before ImGui::NewFrame() (e.g. right after
@@ -30,8 +50,26 @@ int init();
 void pump();
 
 /*! Stops the listener/background thread and closes any open sockets. Call once, before ImGui
- * context teardown. */
+ * context teardown.
+ *
+ * Also the "disarm" half of the on-demand model below: init()/uninit() are symmetric and may be
+ * called repeatedly, so the pipe can be opened and closed again during one run. */
 void uninit();
+
+/*! Whether the listener is currently accepting connections.
+ *
+ * ON-DEMAND ARMING, added 2026-09-07 on request. The presentation instance deliberately does NOT
+ * listen at startup - main.cpp only calls init() under --test, because a person's own editor
+ * should not be sitting on an open port while they work, and an agent connected to it could
+ * interfere with what they are doing. But when something breaks, being able to hand that same
+ * instance over for inspection is worth a great deal: the broken state is right there, and
+ * reproducing it in a separate --test run is often the hard part.
+ *
+ * So the presentation instance can be ARMED by hand (see main.cpp's Ctrl+Shift+D). Nothing is
+ * listening until the person at the keyboard asks for it, and the same key closes the socket
+ * again. This function exists so the app can show whether it is armed - an open port that nobody
+ * can see is exactly the thing not to build. */
+bool is_listening();
 
 /*! DEBUG-ONLY, opt-in via VC_WINDOW_START_HIDDEN. Hides the console window (this is a
  * console-subsystem build, so one always gets allocated) - same "keep it off the developer's

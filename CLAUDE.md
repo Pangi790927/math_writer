@@ -13,6 +13,24 @@ this file is about how to work in it. These rules are specific to this repo and 
   **Per-instance override:** if explicitly told, for that specific change, to add/write it
   directly ("add it", "make the change", etc.), do so. This is a one-off override, not a standing
   permission — it doesn't carry over to the next change; the default reverts right after.
+- **`imgui_composer.h` is a LEAF - Claude may edit it freely.** The blanket "don't touch C++" rule
+  above is not about the language, it is about the CORE: `char_draw_composer.h`,
+  `math_expr_composer.h`, `virt_composer` and `main.cpp` are where the project's real structure
+  lives, and a session does not have the full picture of it. The ImGui wrapper is the opposite -
+  it only exposes ImGui to Lua, nothing depends on its shape, and a wrong export is visible and
+  reversible immediately. User's own words, verbatim, 2026-09-07: "You can edit the imgui wrapper,
+  it's ok, it's a leaf of the project, this is a more unclear term so don't give it too much
+  thought, but that is why you are not allowed to touch c++ freely is because it is the core of the
+  project, but you don't have the full image, so I actually put the core into the c++ part and tell
+  you generically not to touch c++". So: leaf = edit; core = still suggest-don't-edit.
+- **Don't change how the app BEHAVES unless told to, explicitly, for that behaviour.** Refactors
+  that route existing input through a new layer must preserve what every key does today, including
+  the accidental cases. User's own words, verbatim, 2026-09-07: "don't change how the app behaves
+  with those changes, not anywhere else than I say so explicitly at least, ask me iif something
+  should stay or not". This killed the "make modifier matching exact" idea (2026-09-07): making
+  bindings exact would have silently retired Shift+Enter, Shift+Space, Ctrl/Shift+Backspace and
+  AltGr+letter Greek, none of which anyone asked to remove - see the keymap registry's own
+  three-state modifier fields, which exist to reproduce today's behaviour exactly.
 - **`.lua` files are Claude's domain.** You may write and edit these directly — but ask first
   before making a change, don't just do it unprompted. This is the one carve-out from the rule
   above.
@@ -199,9 +217,13 @@ the window's close button does, so the app unwinds through its NORMAL shutdown: 
 writes `test_run/math_writer.save`, and the async log (`async_log_composer.h`) drains and joins its writer
 thread. A `taskkill` skips all of that. (It used to also mean
 `math_writer.save` needed a `git checkout --` after every run; the `--test` split fixed that at the
-root - a test instance no longer writes the real document at all.) Escape does NOT work from the pipe: `main.cpp` polls
+root - a test instance no longer writes the real document at all.) Ctrl+Q does NOT work from the pipe: `main.cpp` polls
 it with `glfwGetKey()`, which reads the real OS keyboard, and a hidden window ignores `WM_CLOSE`
-too - `quit` (added 2026-09-05) is the only clean exit available headlessly.
+too - `quit` (added 2026-09-05) is the only clean exit available headlessly. (That quit key was
+ESCAPE until 2026-09-07; it moved to Ctrl+Q because Escape is a meaningful in-app key in three
+places - leaving a formula, closing the radial menu, leaving a definition's shorthand - so pressing
+it to back out of a formula also closed the application. The pipe consequence is unchanged either
+way.)
 
 Driving input still goes through the same TCP pipe (127.0.0.1:47821, see `debug_input_pipe.cpp`
 for the line protocol) — `io.AddKeyEvent`/`AddInputCharacter`/etc. only ever touch this process's

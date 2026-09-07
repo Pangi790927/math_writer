@@ -42,6 +42,7 @@ local mformula = require("mformula_new")
 local mexpru = require("mexpru")
 local editor = require("editor")  -- the shared formula host; see its header
 local mexpr_ast = require("mexpr_ast")
+local keymap = require("keymap")
 
 local editor_definition = {}
 
@@ -691,11 +692,14 @@ function editor_definition.handle_input(state, fontset, sz)
     --[[ Ctrl+Z / Ctrl+Shift+Z, checked before anything else so it works wherever the caret is -
     the same placement and the same binding editor_text.lua uses, so the two boxes do not disagree
     about what undo means. ]]
-    if (vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl))
-            and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Z, false) then
-        local shift = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftShift)
-                or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightShift)
-        undo_or_redo(state, fontset, shift)
+    -- Two actions, redo checked first - the same shape editor_text.lua uses, so the two boxes
+    -- still cannot disagree about what undo means (this block's own comment).
+    if keymap.pressed("edit.redo") then
+        undo_or_redo(state, fontset, true)
+        return false
+    end
+    if keymap.pressed("edit.undo") then
+        undo_or_redo(state, fontset, false)
         return false
     end
 
@@ -781,7 +785,7 @@ function editor_definition.handle_input(state, fontset, sz)
 
     --[[ The shorthand can also be left by keyboard: Escape puts the caret back in the name slot.
     Without it, a definition reached entirely by keyboard could be entered and not left. ]]
-    if state.current < 0 and vc.ImGui_IsKeyPressed(vc.ImGuiKey_Escape, false) then
+    if state.current < 0 and keymap.pressed("definition.exit_slot") then
         state.current = 1
         return false
     end

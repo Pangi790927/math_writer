@@ -40,6 +40,7 @@ list to forget an entry from; asking "did the tree change" cannot be.
 local vc = require("virt_composer")
 local mformula = require("mformula_new")
 local mexpru = require("mexpru")
+local keymap = require("keymap")
 local editor = require("editor")  -- the shared formula host; see its header
 
 local editor_formula = {}
@@ -138,7 +139,7 @@ end
 --[[ One frame of input. Returns true when the box's CONTENT changed - which happens only on a
 paste into an empty box, since nothing else may change it. ]]
 function editor_formula.handle_input(state, fontset, sz)
-    local ctrl = vc.ImGui_IsKeyDown(vc.ImGuiKey_LeftCtrl) or vc.ImGui_IsKeyDown(vc.ImGuiKey_RightCtrl)
+    local ctrl = keymap.mods()
 
     --[[ PASTE, in either state. Into an empty box it is how content arrives; into a filled one it
     REPLACES the content and drops the parent link, because what is in the box no longer came from
@@ -146,7 +147,7 @@ function editor_formula.handle_input(state, fontset, sz)
 
     A paste that does not parse changes nothing at all: the old content and the old link both stay,
     rather than the box being emptied by a bad clipboard. ]]
-    if ctrl and vc.ImGui_IsKeyPressed(vc.ImGuiKey_V, false) then
+    if keymap.pressed("edit.paste") then
         local latex = clipboard_latex()
         if latex then
             local built = mformula.from_latex(fontset, mexpru.DEFAULT_SIZE, latex)
