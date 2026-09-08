@@ -38,45 +38,72 @@ this file is about how to work in it. These rules are specific to this repo and 
 - **git structure is read-only.** `git status`/`diff`/`log`/`show` etc. are fine any time. Never
   `add`/`commit`/`push`/`stash`/`checkout`/`reset --hard` or anything else that touches history or
   the index.
-- **When Lua needs a capability C++/`virt_composer` doesn't expose, ask before working around it.**
-  User's own words, verbatim, 2026-09-04: "ASK FOR WHAT YOU DON'T HAVE FROM C++, DON'T IMPLEMENT IT
-  YOURSELF WITHOUT GUIDANCE, DON'T ASSUME YOU CAN'T HAVE IT." Hit directly that day: `mexpru.lua`'s
-  `same(a, b)` papers over `mexpr_t` having no `__eq` registered by comparing `tostring()` output
-  instead; new bracket-pairing code got built on top of that hack without ever questioning whether
-  real identity comparison could just be exposed from C++ — don't repeat that.
-- **Any conflict/contradiction in what the user says is theirs to resolve — ask, don't guess.**
-  User's own words, verbatim, 2026-09-04: "ANY CONFLICT/CONTRADICTION OF WHAT I SAY IS SOLVED BY
-  ME, SO IF YOU DETECT A CONTRADICTION, ASK ME!" — clarified scope, also verbatim: "a contradiction
-  in what I say of course" (i.e. this message vs. an earlier one, not a mismatch between the user's
-  intent and what the code actually does - that's ordinary review). Never silently pick a side,
-  paper over it, or guess which one still holds - surface it and ask. Also in the global
-  `~/.claude/CLAUDE.md` ("Working style" section) as the general, all-projects form of this rule.
-- **Law 3 — in a Pangi repo, check these laws are acknowledged, and offer to spread them.** The
-  first time in a session you're clearly working in a git repo authored by Pangi (commit history
-  has an author name/email containing "Pangi", case-insensitive, or `git config
-  user.name`/`user.email` does), check whether that repo's own CLAUDE.md acknowledges the three
-  laws in some form — a reference, a summary or a link back to `~/.claude/CLAUDE.md` is enough. If
-  it doesn't: **tell Andrei, don't silently add it.** CLAUDE.md is normally yours to write without
-  asking; this specific case is explicitly "remind me", not "just do it" — his word. Then offer to
-  add a reference if he wants one started. Once per session is enough — don't re-check every
-  message, don't nag a repo that already acknowledges them. This file is that acknowledgement for
-  `math_writer`.
-  User's own words, verbatim, 2026-09-04: "if a git is by me (see name Pangi) then you will remind
-  me if those three laws are not set, or acknowledged in some way." — and, on why the laws exist at
-  all, also verbatim: "this will be the laws for claude, ok? and they would spread through my pc and
-  grow, this is the 3rd rule of claude."
-- **Amendment to Law 3 — verbatim citation is verbatim; commentary is not.** User's own words,
-  verbatim, 2026-09-06: "THE ORIGINAL STATEMENT MUST MATCH EXACTLY WHEN COPIED - THIS IS ALSO AN
-  RIGINAL CITATION - BUT COMMENTS MAY VARY, INTERPRETATIONS..."
-  What this binds, and what it frees: when a law spreads into another repo's CLAUDE.md, the quoted
-  original statements travel **character for character** — no tidying, no fixing typos, no
-  modernising the wording, no "cleaner" paraphrase standing in for the quote. That includes the
-  amendment above, which is itself an original citation and is reproduced here with its own typo
-  ("AN RIGINAL") intact, deliberately. What surrounds a citation — the summary in your own words,
-  the worked example, the reasoning about scope, the pointer to the file where it bit — is
-  commentary, and commentary may be rewritten, expanded, shortened or re-argued per repo to fit
-  what that repo actually does. The line is simply: inside the quote marks, nothing moves; outside
-  them, everything may.
+## LAWS FOR CLAUDE
+
+The heading itself is now a citation, not commentary — user's own words, verbatim, 2026-09-08:
+"LAWS FOR CLAUDE will be a citation now, you keep removing it, so I will make it a citation so that
+you will stop and keep it." All caps, exactly as given — his own words, verbatim, same message:
+"all caps, all citations are all caps." Per the amendment to Law 3 below, that fixes this exact
+wording and case; don't reword or re-case it to "Three Laws", "Laws of Claude", "Laws for Claude",
+or anything else in a future edit.
+
+The laws Pangi set for how Claude works, meant to spread and apply the same way in every repo of
+his — numbered, not capped at any count, so a new one can be added later without renumbering the
+header. See the amendment to Law 3 for how a citation may travel vs. how commentary may.
+
+1. **Ask for what you don't have.** When a lower layer (C++/`virt_composer` here) doesn't expose a
+   capability the current layer needs, ask before working around it — don't silently invent a
+   workaround and build further logic on top of it.
+
+   User's own words, verbatim, 2026-09-04: "ASK FOR WHAT YOU DON'T HAVE FROM C++, DON'T IMPLEMENT
+   IT YOURSELF WITHOUT GUIDANCE, DON'T ASSUME YOU CAN'T HAVE IT."
+
+   Hit directly that day: `mexpru.lua`'s `same(a, b)` papers over `mexpr_t` having no `__eq`
+   registered by comparing `tostring()` output instead; new bracket-pairing code got built on top
+   of that hack without ever questioning whether real identity comparison could just be exposed
+   from C++ — don't repeat that.
+
+   Second occurrence, a different repo: user's own words, verbatim, 2026-09-08, `bbb_repo` project:
+   "YOU ARE TO NOTIFY ME IF SOMETHING DOESN'T FIT BECAUSE OF A SMALL CHANGE, NO MORE DUPLICATING
+   CODE FOR NO REASON!!!!!!!" If an existing class/utility/function is a near-fit for a new need but
+   has one hardcoded assumption blocking reuse, say so and extend it — don't silently write a
+   second, parallel mechanism that duplicates most of the same logic to route around the mismatch.
+   What this looked like in practice: `LockedCache` only ever wrote to one hardcoded directory;
+   instead of adding a `base_dir` parameter and reusing it, a whole separate sentinel-file mechanism
+   got invented from scratch for a need that was 90% identical to something already built two
+   minutes earlier in the same session.
+
+2. **Contradictions are the author's to resolve.** On spotting a contradiction in what the user has
+   said, surface it and ask; do not pick a side quietly.
+
+   User's own words, verbatim, 2026-09-04: "ANY CONFLICT/CONTRADICTION OF WHAT I SAY IS SOLVED BY
+   ME, SO IF YOU DETECT A CONTRADICTION, ASK ME!" — clarified scope, also verbatim: "a contradiction
+   in what I say of course" (i.e. this message vs. an earlier one, not a mismatch between the user's
+   intent and what the code actually does — that's ordinary review). Never silently pick a side,
+   paper over it, or guess which one still holds — surface it and ask. Also in the global
+   `~/.claude/CLAUDE.md` ("Working style" section) as the general, all-projects form of this rule.
+
+3. **In a Pangi repo, check these laws are acknowledged, and offer to spread them.** The first time
+   in a session you're clearly working in a git repo authored by Pangi (commit history or `git
+   config user.name`/`user.email` has "Pangi", case-insensitive), check whether that repo's own
+   CLAUDE.md acknowledges the laws in some form. If it doesn't: **tell Pangi, don't silently add
+   it** — CLAUDE.md is normally yours to write without asking; this specific case is explicitly
+   "remind me", not "just do it". Then offer to add a reference if he wants one started. Once per
+   session is enough. This file is that acknowledgement for `math_writer`.
+
+   User's own words, verbatim, 2026-09-04: "if a git is by me (see name Pangi) then you will remind
+   me if those three laws are not set, or acknowledged in some way." — and, on why the laws exist at
+   all, also verbatim: "this will be the laws for claude, ok? and they would spread through my pc
+   and grow, this is the 3rd rule of claude."
+
+   **Amendment — verbatim citation is verbatim; commentary is not.** User's own words, verbatim,
+   2026-09-06: "THE ORIGINAL STATEMENT MUST MATCH EXACTLY WHEN COPIED - THIS IS ALSO AN RIGINAL
+   CITATION - BUT COMMENTS MAY VARY, INTERPRETATIONS..." When a law spreads into another repo's
+   CLAUDE.md, the quoted original statements travel character for character — no tidying, no fixing
+   typos, no paraphrase standing in for the quote (including this amendment's own "AN RIGINAL",
+   reproduced intact, deliberately). What surrounds a citation — summary, example, scope, file
+   pointer — is commentary, and may be rewritten per repo to fit what that repo does. Inside the
+   quote marks, nothing moves; outside them, everything may.
 
 ## Build
 
