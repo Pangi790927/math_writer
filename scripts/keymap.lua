@@ -28,6 +28,7 @@ behaviour changes, both wanted.
 
 An action holds a LIST of binds and fires if any of them matches. F1's help renders only the first -
 a rebind should not reflow a paragraph - and the customiser shows them all.
+@date 2026-09-08 08:40
 ]]
 
 local vc = require("virt_composer")
@@ -58,14 +59,16 @@ do
 end
 
 --[[ Resolve a "ImGuiKey_X" name to whatever this build can poll with. Integer where ImGui is
-registered, the name string itself where it is not (see the fallback note above). ]]
+registered, the name string itself where it is not (see the fallback note above).
+@date 2026-09-08 08:40 ]]
 local function key_id(name)
     return name_to_id[name] or name
 end
 
 --[[ Lower-cased index of every real ImGuiKey name, both in full and by its suffix, so the field
 accepts "delete", "Delete", "GraveAccent" and "ImGuiKey_Delete" alike. Empty when ImGui is not
-registered (the test harness), which is exactly why parse() cannot depend on it alone. ]]
+registered (the test harness), which is exactly why parse() cannot depend on it alone.
+@date 2026-09-08 08:40 ]]
 local lower_to_name = {}
 for name in pairs(name_to_id) do
     lower_to_name[name:lower()] = name
@@ -76,7 +79,8 @@ end
 
 Only the ones whose typed form is not simply the suffix. "K" -> ImGuiKey_K and "F1" -> ImGuiKey_F1
 need no entry; "Left" -> ImGuiKey_LeftArrow and "/" -> ImGuiKey_Slash do. Written the way a person
-would actually type a shortcut, since this table IS the input language of the F2 field. ]]
+would actually type a shortcut, since this table IS the input language of the F2 field.
+@date 2026-09-08 08:40 ]]
 local ALIASES = {
     ["left"]      = "ImGuiKey_LeftArrow",
     ["right"]     = "ImGuiKey_RightArrow",
@@ -152,7 +156,8 @@ PRETTY["ImGuiKey_PageDown"]   = "PageDown"
 Case-insensitive on the modifiers and on named keys; a single printable character keeps its own
 case for the alias lookup ("/" and "." are keys, not letters). Returns the REASON on failure
 because the customiser shows it in the box rather than just refusing silently - a field that
-rejects without saying why is the thing that makes a settings screen infuriating. ]]
+rejects without saying why is the thing that makes a settings screen infuriating.
+@date 2026-09-08 08:40 ]]
 function keymap.parse(text)
     if type(text) ~= "string" then
         return nil, "not text"
@@ -229,7 +234,8 @@ end
 
 --[[ The inverse. Modifier order is fixed at Ctrl+Shift+Alt regardless of how it was typed, so the
 same bind always reads the same way and two spellings of one combo cannot look different in the
-customiser. ]]
+customiser.
+@date 2026-09-08 08:40 ]]
 function keymap.format(bind)
     if not bind or not bind.key then
         return "(unbound)"
@@ -253,10 +259,12 @@ that let you bind RightCtrl separately would produce shortcuts that work on one 
 keyboard. cache_frame keeps a frame's worth of answers, since pressed() is called dozens of times
 per frame and each of these is a C++ round trip (char.lua's own greek_key_ids comment measured the
 string-form call at 180us against 0.22us for the integer form - the same reason this file resolves
-ids once at load). ]]
+ids once at load).
+@date 2026-09-08 08:40 ]]
 local mod_state = {ctrl = false, shift = false, alt = false}
 local mod_frame = -1
 
+--[[ Samples Ctrl/Shift/Alt once for the given frame and caches the answer. @date 2026-09-08 08:40 ]]
 local function refresh_mods(frame)
     if frame == mod_frame then
         return
@@ -273,13 +281,16 @@ end
 -- Bumped by keymap.begin_frame(); only used to invalidate the modifier cache above.
 local frame_counter = 0
 
+--[[ Called once per frame by main.lua, before anything asks about a key: it is what invalidates
+the modifier cache above, so a bind never matches on last frame's modifiers. @date 2026-09-08 08:40 ]]
 function keymap.begin_frame()
     frame_counter = frame_counter + 1
 end
 
 --[[ Does this ONE bind match right now. `repeat_` is ImGui's own key-repeat flag, carried per
 ACTION rather than per bind - whether a held Backspace should keep deleting is a property of what
-the action does, not of which key reaches it. ]]
+the action does, not of which key reaches it.
+@date 2026-09-08 08:40 ]]
 local function bind_matches(bind, repeat_)
     if not bind or not bind.key then
         return false
@@ -307,7 +318,8 @@ pre-keymap behaviour that the exact-matching rule would otherwise have retired s
 file's header. Each is deletable in F2.
 
 `repeat_` is true where holding the key should keep firing (typing, navigation, deletion) and false
-where it must fire once per press (anything structural, or a panel toggle). ]]
+where it must fire once per press (anything structural, or a panel toggle).
+@date 2026-09-08 08:40 ]]
 local DEFAULTS = {
     -- Panels and application ------------------------------------------------------------------
     {id = "app.help",             desc = "Toggle the help panel",                    binds = {"F1"}},
@@ -444,24 +456,31 @@ local DEFAULTS = {
 }
 
 --[[ The LIVE table: id -> {desc=, repeat_=, binds={parsed, ...}}. Separate from DEFAULTS so the
-factory setting survives every edit and "back to default" is a copy rather than a reload. ]]
+factory setting survives every edit and "back to default" is a copy rather than a reload.
+@date 2026-09-08 08:40 ]]
 local actions = {}
 
 --[[ Set by every edit, cleared by whoever writes the file. The customiser saves on CLOSE rather
 than on each keystroke (ruled 2026-09-07: "on any change the settings should be saved when the f2
 pannel closes") - which is why this is a flag rather than a save-callback: a half-typed rebind, or
 one abandoned with the x, must never reach disk, and a flag lets the writer decide when "settled"
-is. install_defaults() deliberately does NOT set it: loading is not an edit. ]]
+is. install_defaults() deliberately does NOT set it: loading is not an edit.
+@date 2026-09-08 08:40 ]]
 local dirty = false
 
+--[[ Whether anything has been rebound since the last write. main.lua asks on the frame the
+customiser closes; see the `dirty` flag's own comment for why saving waits that long. @date 2026-09-08 08:40 ]]
 function keymap.dirty()
     return dirty
 end
 
+--[[ Called by whoever wrote the file, to say the divergence on disk is current. @date 2026-09-08 08:40 ]]
 function keymap.clear_dirty()
     dirty = false
 end
 
+--[[ Rebuilds the LIVE table from DEFAULTS, parsing every factory bind. A DEFAULTS entry that does
+not parse raises rather than being skipped - see the error below for why silence is worse. @date 2026-09-08 08:40 ]]
 local function install_defaults()
     actions = {}
     for _, entry in ipairs(DEFAULTS) do
@@ -490,7 +509,8 @@ install_defaults()
 --[[ THE call. True when any of this action's binds matches this frame.
 
 An unknown id is an error rather than a silent false: a typo'd id would otherwise mean "this
-shortcut quietly never works again", which is invisible in a way a missing key press is not. ]]
+shortcut quietly never works again", which is invisible in a way a missing key press is not.
+@date 2026-09-08 08:40 ]]
 function keymap.pressed(id)
     local action = actions[id]
     if not action then
@@ -513,7 +533,8 @@ end
 
 --[[ What F1 substitutes into its prose. The FIRST bind only - a rebind should never reflow a
 paragraph - and "(unbound)" rather than blank when the list has been emptied, so the sentence
-around it still reads. ]]
+around it still reads.
+@date 2026-09-08 08:40 ]]
 function keymap.label(id)
     local action = actions[id]
     if not action or not action.binds[1] then
@@ -525,7 +546,8 @@ end
 --[[ Integer ImGuiKey id -> its name, for the F2 recorder: vc.ImGui_keys_pressed() hands back ids
 and the recorder needs names to build a binding out of them. Nil for an id this build does not know,
 which the caller must handle - it is the only sane answer, and silently inventing a name would put
-an unresolvable key into somebody's saved keymap. ]]
+an unresolvable key into somebody's saved keymap.
+@date 2026-09-08 08:40 ]]
 function keymap.key_name(id)
     return id_to_name[id]
 end
@@ -533,15 +555,19 @@ end
 --[[ The reverse, and the label a person reads for a key. Both are needed by the glyph customiser,
 which is keyed by physical key rather than by letter: it has to poll the key (id) and show which
 key a row is (label). PRETTY is the same spelling the binding fields accept, so a key reads the
-same everywhere in the customiser. ]]
+same everywhere in the customiser.
+@date 2026-09-08 08:40 ]]
 function keymap.key_of(name)
     return key_id(name)
 end
 
+--[[ The label a person reads for a key name, in the same spelling the binding field accepts. @date 2026-09-08 08:40 ]]
 function keymap.key_label(name)
     return PRETTY[name] or (name and name:gsub("^ImGuiKey_", "")) or "?"
 end
 
+--[[ An action's description, or its id when there is no such action - the customiser and the help
+both show this. @date 2026-09-08 08:40 ]]
 function keymap.describe(id)
     local action = actions[id]
     return action and action.desc or id
@@ -555,6 +581,7 @@ function keymap.each(fn)
     end
 end
 
+--[[ An action's live binds, in the order they are tried. Empty for an unknown id. @date 2026-09-08 08:40 ]]
 function keymap.binds_of(id)
     local action = actions[id]
     return action and action.binds or {}
@@ -569,7 +596,8 @@ true, or false plus the reason - the customiser puts that reason in the box.
 
 Conflicts do NOT refuse. Two actions may hold the same bind, and the customiser marks both:
 refusing would make swapping two shortcuts impossible without clearing one first, and the dispatch
-order in the editors already decides which of a colliding pair wins. ]]
+order in the editors already decides which of a colliding pair wins.
+@date 2026-09-08 08:40 ]]
 function keymap.set_bind(id, index, text)
     local action = actions[id]
     if not action then
@@ -584,6 +612,8 @@ function keymap.set_bind(id, index, text)
     return true
 end
 
+--[[ Drops one bind from an action. An action may legitimately end up with none - it then reads as
+"(unbound)" everywhere and simply never fires. @date 2026-09-08 08:40 ]]
 function keymap.remove_bind(id, index)
     local action = actions[id]
     if action and action.binds[index] then
@@ -595,7 +625,8 @@ function keymap.remove_bind(id, index)
 end
 
 --[[ Every action currently holding this exact bind, so the customiser can mark a collision. Order
-follows DEFAULTS, same as each(). ]]
+follows DEFAULTS, same as each().
+@date 2026-09-08 08:40 ]]
 function keymap.conflicts(bind, except_id)
     local hits = {}
     for _, entry in ipairs(DEFAULTS) do
@@ -641,7 +672,8 @@ end
 --[[ One line per action, "id<TAB>bind, bind, ...", and ONLY for actions that differ from the
 factory setting. That last part is the whole design: a file listing every action would freeze
 today's defaults forever, so a default improved later would never reach anyone who had opened the
-customiser once. What is written is the user's DIVERGENCE, and everything else follows the code. ]]
+customiser once. What is written is the user's DIVERGENCE, and everything else follows the code.
+@date 2026-09-08 08:40 ]]
 function keymap.serialize()
     local lines = {}
     for _, entry in ipairs(DEFAULTS) do
@@ -672,7 +704,8 @@ action leaves that action at factory rather than at whatever the previous load l
 
 An id the code no longer has is SKIPPED, not an error: an old file must not stop the app from
 starting, and the line is reported so it is not silently lost. Same for a bind that no longer
-parses. ]]
+parses.
+@date 2026-09-08 08:40 ]]
 function keymap.deserialize(text, warn)
     install_defaults()
     if type(text) ~= "string" then

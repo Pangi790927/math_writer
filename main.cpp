@@ -5,7 +5,13 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <unistd.h>   /* execv - the Ctrl+R reload below */
+#ifndef _WIN32
+#include <unistd.h>   /* execv - the Ctrl+R reload below. POSIX-only, and so is the reload itself:
+                         MSVC has no <unistd.h> at all, so an unguarded include broke the whole
+                         Windows build - main.exe could not be rebuilt from 2026-09-07 until this
+                         guard, and stale binaries fail in the Lua layer instead (F1/F2 called an
+                         ImGui_PushFont their main.exe did not export yet). */
+#endif
 
 #include "imgui_helpers.h"
 #include "imgui_internal.h"
@@ -286,9 +292,16 @@ int main(int argc, char const *argv[])
             DBG("Ctrl+R: saving and re-executing");
             /* The same call the window's close button ends up making, so nothing is lost. */
             vc::call_lua<int>(vs.get(), "test_shutdown");
+#ifndef _WIN32
             execv("/proc/self/exe", g_argv);
             /* Only reachable if execv failed; carry on rather than dying over a convenience. */
             DBG("Ctrl+R: execv failed, staying in this process");
+#else
+            /*  Windows has neither execv nor /proc/self/exe, so the reload stops after the save.
+            Nothing is lost - the document has just been written by the call above - the app simply
+            stays where it is. */
+            DBG("Ctrl+R: re-exec is POSIX-only; saved, staying in this process");
+#endif
             reload_armed = false;
         }
 

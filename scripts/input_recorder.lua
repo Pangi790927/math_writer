@@ -39,6 +39,7 @@ re-check this list if a new keybinding gets added elsewhere and stops showing up
 letters (char.lua's own greek_keys table already enumerates those). Modifier keys are tracked as
 DOWN state, not edge-triggered, so an event like "Ctrl+Shift+Equal" can be reported as one line
 instead of three separate "Control down"/"Shift down"/"Equal pressed" ones.
+@date 2026-09-08 08:45
 ]]
 
 local vc = require("virt_composer")
@@ -93,7 +94,8 @@ already sitting on the vc table (add_lua_flag_mapping puts every ImGuiKey_* ther
 number); nothing needed adding to C++, the fast path was simply never being taken.
 
 Resolved at load rather than per call because the mapping never changes. A name that is somehow
-absent is kept as its string, so it still works - just slowly - rather than silently never firing. ]]
+absent is kept as its string, so it still works - just slowly - rather than silently never firing.
+@date 2026-09-08 08:45 ]]
 local WATCHED_KEYS = {}
 for _, name in ipairs(WATCHED_KEY_NAMES) do
     WATCHED_KEYS[#WATCHED_KEYS + 1] = vc[name] or name
@@ -126,7 +128,8 @@ end
 
 --[[ Rotates the previous session's log to input_history.old.log (overwriting whatever was there
 before - same one-deep rotation ../utils's own DBG()/logfile.log convention uses) and opens a fresh
-one for this session. Called once, from main.lua's test_init(). ]]
+one for this session. Called once, from main.lua's test_init().
+@date 2026-09-08 08:45 ]]
 function input_recorder.init()
     local prev = io.open(LOG_PATH, "rb")
     if prev then
@@ -158,7 +161,8 @@ end
 --[[ Stops the writer. Called from main.lua's test_shutdown(), with main.cpp calling it again as a
 backstop. alog_close() pushes its stop marker BEHIND everything already queued and then joins, so
 this blocks until the last line is on disk - which is the intent: a normal exit waits for the log to
-finish rather than cutting the writer off mid-queue. ]]
+finish rather than cutting the writer off mid-queue.
+@date 2026-09-08 08:45 ]]
 function input_recorder.close()
     if log_open then
         vc.alog_close()   -- drains the queue and joins the writer before returning
@@ -167,7 +171,8 @@ function input_recorder.close()
 end
 
 --[[ Call once per frame, BEFORE any real per-frame logic runs - so an event is on disk even if
-whatever it triggers goes on to error out later in the SAME frame. ]]
+whatever it triggers goes on to error out later in the SAME frame.
+@date 2026-09-08 08:45 ]]
 function input_recorder.poll()
     frame = frame + 1
     if not log_open then
@@ -215,14 +220,16 @@ end
 pcall itself returned, whenever that call fails. ]]
 --[[ Records something the app itself did, as opposed to an input event this module observed - a
 save, say. Same line format and same frame number, so it interleaves with the keystrokes that led to
-it when the log is read back. ]]
+it when the log is read back.
+@date 2026-09-08 08:45 ]]
 function input_recorder.log_event(text)
     flush_repeat()
     write_line(frame .. " " .. tostring(text))
 end
 
 --[[ No special flush handling any more: the writer thread flushes every line it writes, so an error
-is durable as soon as the writer reaches it, the same as any other line. ]]
+is durable as soon as the writer reaches it, the same as any other line.
+@date 2026-09-08 08:45 ]]
 function input_recorder.log_error(err)
     local text = tostring(err)
     if text == last_err then

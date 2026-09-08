@@ -1,9 +1,16 @@
---[[ 
-  This file contains the ast node representation of all math elements inside the program
-  This is the base that will be used later for serialization, deserialization and drawing
-  diverse mathematical expressions.
-  
- ]]
+--[[
+ast.lua - THE MEANING TREE: what a formula IS, as opposed to how it is drawn or typed.
+
+Every mathematical element in the program has a node shape here, and this is the base that
+serialization, deserialization and the transforms are all written against. The editors do not build
+these yet - phase 1 keeps a formula as mexpr plus LaTeX - so this is the model phase 2 grows into
+(docs/phase2_design.md), and transforms.lua is the first thing written against it.
+
+A node is a TUPLE: an operator, then its operands, each node carrying an id of its own so anything
+else can refer to it. The catalogue of tuple shapes is written out below.
+
+@date 2026-09-08 08:55
+]]
 --[[ OBS: function names can't have spaces ]]
 
 -- tuples:
@@ -23,7 +30,7 @@
 -- (_, a1)                      -- paranthesis
 -- ...                          -- other custom ones to be thought about later?
 
---[[ reminder: name option: mathew - math expression writter ]]
+--[[ reminder: name option: mathew - math expression writter @date 2026-09-08 08:55 ]]
 
 local ast = {
     INVALID = 1,
@@ -46,10 +53,15 @@ local ast = {
     VREF = 18,
 }
 
+--[[ A fresh NAMESPACE: the id -> node table every ast node in one tree is registered in, plus the
+next id to hand out. Ids are what a reference names, so a node only means anything inside the
+namespace it was made in. @date 2026-09-08 09:10 ]]
 function ast.new_ns()
     return { by_id = {}, last_id = 1 }
 end
 
+--[[ Registers `obj` under `id`, keeping the namespace's next id past it - so an id read back from
+a file cannot later be handed out a second time. @date 2026-09-08 09:10 ]]
 function ast.ns_insert_object(ns, id, obj)
     ns.by_id[id] = obj
     if ns.last_id <= id then
@@ -57,6 +69,9 @@ function ast.ns_insert_object(ns, id, obj)
     end
 end
 
+--[[ A new node of `type`, with an id of its own, already registered in `ns`. Every constructor
+below goes through here, which is what makes "has an id" true of every node rather than of most of
+them. @date 2026-09-08 09:10 ]]
 function ast.new(ns, type)
     local ret = { type = type }
     ret.id = ns.last_id
@@ -72,7 +87,7 @@ end
 * new_ns - the new namespace in which to create the new tree
 * keep_vars - this dictates if the vars inside the expression reference the
              same vars as before
-]]
+@date 2026-09-08 08:55 ]]
 function ast.copy(ns, node, new_ns, keep_vars)
     local ret = { type = node.type }
     ast.ns_insert_object(new_ns, node.id, ret)
@@ -96,11 +111,14 @@ function ast.copy(ns, node, new_ns, keep_vars)
     return ret
 end
 
---[[ TODO: figure out if this makes sens, if this is not copy with extra rules, etc. ]]
+--[[ TODO: figure out if this makes sens, if this is not copy with extra rules, etc. @date 2026-09-08 08:55 ]]
 function ast.ns_import_ast(dst_ns, src_ns, node)
 
 end
 
+--[[ The RELATION constructors - equality, then the five inequalities. Each takes two expressions
+already in `ns` and returns the node joining them; they differ only in the type tag, which is what
+tells them apart downstream. @date 2026-09-08 09:10 ]]
 function ast.new_eq(ns, expr1, expr2)
     local ret = ast.new(ns, ast.EQ)
     ret[1] = expr1

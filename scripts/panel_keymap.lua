@@ -20,6 +20,7 @@ A second non-modifier key is REFUSED rather than replacing the first. Also ruled
 
 Saving happens when the panel CLOSES, not per keystroke - see main.lua, which watches
 keymap.dirty(). A half-typed binding must never reach disk.
+@date 2026-09-08 08:45
 ]]
 
 local vc = require("virt_composer")
@@ -32,7 +33,8 @@ local panel_keymap = {}
 below are UNSCALED and multiplied on use, so the table grows with the text instead of the text
 outgrowing its columns. At this window width the three columns plus the key controls are a tight
 fit - the id and description columns are deliberately narrower than they would be at 1x, because
-the Keys column is the one that must not clip. ]]
+the Keys column is the one that must not clip.
+@date 2026-09-08 08:45 ]]
 local FONT_SCALE  = 2
 -- Sized against the LONGEST entry each column actually holds, at the doubled size:
 -- "app.profiler_record" (19 chars) and "Record slow frames to perf_spikes.log" (37).
@@ -46,7 +48,8 @@ local REC_COLOR   = 0xff4040ff
 
 --[[ Per-frame recording state. Deliberately NOT per binding: only one box can be recording at a
 time, and making that structural means there is no way to leave a second box quietly capturing in
-the background. `accum` is the set of modifiers plus the single non-modifier key gathered so far. ]]
+the background. `accum` is the set of modifiers plus the single non-modifier key gathered so far.
+@date 2026-09-08 08:45 ]]
 local rec = nil      -- {id=, index=, ctrl=, shift=, alt=, key=, note=}
 
 --[[ Which keys count as MODIFIERS rather than as the binding's main key.
@@ -56,7 +59,8 @@ time the recorder was actually driven (2026-09-07): ImGui reports a modifier pre
 physical key (ImGuiKey_LeftCtrl) and an internal synthetic one (ImGuiKey_ReservedForModCtrl), and
 both sit inside the NamedKey range that keys_pressed() scans. Without them here the synthetic key
 was taken for the main key and Ctrl+Shift+K recorded as "Ctrl+Shift+ReservedForModCtrl" - after
-which the real K was refused as a second key. ]]
+which the real K was refused as a second key.
+@date 2026-09-08 08:45 ]]
 local MODIFIER_KEYS = {
     ImGuiKey_LeftCtrl = "ctrl",   ImGuiKey_RightCtrl = "ctrl",
     ImGuiKey_LeftShift = "shift", ImGuiKey_RightShift = "shift",
@@ -68,6 +72,15 @@ local MODIFIER_KEYS = {
     ImGuiKey_ReservedForModSuper = "super",
 }
 
+--[[ The panel's own state, created with the content state and living there.
+
+  section     which half is on screen: "keys" or "letters"
+  editing     which cell is being typed into, as an id-and-index key, or nil
+  buffer      what has been typed into it so far - always a string, see buffer_of()
+  error       why the current cell will not commit; panel_error the same for the panel
+  focus_next  ask ImGui for keyboard focus on the next frame, after a cell has just been opened
+  confirm_all the two-click arm on "default all", see draw_letters()
+@date 2026-09-08 08:45 ]]
 function panel_keymap.new_state()
     -- `section` is which category is on screen: "keys" or "letters".
     return {section = "keys", editing = nil, buffer = "", error = nil, panel_error = nil,
@@ -98,7 +111,8 @@ local function rec_text()
 end
 
 --[[ One frame of recording. Every key that went DOWN this frame is folded in - a press, not a held
-state, which is what lets you press and release Ctrl and then press E and still get Ctrl+E. ]]
+state, which is what lets you press and release Ctrl and then press E and still get Ctrl+E.
+@date 2026-09-08 08:45 ]]
 local function poll_recording()
     if not rec then
         return
@@ -146,6 +160,12 @@ local function poll_recording()
     end
 end
 
+--[[ Accepts whatever is in the buffer into the cell being edited, and closes it on success.
+
+The one place a typed binding or a typed glyph name becomes real, so both routes - typing and
+recording - end here and there is one definition of what is acceptable. A refusal leaves the cell
+open with the reason in it rather than discarding what was typed.
+@date 2026-09-08 08:45 ]]
 local function commit(kstate)
     if not rec or not rec.key then
         return
@@ -167,7 +187,8 @@ looking for when scanning the column, so it comes first and the control follows 
 
 Returns true when the button was pressed this frame. The circle is drawn on the window draw list in
 absolute coordinates, which is why it needs GetCursorScreenPos - the layout cursor is
-window-relative and would put the dot in the wrong place inside a scrolled table. ]]
+window-relative and would put the dot in the wrong place inside a scrolled table.
+@date 2026-09-08 08:45 ]]
 local function rec_button(active, line_h)
     local pressed = vc.ImGui_SmallButton("Rec##rec")
     vc.ImGui_SameLine(0, 6)
@@ -191,7 +212,7 @@ rather than one with a flag so each column's pass reads as one thing, and so the
 disagree about how many lines they draw (which is what keeps the columns aligned).
 
 edit_box() below still draws both together, for the letters table, whose cells are self-contained.
-]]
+@date 2026-09-08 08:45 ]]
 local function edit_box_field(kstate)
     --[[ Focus the field on the frame it appears, and only that frame - see edit_box()'s own note:
     the click that opened this focused the BUTTON, not the field that replaced it, and re-focusing
@@ -206,6 +227,8 @@ local function edit_box_field(kstate)
     end
 end
 
+--[[ The tick and cross beside a cell being edited: commit, or abandon and leave the binding as it
+was. Split out of the field itself because the two now sit in different COLUMNS. @date 2026-09-08 08:45 ]]
 local function edit_box_buttons(kstate, id, index)
     if vc.ImGui_SmallButton("v##save") then
         local ok, why = keymap.set_bind(id, index, kstate.buffer)
@@ -229,7 +252,7 @@ that loop never reaches - so "+" set a state nothing rendered, and the button lo
 called below both for an existing slot and for the pending new one.
 
 `index` beyond the end appends: keymap.set_bind() clamps to #binds+1, so the same call serves both.
-]]
+@date 2026-09-08 08:45 ]]
 local function edit_box(kstate, id, index)
     --[[ ImGui_InputText returns a std::pair, and virt_composer pushes a pair as ONE Lua table
     {changed, text} - not as two values. Written as `local changed, text = ...` it binds the TABLE
@@ -275,7 +298,8 @@ letter itself", which is why it reads as blank rather than as an error.
 
 Reuses edit_box() and the same kstate.editing convention as the keys table, so the two sections
 behave identically: click a cell, type, tick to save, cross to abandon. The edit key is prefixed so
-a letter cell and an action row can never collide on it. ]]
+a letter cell and an action row can never collide on it.
+@date 2026-09-08 08:45 ]]
 local LETTER_COLUMNS = {
     {which = "plain",     title = "Types"},
     {which = "alt",       title = "With Alt"},
@@ -449,7 +473,8 @@ end
 handle_input has already returned early, so this owns the frame.
 
 Returns nothing - every effect goes through keymap, which is also what makes this panel testable
-without a display: the registry can be driven directly and asked what it now holds. ]]
+without a display: the registry can be driven directly and asked what it now holds.
+@date 2026-09-08 08:45 ]]
 function panel_keymap.draw(kstate)
     local size = vc.ImGui_GetDisplaySize()
     vc.ImGui_AddRectFilled({x = 0, y = 0}, {x = size.x, y = size.y}, BG_COLOR, 0)
@@ -702,7 +727,8 @@ one field would lose every other edit they had not committed yet. Only when ther
 back out of does Escape mean "close".
 
 Recording is checked first: it is the more modal of the two, and the recorder can be armed while a
-different row still holds a stale edit target. ]]
+different row still holds a stale edit target.
+@date 2026-09-08 08:45 ]]
 function panel_keymap.escape(kstate)
     if rec then
         rec = nil

@@ -10,14 +10,14 @@ since mformula_new.lua requires THIS file to re-export to_latex/from_latex - see
 file). A couple of small things (SUB_SIZE_DELTA/MAX_SIZE_INDEX, is_horiz()/is_supsub(),
 build_empty_atom() and its own min_extent()/baseline_correction() dependencies) are therefore
 duplicated here rather than imported - the same small-duplication-over-cross-module-coupling
-tradeoff mformula.lua (the OLD editor) and mformula_new.lua already independently make for their
-own copies of SUB_SIZE_DELTA/MAX_SIZE_INDEX.
+tradeoff mformula_new.lua already makes for its own copies of SUB_SIZE_DELTA/MAX_SIZE_INDEX.
 
-Mirrors mformula.lua's own row_to_latex()/parse_latex_row(), adapted to walk mexpr_t/mexpru "kind"
+Carried over from the old row-based editor's row_to_latex()/parse_latex_row(), adapted to walk mexpr_t/mexpru "kind"
 tags directly (horiz/supsub/frac/atom - see mformula_new.lua's own top comment) instead of an items
 table. \frac{num}{den} is a real, round-tripping node kind here - see mexpru.frac()'s
 own comment for the model (num/den always both present, rendered at the surrounding text's own
 size, no shrinking the way sup/sub's do).
+@date 2026-09-08 09:00
 ]]
 
 local vc = require("virt_composer")
@@ -44,7 +44,8 @@ always emits "\{" / "\}" for a curly bracket atom - which means the escape branc
 path a curly pair can arrive by, and until 2026-09-06 that branch tagged nothing at all. A curly
 pair therefore came back from a save as two unrelated glyphs: no cascade delete, no synchronized
 resize, no pairing. Reported as "the paranthesys {} loose their linked pair after a restart"; round
-and square pairs were unaffected because they arrive bare. ]]
+and square pairs were unaffected because they arrive bare.
+@date 2026-09-08 09:00 ]]
 local ESCAPED_OPEN_BRACKETS = { ["{"] = vc.MEXPR_BRACKET_CURLY }
 local ESCAPED_CLOSE_BRACKETS = { ["}"] = vc.MEXPR_BRACKET_CURLY }
 --[[ Delimiters with no unambiguous CHARACTER of their own, written as commands instead.
@@ -56,7 +57,8 @@ what LaTeX itself uses for exactly this, and being commands they can never colli
 
 Both halves are emitted with a trailing space, the separator this parser already relies on after a
 command name (a bare space is skipped, a literal one is written "\ " - see latex_escape_char) -
-without it "\lverta" would read back as a command named "lverta". ]]
+without it "\lverta" would read back as a command named "lverta".
+@date 2026-09-08 09:00 ]]
 local BRACKET_COMMAND = {}
 local BRACKET_BY_COMMAND = {}
 if vc.MEXPR_BRACKET_BAR then
@@ -84,7 +86,8 @@ character. That confusion is what turned "\\,"  (a thin space) into a comma: the
 branch asked only "is the next character a letter?" and took everything else at face value, so
 "\\int f(x)\\,dx" loaded with a comma in it and nothing said so.
 
-" " is here too: "\\ " is LaTeX's control space, and what to_latex writes for a space glyph. ]]
+" " is here too: "\\ " is LaTeX's control space, and what to_latex writes for a space glyph.
+@date 2026-09-08 09:00 ]]
 local TEX_ESCAPABLE = {
     ["$"] = true, ["%"] = true, ["#"] = true, ["&"] = true, ["_"] = true,
     ["{"] = true, ["}"] = true, ["\\"] = true, ["^"] = true, [" "] = true,
@@ -99,7 +102,8 @@ end
 This is a fact about LaTeX, not about our fonts, which is why it is spelled out here rather than
 read from char.size_delta_by_desc - that table happens to hold the same six today because they are
 the cmex display glyphs, but it exists to fix their SIZE and would be the wrong thing to consult if
-either list ever moved. ]]
+either list ever moved.
+@date 2026-09-08 09:00 ]]
 local TEX_BIG_OPERATORS = {
     ["\\sum"]    = true, ["\\prod"]   = true,
     ["\\int"]    = true, ["\\oint"]   = true,
@@ -117,7 +121,8 @@ end
 --[[ A bigop counts: it carries the same base/sup/sub and serializes the same way, differing only
 by the \\limits that says its limits sit over and under rather than beside. Without this it matched
 no branch at all and fell through to the SYMBOL one, which read symb.code off an internal node and
-wrote char.lua's first entry - every big operator saved as "!", the same failure tall brackets had. ]]
+wrote char.lua's first entry - every big operator saved as "!", the same failure tall brackets had.
+@date 2026-09-08 09:00 ]]
 local function is_supsub(node)
     local kind = mexpru.u(node).kind
     return kind == "supsub" or kind == "bigop"
@@ -156,7 +161,8 @@ end
 
 --[[ Builds one fresh empty atom (mexpr_empty) at font size sz - see mformula_new.lua's own
 build_empty_atom() comment for what the three mexpr_empty() args mean; identical here, LOGICAL vs.
-PHYSICAL split (mexpru.physical_sz()'s own comment) included. ]]
+PHYSICAL split (mexpru.physical_sz()'s own comment) included.
+@date 2026-09-08 09:00 ]]
 local function build_empty_atom(fontset, sz)
     local phys = mexpru.physical_sz(sz)
     local ext = min_extent(fontset, phys)
@@ -174,7 +180,8 @@ end
 breaks the document rather than printing: "%" starts a COMMENT, so it swallows the rest of the
 line including the closing "$" (pdfTeX answers "! Missing $ inserted"); "#" is a parameter
 character and "&" an alignment tab. "$" was already escaped here - these three were simply
-missed. ]]
+missed.
+@date 2026-09-08 09:00 ]]
 local LATEX_ESCAPE_CHARS = {["$"] = true, ["\\"] = true, ["{"] = true, ["}"] = true, ["^"] = true, ["_"] = true,
         ["%"] = true, ["#"] = true, ["&"] = true}
 
@@ -188,7 +195,8 @@ end
 --[[ True when `horiz`'s only content is the lazy "nothing typed yet" placeholder (a single empty
 atom) - see mformula_new.lua's own build_side() comment. Such a slot carries nothing worth
 round-tripping, same as a sup/sub that was never built at all (see node_to_latex()'s own use of
-this). ]]
+this).
+@date 2026-09-08 09:00 ]]
 local function horiz_is_untyped(horiz)
     local children = mexpru.u(horiz).children
     return #children == 1 and children[1].type == vc.MEXPR_TYPE_EMPTY_BOX
@@ -200,7 +208,8 @@ writer above so the two cannot drift: every `cmd` node_to_latex can emit appears
 \\underbar exists but means an underline, and there is nothing at all for a hat or a tilde beneath -
 so they are this app's own \\under-prefixed names. The above-accents deliberately stay the real
 commands (\\hat, \\tilde, \\bar, \\dot, \\ddot), so a copied formula still pastes into a document and
-renders; only the half TeX cannot express leaves the standard. ]]
+renders; only the half TeX cannot express leaves the standard.
+@date 2026-09-08 09:00 ]]
 local ACCENT_COMMANDS = {
     hat   = {kind = "hat",   recipe = char.hat_accent},
     tilde = {kind = "tilde", recipe = char.tilde_accent},
@@ -232,7 +241,8 @@ those are the names LaTeX actually has. The left arrow has no narrow form at all
 \\overleftarrow either way.
 
 Dots are absent on purpose - \\dot/\\ddot/\\dddot have no stretchy counterpart, and a dot does not
-want one. ]]
+want one.
+@date 2026-09-08 09:00 ]]
 local WIDE_ACCENT_COMMAND = {
     hat = "widehat", tilde = "widetilde", bar = "overline",
     vec = "overrightarrow", vecleft = "overleftarrow",
@@ -241,7 +251,8 @@ local WIDE_ACCENT_COMMAND = {
 --[[ Is this the kind of target LaTeX's single-character accents are for? A lone glyph (or the empty
 placeholder) takes \\hat; anything with structure - a row of atoms, a stack, a fraction - takes the
 stretchy form, which is the same split the renderer makes when it picks a wider accent glyph by
-measuring the target. ]]
+measuring the target.
+@date 2026-09-08 09:00 ]]
 local function target_is_one_glyph(target)
     return target.type == vc.MEXPR_TYPE_SYMBOL or target.type == vc.MEXPR_TYPE_EMPTY_BOX
 end
@@ -295,7 +306,7 @@ local function node_to_latex(node)
         end
         -- An absent (nil - lazy, never requested) OR present-but-never-typed-into slot carries
         -- nothing worth round-tripping - omitted entirely (not even as "^{}"), same as
-        -- mformula.lua's own row_to_latex() did for its own eager-but-still-empty slots.
+        -- the old row-based editor's row_to_latex() did for its own eager-but-still-empty slots.
         if u.sup and not horiz_is_untyped(u.sup) then
             parts[#parts + 1] = "^{" .. node_to_latex(u.sup) .. "}"
         end
@@ -484,7 +495,8 @@ LaTeX-subset string - NOT wrapped in $$ (editor.lua's own selection_to_text() do
 place it decides a formula embed needs $$ at all). Only covers what mformula_new itself can
 produce: plain glyphs, the greek/symbol shortcuts in char.lua (by their own `desc`), ^{...}/_{...}
 for sup/sub, \frac{...}{...} - nothing fancier (big-op layout tweaks) since nothing in that editor
-builds those yet either. ]]
+builds those yet either.
+@date 2026-09-08 09:00 ]]
 function mformula_latex.to_latex(container)
     return node_to_latex(container.root)
 end
@@ -492,7 +504,8 @@ end
 --[[ The same rendering for a RUN of sibling nodes rather than a whole tree - what copying a
 selection inside a formula needs (mformula_new's own selection is always a contiguous slice of one
 horiz's children, so this is exactly the shape it has to serialise). Concatenated with no separator,
-identically to how node_to_latex() already walks a horiz's own children. ]]
+identically to how node_to_latex() already walks a horiz's own children.
+@date 2026-09-08 09:00 ]]
 function mformula_latex.nodes_to_latex(nodes)
     local parts = {}
     for _, node in ipairs(nodes) do
@@ -503,21 +516,22 @@ end
 
 --[[ Parses LaTeX-subset content starting at 1-based `pos` into a flat array of sibling mexpr_t
 nodes (leaves or supsub nodes - never a horiz itself, the caller wraps that) - mirrors
-mformula.lua's own parse_latex_row(), building real mexpr_t via mexpru's own constructors instead
+the old row-based editor's parse_latex_row(), building real mexpr_t via mexpru's own constructors instead
 of an intermediate {items=...} row. `sz` is the level to build plain content at; sup/sub content
 recurses at SUB_SIZE_DELTA smaller (capped at MAX_SIZE_INDEX), same convention as mformula_new.lua's
 own make_supsub(). Stops at a matching "}" (left for the caller to consume) or end of string.
 Returns children, next_pos.
 
-Deliberately lenient, not a general LaTeX parser (same spirit as mformula.lua's own parser, and
-editor.lua's insert_text() for plain-text paste): an unrecognized "\\foo" macro is silently
+Deliberately lenient, not a general LaTeX parser (same spirit as the old parser, and
+editor_text.lua's insert_text() for plain-text paste): an unrecognized "\\foo" macro is silently
 dropped. "\\frac{...}{...}" builds a real mexpru.frac() node (both brace groups fully parsed via
 this same function, recursively, so braces/sup/sub *inside* them are handled exactly like anywhere
 else - an empty group, same as "^{}", still gets a fresh empty atom rather than an empty horiz with
 nothing in it). ]]
 --[[ `row_mode` is set while parsing one row of a matrix environment: the loop then also stops at
 the row separator "\\\\" and at "\\end", WITHOUT consuming either, leaving the caller to decide
-whether another row follows. Outside a matrix both are ordinary content and nothing changes. ]]
+whether another row follows. Outside a matrix both are ordinary content and nothing changes.
+@date 2026-09-08 09:00 ]]
 local function parse_latex_children(fontset, s, pos, sz, row_mode)
     local children = {}
     -- Bracket re-pairing (reported live: "loading and saving the brackets is simply
@@ -627,10 +641,10 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
             pos = pos + 1
 
             -- What this slot attaches to: reuse the last child if it's ALREADY a supsub (x^{2}_{3}
-            -- - both markers apply to the SAME node, see mformula.lua's own parse_latex_row()
+            -- - both markers apply to the SAME node, the old parse_latex_row() had this case too
             -- comment on this exact case); otherwise pop the last plain atom as the new base (or
-            -- build a fresh empty one if there's nothing preceding - matches editor.lua's own
-            -- Ctrl+Shift+=/- "no preceding character... base is just left empty"). Bases are never
+            -- build a fresh empty one if there's nothing preceding - matches editor_text.lua's
+            -- own wrap_sup/wrap_sub: "no preceding character... base is just left empty"). Bases are never
             -- pulled from an EARLIER supsub (mformula_new's own base-must-be-atomic invariant),
             -- only is_supsub() ever reuses instead of popping.
             local reuse = children[#children]
@@ -1036,7 +1050,8 @@ unparseable string - same shape mformula_new.new() itself would produce. ]]
 --[[ Finds the "}" that closes the "{" at open_pos, counting nesting, so an argument containing
 groups of its own is taken whole. A backslash escapes whatever follows it, which is what stops a
 literal "\\\\{" inside the argument from being mistaken for a delimiter. Returns nil if nothing
-closes it - a malformed source is left for the ordinary parse path to deal with, not repaired. ]]
+closes it - a malformed source is left for the ordinary parse path to deal with, not repaired.
+@date 2026-09-08 09:00 ]]
 local function match_brace(s, open_pos)
     local depth, i = 0, open_pos
     while i <= #s do
@@ -1097,7 +1112,8 @@ the cursor can walk through and delete on its own, built by the ordinary path. S
 
 ONE-WAY, like \sqrt: what comes back out is the expansion. That is still correct LaTeX - "\not ="
 and "\cdot \cdot \cdot" both typeset exactly as the macro would - so a document round-trips to
-one spelling rather than flipping between two. ]]
+one spelling rather than flipping between two.
+@date 2026-09-08 09:00 ]]
 local MACRO_EXPANSIONS = {
     ["\\ldots"] = "...",
     ["\\dots"]  = "...",

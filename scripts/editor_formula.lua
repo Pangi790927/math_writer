@@ -35,6 +35,8 @@ The immutability is enforced the same way the definition box's derived rows enfo
 goes to the formula so that selection, navigation and copy work, and an EDIT is discarded by
 rebuilding from the text that was last committed. Enumerating "which keys are edits" would be a
 list to forget an entry from; asking "did the tree change" cannot be.
+
+@date 2026-09-08 08:06
 ]]
 
 local vc = require("virt_composer")
@@ -60,13 +62,15 @@ docs/phase2_design.md section 1 written down: a root has no parent, everything e
 The ids live inside the box's own saved body rather than in the box header, so the document format
 above this file does not have to learn about them. Nothing creates a parent yet: that happens when a
 transformation emits a box, and transformations wait on the expression parser. The link is built now
-so it is not retrofitted through the drawing, the format and the loader later. ]]
+so it is not retrofitted through the drawing, the format and the loader later.
+@date 2026-09-08 08:06 ]]
 function editor_formula.new(id)
     return {latex = nil, formula = nil, id = id, parent = nil}
 end
 
 --[[ Builds the live formula from the committed text, if it is missing. Needs a fontset, which
-new() does not have - same lazy arrangement editor_definition.lua uses and for the same reason. ]]
+new() does not have - same lazy arrangement editor_definition.lua uses and for the same reason.
+@date 2026-09-08 08:06 ]]
 local function ensure(state, fontset)
     if state.latex and not state.formula then
         state.formula = mformula.from_latex(fontset, mexpru.DEFAULT_SIZE, state.latex)
@@ -79,7 +83,8 @@ end
 The app's own interchange format is "$$...$$" - what mformula's own copy produces and what a text
 box writes for an embedded formula - so that wrapper is stripped when present. Bare LaTeX is
 accepted too: pasting from somewhere else should work, and the worst case is that from_latex()
-makes little of it, which is visible immediately rather than silent. ]]
+makes little of it, which is visible immediately rather than silent.
+@date 2026-09-08 08:06 ]]
 local function clipboard_latex()
     local text = vc.ImGui_GetClipboardText()
     if not text or text == "" then
@@ -89,10 +94,20 @@ local function clipboard_latex()
     return inner or text
 end
 
---[[ Draws the box and returns its content height.
+--[[ Draws the box, and returns the height it filled so the caller can lay out what follows.
 
 An EMPTY box still draws a field, so it reads as somewhere a formula can go rather than as blank
-space in a coloured rectangle. ]]
+space in a coloured rectangle. Either way this records `state.hit` - the rect a click must land in,
+plus the origin and wrap edge it was drawn at - because handle_input() runs in a different call and
+cannot re-derive any of them.
+
+  pos             top-left of the content; the BASELINE is worked out from measure()'s own `top`
+  sz              the logical size to draw at
+  width_limit     how far right content may reach, as a width from pos.x
+  show_cursor     this is the active box: draws the field's edge and the caret
+  show_wireframe  passed through to the shared host (mexpr's debug boxes)
+  show_graph      passed through: the reachable-position graph
+@date 2026-09-08 08:06 ]]
 function editor_formula.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wireframe,
         show_graph)
     ensure(state, fontset)
@@ -136,8 +151,9 @@ function editor_formula.draw(state, fontset, pos, sz, width_limit, show_cursor, 
     return (m.bottom - m.top) + 2 * pad
 end
 
---[[ One frame of input. Returns true when the box's CONTENT changed - which happens only on a
-paste into an empty box, since nothing else may change it. ]]
+--[[ One frame of input. Returns true when the box's CONTENT changed, which only a paste can do -
+in either state, and nothing else may change it at all.
+@date 2026-09-08 08:06 ]]
 function editor_formula.handle_input(state, fontset, sz)
     local ctrl = keymap.mods()
 
@@ -192,6 +208,10 @@ function editor_formula.handle_input(state, fontset, sz)
     return false
 end
 
+--[[ Re-lays-out the formula after a zoom. `state.hit` is dropped rather than adjusted: it holds
+positions measured at the OLD size, and a click tested against them would land somewhere else than
+where the glyph now is - draw() rebuilds it on the next frame anyway.
+@date 2026-09-08 08:06 ]]
 function editor_formula.rescale(state, fontset)
     if state.formula then
         mformula.rescale(state.formula, fontset)
@@ -201,7 +221,8 @@ end
 
 --[[ Saved as a length-prefixed list, the same shape editor_definition.lua uses - one entry today
 (the formula), so that the justification a transformed box will carry (which transform, from which
-source ids, under which rules - section 12) joins it without a second migration of the format. ]]
+source ids, under which rules - section 12) joins it without a second migration of the format.
+@date 2026-09-08 08:06 ]]
 function editor_formula.to_text(state)
     local parts = {}
     local function put(v)
@@ -216,7 +237,8 @@ end
 
 --[[ Reads back what to_text() wrote. The COUNT is honoured rather than assumed, so a file written
 before the derivation link existed (one entry: just the formula) still loads - it simply has no id
-and no parent, which is what a box with no recorded lineage should be. ]]
+and no parent, which is what a box with no recorded lineage should be.
+@date 2026-09-08 08:06 ]]
 function editor_formula.from_text(state, text, fontset)
     local at = text:find("\n", 1, true)
     local count = at and tonumber(text:sub(1, at - 1))

@@ -24,6 +24,7 @@ wrap() forwards through select('#', ...) rather than a plain `return fn(...)` be
 prof_stop AFTER the call and still return every value the wrapped function returned - and several of
 these are multi-return (peer_slot returns two, propagate_rebuild's callers rely on exact arity).
 table.pack/unpack is the only spelling that preserves both arity and embedded nils.
+@date 2026-09-08 08:45
 ]]
 
 local vc = require("virt_composer")
@@ -35,7 +36,8 @@ only registers charc/mexpr - so under the harness every vc.prof_* is nil. The in
 mexpru/mformula_new/editor is loaded there regardless, and while it is all gated behind `enabled`
 (false by default) that gate is the only thing standing between a test and a nil call. Stubbing the
 missing half here makes the whole module a no-op instead, so a test that turns profiling on gets
-nothing rather than a crash. ]]
+nothing rather than a crash.
+@date 2026-09-08 08:45 ]]
 local HAVE_PROF = (vc.prof_enable ~= nil)
 if not HAVE_PROF then
     local noop = function() end
@@ -56,7 +58,8 @@ end
 panel is drawn. Collapsing them (which this did at first) means switching recording on also draws
 the panel, and the panel then shows up inside the very spike reports it was supposed to stay out of
 - caught 2026-09-05 by finding lua.prof_overlay in a log recorded without ever pressing F3. Timing
-is on whenever EITHER the panel or a recording wants it. ]]
+is on whenever EITHER the panel or a recording wants it.
+@date 2026-09-08 08:45 ]]
 local enabled = false
 local overlay = false
 
@@ -70,7 +73,8 @@ extra table is several times the work of the callee.
 table.pack/unpack, though, is not optional: prof_end has to run AFTER the call and the result still
 has to come back intact, and several of these are multi-return (peer_slot returns two; a caller
 relying on exact arity would break under `return (fn(...))`). It preserves both arity and embedded
-nils, which is the only spelling that does. ]]
+nils, which is the only spelling that does.
+@date 2026-09-08 08:45 ]]
 local function call_traced(name, fn, ...)
     vc.prof_begin(name)
     local r = table.pack(fn(...))
@@ -78,6 +82,10 @@ local function call_traced(name, fn, ...)
     return table.unpack(r, 1, r.n)
 end
 
+--[[ An instrumented copy of `fn`, reporting its own inclusive time under `name`. The wrapper is
+the whole edit - no call site changes, and deleting the wrap line removes the instrumentation.
+Costs one local read while profiling is off, which is why it can sit on the hottest functions.
+@date 2026-09-08 08:45 ]]
 function prof.wrap(name, fn)
     return function(...)
         if not enabled then
@@ -87,12 +95,15 @@ function prof.wrap(name, fn)
     end
 end
 
+--[[ Opens a named scope for a PHASE that is not a single function; every begin needs its stop on
+every path out, which is why wrap() is preferred wherever a function boundary exists. @date 2026-09-08 08:45 ]]
 function prof.begin(name)
     if enabled then
         vc.prof_begin(name)
     end
 end
 
+--[[ Closes the scope prof.begin(name) opened. @date 2026-09-08 08:45 ]]
 function prof.stop(name)
     if enabled then
         vc.prof_end(name)
@@ -101,7 +112,8 @@ end
 
 --[[ Tags the current frame with something that happened in it. This is the half that turns a timing
 report into a diagnosis: "frame took 38ms" plus "events: key:Backspace undo" says what to go and
-look at, where the timings alone only say where the time went. ]]
+look at, where the timings alone only say where the time went.
+@date 2026-09-08 08:45 ]]
 function prof.event(name)
     if enabled then
         vc.prof_event(name)
@@ -115,12 +127,14 @@ local function refresh()
 end
 
 --[[ Shows/hides the PANEL. Turning it off must not stop a recording that is running - the whole
-point of the recording mode is to leave it on with the panel hidden. ]]
+point of the recording mode is to leave it on with the panel hidden.
+@date 2026-09-08 08:45 ]]
 function prof.set_enabled(on)
     overlay = on and true or false
     refresh()
 end
 
+--[[ Whether timing is actually being collected right now - the panel OR a recording. @date 2026-09-08 08:45 ]]
 function prof.enabled()
     return enabled
 end
@@ -131,10 +145,14 @@ function prof.overlay_visible()
     return overlay
 end
 
+--[[ Clears the worst-frame record, so the next spike is measured against a fresh high-water mark
+rather than against something that already happened. @date 2026-09-08 08:45 ]]
 function prof.reset()
     vc.prof_reset()
 end
 
+--[[ The formatted report, already sorted and laid out in C++. The overlay only splits it on
+newlines, so "what a millisecond means" is decided in exactly one place. @date 2026-09-08 08:45 ]]
 function prof.report()
     return vc.prof_report()
 end
@@ -151,17 +169,21 @@ Independent of the overlay ON PURPOSE. The overlay costs real milliseconds and h
 biggest single item in a spike frame, so watching for spikes with it on measures the watching. This
 is the mode to actually hunt a lag in: recording on, overlay off, use the app normally, read the
 file afterwards. prof_record_start() turns profiling on by itself, since recording with it off would
-silently write nothing. ]]
+silently write nothing.
+@date 2026-09-08 08:45 ]]
 function prof.record_start(path, threshold_ms)
     vc.prof_record_start(path or "perf_spikes.log", threshold_ms or 25.0)
     refresh()
 end
 
+--[[ Ends a spike recording and closes its file. Timing goes back to following the panel alone. @date 2026-09-08 08:45 ]]
 function prof.record_stop()
     vc.prof_record_stop()
     refresh()
 end
 
+--[[ Whether a spike recording is running - the overlay says so, since the mode is deliberately
+invisible otherwise. @date 2026-09-08 08:45 ]]
 function prof.recording()
     return vc.prof_recording()
 end

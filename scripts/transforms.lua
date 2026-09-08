@@ -5,6 +5,18 @@ local transforms = {
     MODE_MUL,
 }
 
+--[[
+transforms.lua - TERM DRAGGING: moving a term from where it sits to where you want it, with the
+algebra that keeps the expression equal done as part of the move.
+
+DELIBERATELY UNFINISHED, and not a bug to fix. This is exploratory design work still being thought
+through - the notes below are that thinking, kept in the order it happened, and they disagree with
+each other in places on purpose. Do not fill in the remaining cases without asking first.
+
+Read everything under here as a record of intent rather than as a description of what the code
+does.
+@date 2026-09-08 08:55 ]]
+
 --[[ TODO: because this was work in progress, it ended up changing while I was writing it, so
 the description contains a lot of inacuracies ]]
 
@@ -173,7 +185,7 @@ to ancestor, but not what happens from ancestor to dst
 node - the node to traverse
 parent - the parent of the node that will be set in node.p
 ploc - the location of the node inside the parent node.p[node.ploc] == node
-]]
+@date 2026-09-08 08:55 ]]
 function transforms.initial_traverse(node, parent, ploc)
     parent = parent or nil
     ploc = ploc or 1
@@ -201,7 +213,7 @@ function transforms.find(node, id)
     return nil
 end
 
---[[ assumes intial_traverse was called on root]]
+--[[ assumes intial_traverse was called on root @date 2026-09-08 08:55 ]]
 function transforms.extract_term(ns, node, mode)
     if (not node.parent) then
         --[[ there is nowhere to extract the term to, it doesn't even have a parent  ]]

@@ -18,23 +18,27 @@ local content_state = nil
 must never touch the real document - before this existed, a headless run would overwrite
 math_writer.save with whatever the test had typed, and nearly every run had to be followed by a
 `git checkout --` to rescue it (2026-09-05). Falls back to no prefix if app_mode was not registered,
-so a harness that only loads part of the app still works. ]]
+so a harness that only loads part of the app still works.
+@date 2026-09-08 08:45 ]]
 local DATA_PREFIX = (vc.app_data_prefix and vc.app_data_prefix()) or ""
 local SAVE_PATH = DATA_PREFIX .. "math_writer.save"
 --[[ The keymap lives in its own file, NOT inside math_writer.save. It is configuration, not
 document: a .save copied to somebody else, or checked in, should not drag one person's keyboard
 habits along with it. Same DATA_PREFIX, so a --test instance writes test_run/keymap.save and cannot
-touch the real one. ]]
+touch the real one.
+@date 2026-09-08 08:45 ]]
 local KEYMAP_PATH = DATA_PREFIX .. "keymap.save"
 --[[ The letter map, in its own file beside the keymap for the same reason the keymap is beside the
 document: it is configuration, and a keymap and a glyph map are separately useful - someone may
-want one and not the other, and merging them would mean a change to either rewriting both. ]]
+want one and not the other, and merging them would mean a change to either rewriting both.
+@date 2026-09-08 08:45 ]]
 local GLYPHMAP_PATH = DATA_PREFIX .. "glyphmap.save"
 
 --[[ Whole-file read via Lua's own io library (enabled per-project in the makefiles -
 VIRT_COMPOSER_ENABLE_LUA_IO - rather than a custom C++ binding, since io.* already does exactly
 this). Returns nil, not an error, when the file doesn't exist yet - the very first run, or one
-after the save was deleted. ]]
+after the save was deleted.
+@date 2026-09-08 08:45 ]]
 local function read_file(path)
     local f = io.open(path, "rb")
     if not f then
@@ -45,6 +49,9 @@ local function read_file(path)
     return text
 end
 
+--[[ Whole-file write, and silently a no-op if the path cannot be opened: a save that fails must
+not take the app down with it, and the flight recorder next to every call site is what makes the
+failure visible afterwards. @date 2026-09-08 08:45 ]]
 local function write_file(path, text)
     local f = io.open(path, "wb")
     if not f then
@@ -86,6 +93,14 @@ if mformula_new_warn_sink == nil then
     mformula_new_warn_sink = true
 end
 
+--[[ Called ONCE by main.cpp before the first frame: builds the fonts, loads the document, and
+loads the two configuration files beside it.
+
+Every load is optional. A missing or unreadable file is a normal first run - the document falls
+back to content.new()'s single empty box, and the keymap and glyph map to their factory tables -
+so nothing here is a special case that has to be spelled out at each site. Both configurations are
+marked clean afterwards, because loading is not an edit and must not make the app write them back.
+@date 2026-09-08 08:45 ]]
 function test_init()
     fontset = char.load_font_set()
     local saved = read_file(SAVE_PATH)
@@ -109,18 +124,10 @@ function test_init()
     input_recorder.init()
 end
 
---[[ input_recorder.poll() runs UNCONDITIONALLY, first, before the real per-frame logic - so
-whatever the user just did is already flushed to disk even if it goes on to error out below in this
-SAME frame (input_recorder.lua's own top comment). The real logic is wrapped in its own pcall so a
-Lua exception here gets logged (frame number + every recent action already on disk, plus the error
-message itself) instead of just vanishing into virt_composer's own C++-side DBG log - see that
-file's own comment on why this doesn't (and can't) prevent whatever the process does about the error
-itself, only makes it inspectable afterward. ]]
-
-
 --[[ Writes the whole document to SAVE_PATH. The ONE place that does - Ctrl+S below and
 test_shutdown() both come through here, so an explicit save and an exit-save can never write
-different things or drift apart as the format changes. ]]
+different things or drift apart as the format changes.
+@date 2026-09-08 08:45 ]]
 local function save_document()
     write_file(SAVE_PATH, content.serialize(content_state))
     -- Goes in the flight recorder too: a save is a real user action, and when reading a session
@@ -128,6 +135,14 @@ local function save_document()
     input_recorder.log_event("saved " .. SAVE_PATH)
 end
 
+--[[ ONE FRAME, called by main.cpp: poll the recorder, then run the app inside a pcall.
+
+input_recorder.poll() runs UNCONDITIONALLY and FIRST, so whatever was just typed is already on disk
+even if this same frame goes on to throw. The rest is wrapped in its own pcall, so a Lua error is
+logged - frame number, the recent actions already written, and the message - instead of vanishing
+into virt_composer's C++-side log. That does not, and cannot, decide what the process does about
+the error; it only makes it inspectable afterwards.
+@date 2026-09-08 08:45 ]]
 function test_draw()
     prof.begin("lua.input_recorder.poll")
     input_recorder.poll()
@@ -192,7 +207,8 @@ end
 
 --[[ Called once, after the main loop exits but before the window actually closes (see main.cpp) -
 writes every box's content back out in the same $$LaTeX$$ format Ctrl+C already uses, so the file
-this produces is exactly what "select all, copy" across every box would have given you. ]]
+this produces is exactly what "select all, copy" across every box would have given you.
+@date 2026-09-08 08:45 ]]
 function test_shutdown()
     save_document()
     -- Flush and close the flight recorder explicitly rather than leaving it to the Lua state's own

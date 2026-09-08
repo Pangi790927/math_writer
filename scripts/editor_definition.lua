@@ -34,6 +34,8 @@ markers, click-to-place-cursor. The first version of this file did NOT use any o
 called mformula.draw() itself, which is why the definition box arrived with no selection, no graph
 view, no boxes view and no clicking into it. If something here starts looking like it belongs to
 "a formula in a box" rather than "a definition", it belongs in editor.lua.
+
+@date 2026-09-08 08:12
 ]]
 
 local vc = require("virt_composer")
@@ -66,7 +68,8 @@ variable and the set it comes from - while the result cell holds the set alone. 
 by commas; the cartesian product appears only in the shorthand.
 
 The `\in` form is the arity-0 case: `x \in R`, a plain named variable, with no parameters and no
-shorthand (there is nothing to shorten). ]]
+shorthand (there is nothing to shorten).
+@date 2026-09-08 08:12 ]]
 local SLOT_GAP = 8      -- horizontal gap between a slot and the separator next to it
 local LINE_GAP = 6      -- vertical gap between the signature row and the shorthand under it
 --[[ How far a slot's field is drawn OUTSIDE the formula it holds, on every side. It is part of the
@@ -82,7 +85,8 @@ local FIELD_PAD = 3
 `state.current` names whichever box has the caret. A real slot is a positive index into
 `state.slots`; a derived row is the NEGATIVE of its index in `state.derived`, so -1 is the
 shorthand and -2 the computed name. One number covers both, and every place that only cares about
-slots can keep testing `> 0`. ]]
+slots can keep testing `> 0`.
+@date 2026-09-08 08:12 ]]
 local DERIVED_SHORTHAND = 1
 local DERIVED_PATTERN   = 2
 --[[ The arity a definition starts at, before anything has been typed. An empty name slot does not
@@ -116,7 +120,8 @@ in red and the rest left alone".
   (none) the parser never got here; deliberately unpainted, so "how far did it get" is visible
 
 Low alpha: this sits under real glyphs and has to stay legible through them. Packing is 0xAABBGGRR
-- get it backwards and green becomes a muddy blue. ]]
+- get it backwards and green becomes a muddy blue.
+@date 2026-09-08 08:12 ]]
 local MARK_COLORS = {
     ok   = 0x5544cc44,   -- green (68,204,68)
     work = 0x66ff8844,   -- blue  (68,136,255)
@@ -134,16 +139,18 @@ local SLOT_EDGE_COLOR = 0x66ffffff
 --[[ A fresh, empty definition. The slots are NOT built here: constructing a formula needs a
 fontset, and content.lua's insert_box() has never taken one (content.new(), deserialize() and every
 test call it without). ensure() below fills them in on the first draw or keystroke, both of which
-have a fontset to hand. ]]
+have a fontset to hand.
+@date 2026-09-08 08:12 ]]
 function editor_definition.new()
     return {
         undo = {},        -- stack of snapshots, newest last
         redo = {},        -- what undo popped, so it can be put back
         baseline = nil,   -- the pre-edit snapshot, CACHED - see begin_edit()
         slots = nil,
-        current = 1,      -- which slot has the caret. One slot exists today, so this is always 1
-                          -- until the parameter/result slots arrive - but clicking already routes
-                          -- through it, so growing the list needs no new concept.
+        current = 1,      -- which box has the caret: a POSITIVE index into slots, or the negative
+                          -- of an index into `derived` (-1 the shorthand, -2 the computed name),
+                          -- so one number covers both and everything that only cares about slots
+                          -- tests `> 0`.
         hitboxes = nil,   -- per-slot click geometry, rebuilt by draw() and read by handle_input()
                           -- on the NEXT frame. Same one-frame-behind arrangement content.lua uses
                           -- for its own box layout; imperceptible, and it avoids measuring twice.
@@ -155,7 +162,8 @@ end
 --[[ Builds the slots if they are missing, and returns them. Idempotent, and safe to call every
 frame. Built at mexpru.DEFAULT_SIZE - the fixed LOGICAL size every new formula is created at, with
 zoom applied globally on top of it (see mexpru.DEFAULT_SIZE's own comment); NOT the caller's live
-font size, which already has zoom folded in and would double-count it. ]]
+font size, which already has zoom folded in and would double-count it.
+@date 2026-09-08 08:12 ]]
 local function ensure(state, fontset)
     state.slots = state.slots or {}
     --[[ 1 name + n parameters + 1 result. Grows the list rather than replacing it, so a document
@@ -180,22 +188,6 @@ end
 -- The shorthand
 -- ################################################################################################
 
---[[ The compact restatement of the signature, drawn after a ";" at the end of the row:
-
-    NAME : R , R , N -> R        ;        NAME : R^{2} \times N -> R
-
-Runs of the SAME domain collapse into a power, which is the whole point of it: a function of four
-reals reads as `R^4` rather than as four cells you have to count. Requested 2026-09-07, with the
-example `F : N^2 x R^2 -> R^3`.
-
-Generated, never stored, never editable - it says nothing the cells do not already say. So it is
-built as a throwaway formula FROM A LaTeX STRING rather than laid out by hand: that reuses all the
-existing layout (a real superscript, real spacing, the same fonts) instead of reimplementing it,
-and leaves the only new code being the string itself.
-
-Domains are compared BY THEIR LaTeX. That is a textual comparison, not the structural equality of
-docs/phase2_design.md section 9 - which does not exist yet and would be the right answer once it
-does. Until then two spellings of one set do not collapse together. ]]
 --[[ The SET a domain cell restricts to.
 
 A parameter cell is a domain restriction written the way it is read - `n \in \N`, naming the
@@ -214,6 +206,23 @@ local function domain_set(tex)
     return ((after or tex):gsub("%s+$", ""))
 end
 
+--[[ The compact restatement of the signature as LaTeX, or nil when there is no honest one to
+show - arity 0, an unparsed name, a domain still empty:
+
+    NAME : R , R , N -> R        becomes        NAME : R^{2} \times N -> R
+
+Runs of the SAME domain collapse into a power, which is the whole point of it: a function of four
+reals reads as `R^4` rather than as four cells you have to count. Requested 2026-09-07, with the
+example `F : N^2 x R^2 -> R^3`.
+
+Built as a STRING and handed to from_latex() rather than laid out by hand, and that is what keeps
+it a real formula: it goes through the same layout as everything else - a real superscript, real
+spacing, the same fonts - so the only new code here is the string.
+
+Domains are compared BY THEIR LaTeX, textually, rather than by the structural equality of
+docs/phase2_design.md section 9, which does not exist yet. Until it does, two spellings of one set
+do not collapse together.
+@date 2026-09-08 08:12 ]]
 local function shorthand_latex(state)
     local slots = state.slots
     local nparams = #slots - 2
@@ -266,7 +275,8 @@ positions numbered, which is what a definition IS (2026-09-07: "this is the name
 arguments possible, this is what a definition is, a pattern").
 
 Held from the last VALID parse, like the arity: while a name is being typed it does not parse, and
-blanking the row on every keystroke would make it useless exactly when you are watching it. ]]
+blanking the row on every keystroke would make it useless exactly when you are watching it.
+@date 2026-09-08 08:12 ]]
 local function pattern_latex(state)
     return state.pattern and state.pattern.text or nil
 end
@@ -276,7 +286,8 @@ this is a from_latex() per row per frame, and each is a full tree build.
 
 Every row is built the same way, from a LaTeX string, which is what keeps them real formulas: they
 render through the same layout as everything else and can be selected and copied like any other.
-They are not editable - see handle_input. ]]
+They are not editable - see handle_input.
+@date 2026-09-08 08:12 ]]
 local function sync_derived(state, fontset)
     state.derived = state.derived or {}
     local want = {
@@ -321,7 +332,8 @@ including its dresses, which clone rebuilds through mexpru.redress() rather than
 Kept SEPARATE from editor_text.lua's undo rather than shared, because the two are snapshots of
 different things: that one captures a character stream with formulas embedded in it, this one
 captures a fixed set of formula slots. What they share - "did this keystroke change the tree" - is
-already in editor.lua as edit_bracket(). ]]
+already in editor.lua as edit_bracket().
+@date 2026-09-08 08:12 ]]
 local MAX_UNDO = 200
 
 local function snapshot(state, fontset)
@@ -354,6 +366,8 @@ local function begin_edit(state, fontset)
     end
 end
 
+--[[ Files the cached baseline as one undo step. Called only where a keystroke really changed the
+tree, so moving the caret never costs a step. @date 2026-09-08 08:12 ]]
 local function commit_edit(state)
     if not state.baseline then
         return
@@ -366,6 +380,8 @@ local function commit_edit(state)
     state.redo = {}             -- a fresh edit forks history, the same as everywhere else
 end
 
+--[[ Moves one step between the two stacks, pushing the CURRENT state onto the other one first so
+the move is itself reversible. Returns whether there was anything to move. @date 2026-09-08 08:12 ]]
 local function undo_or_redo(state, fontset, want_redo)
     local from = want_redo and state.redo or state.undo
     local to = want_redo and state.undo or state.redo
@@ -379,15 +395,6 @@ local function undo_or_redo(state, fontset, want_redo)
     return true
 end
 
---[[ Re-derives the arity from the NAME slot, and reshapes the row to match.
-
-The rule, stated 2026-09-07: **hold the last valid arity until the name parses again.** A name is
-invalid for most of the time it is being typed (`f(` on the way to `f(x)`), and slots appearing and
-vanishing under the cursor on the way there would be unusable. So nothing about the row changes
-until the name is a name again; while it is not, the only feedback is a red line under it.
-
-Cheap enough to call every frame: it re-parses only when the name slot's own `version` has moved,
-which is bumped by every real tree edit and by nothing else. ]]
 --[[ Re-checks every PARAMETER cell. Each must be a membership and nothing else -
 `<name> \in <set>` - because a parameter cell is a domain restriction: it names the variable and
 the set it is drawn from. Requested 2026-09-07: "the param boxes should reject anything else than
@@ -398,7 +405,8 @@ when it actually changes, and the outcome is per-cell rather than one flag for t
 point is to point at WHICH cell is wrong.
 
 Unlike the name, an invalid parameter changes nothing structural. Arity comes from the name alone,
-so a half-typed domain never reshapes the row; it only marks itself. ]]
+so a half-typed domain never reshapes the row; it only marks itself.
+@date 2026-09-08 08:12 ]]
 local function sync_domains(state, fontset)
     state.slot_invalid = state.slot_invalid or {}
     state.slot_marks = state.slot_marks or {}
@@ -424,6 +432,16 @@ local function sync_domains(state, fontset)
     end
 end
 
+--[[ Re-derives the arity from the NAME slot, and reshapes the row to match.
+
+The rule, stated 2026-09-07: **hold the last valid arity until the name parses again.** A name is
+invalid for most of the time it is being typed (`f(` on the way to `f(x)`), and slots appearing and
+vanishing under the cursor on the way there would be unusable. So nothing about the row changes
+until the name is a name again; while it is not, the only feedback is a red line under it.
+
+Cheap enough to call every frame: it re-parses only when the name slot's own `version` has moved,
+which is bumped by every real tree edit and by nothing else.
+@date 2026-09-08 08:12 ]]
 local function sync_arity(state, fontset)
     local name = state.slots[1]
     local ver = name.version or 0
@@ -487,7 +505,8 @@ end
 
 --[[ The row to draw: slot, separator, slot, ... - derived from how many slots there are, never
 stored. `n == 0` is the plain-variable form (`x \in R`); otherwise the parameters are joined with
-`\times` and the result is introduced by `->`. ]]
+`\times` and the result is introduced by `->`.
+@date 2026-09-08 08:12 ]]
 local function signature_row(nslots)
     local nparams = nslots - 2
     local row = {{slot = 1}}
@@ -513,7 +532,18 @@ can size the box around it.
 mformula's measure()/draw() work in a BASELINE frame: `top` is NEGATIVE (how far the content
 reaches above the baseline) and `bottom` positive. So a slot whose top edge should land at `y` is
 drawn with its baseline at `y - m.top`, and occupies `m.bottom - m.top`. Getting that backwards
-puts the formula above its own box, which is exactly what it looks like. ]]
+puts the formula above its own box, which is exactly what it looks like.
+
+It also records the click geometry every frame - `state.hitboxes` per slot, `row.hit` per derived
+row - because handle_input() runs in a separate call and cannot re-derive where anything landed.
+
+  pos             top-left of the content; each line's baseline comes from its own measure
+  sz              the logical size to draw at
+  width_limit     how far right a DERIVED row may reach; the signature line is never wrapped
+  show_cursor     this box is the active one: outlines the current slot and draws its caret
+  show_wireframe  passed through to editor.draw_formula (mexpr's debug boxes)
+  show_graph      passed through: the reachable-position graph
+@date 2026-09-08 08:12 ]]
 function editor_definition.draw(state, fontset, pos, sz, width_limit, show_cursor,
         show_wireframe, show_graph)
     local slots = ensure(state, fontset)
@@ -682,18 +712,17 @@ end
 --[[ One frame of input for the definition: route a click or drag to whichever slot it landed in,
 then hand the frame to the slot that has the caret.
 
-Returns true if the keystroke actually CHANGED the formula tree (as opposed to only moving the
-cursor). Nothing acts on that yet - a definition box has no undo of its own - but it is the same
-signal editor_text.lua's undo is built on, and returning it here is what will let one exist without
-this function changing again. ]]
+Returns true if the keystroke actually CHANGED a slot's tree, as opposed to only moving the
+cursor. That is the signal undo is built on - here through begin_edit/commit_edit below, in
+editor_text.lua through its own snapshots - and it is handed back to the caller as well, so
+content.lua can tell an edit from a click without re-deriving it.
+@date 2026-09-08 08:12 ]]
 function editor_definition.handle_input(state, fontset, sz)
     local slots = ensure(state, fontset)
 
-    --[[ Ctrl+Z / Ctrl+Shift+Z, checked before anything else so it works wherever the caret is -
-    the same placement and the same binding editor_text.lua uses, so the two boxes do not disagree
-    about what undo means. ]]
-    -- Two actions, redo checked first - the same shape editor_text.lua uses, so the two boxes
-    -- still cannot disagree about what undo means (this block's own comment).
+    --[[ Undo and redo, checked before anything else so they work wherever the caret is, and redo
+    first - the same placement, the same bindings and the same order editor_text.lua uses, so the
+    two boxes cannot disagree about what undo means. ]]
     if keymap.pressed("edit.redo") then
         undo_or_redo(state, fontset, true)
         return false
@@ -864,8 +893,9 @@ front.
 
 Length-prefixed rather than delimited for the same reason content.lua's own box list is: a LaTeX
 string can contain any character, so no separator is guaranteed not to collide with real content.
-Written as a list from the start, with a count of 1, so that adding the parameter and result slots
-later needs no second migration of the save format. ]]
+The COUNT is also where the arity lives - there is no separate number written down, so a saved
+definition cannot disagree with itself about how many parameters it has.
+@date 2026-09-08 08:12 ]]
 function editor_definition.to_text(state)
     local slots = state.slots or {}
     local parts = {tostring(#slots), "\n"}
@@ -878,7 +908,8 @@ end
 
 --[[ Inverse of to_text(). Lenient in the same way every other loader here is: a body that does not
 parse leaves the state with no slots at all, and ensure() then hands it a fresh empty one on the
-next frame - a corrupt or foreign definition costs you that definition, never the whole document. ]]
+next frame - a corrupt or foreign definition costs you that definition, never the whole document.
+@date 2026-09-08 08:12 ]]
 function editor_definition.from_text(state, text, fontset)
     local slots = {}
     local nl = text:find("\n", 1, true)

@@ -4,10 +4,10 @@ became the shared half: the formula HOST that both this file and editor_definiti
 caret/selection highlight, the reachable-position graph, slot markers, click hit-testing). See
 editor.lua's own header for what lives there and why.
 
-A flat text/glyph-stream editor - a Lua port of old/comments.h's comment_box_t, adapted to the
-current char.lua glyph catalog and rendered directly through fontset:char_draw (now that
-fontset:char_get_sz gives real glyph metrics, there's no need to route through the mexpr_*
-composer just to get working layout).
+A flat text/glyph-stream editor, rendered directly through fontset:char_draw: char_get_sz gives
+real glyph metrics, so there is no need to route plain text through the mexpr_* composer just to
+get working layout. (It began as a port of the C++ comment box the project grew out of, deleted
+2026-09-06 along with the rest of old/ - nothing there is followable any more.)
 
 Model: state.chars is a flat array of items, each either {code=<ncod>} (a glyph) or
 {newline=true} (a hard line break). state.cursor_pos is an index 0..#state.chars: cursor_pos == N
@@ -17,12 +17,14 @@ state.selection_anchor, when set, is a second such index - the selection covers 
 where lo/hi are min/max(selection_anchor, cursor_pos). selection_anchor == cursor_pos (or nil)
 means no selection.
 
-A chars item can also be {formula=<mformula state>} - an embedded structured expression (see
-mformula.lua), inline in the flow like one wide glyph. Ctrl+M inserts one at the cursor and enters
-it. Clicking one enters it (state.active_formula); while a formula is active, ALL input goes to it
-exclusively (Escape, or clicking outside it, leaves) - this is what keeps arrow keys unambiguous:
-outside a formula they still mean what they meant before (Up/Down = switch line), inside one
-they're reinterpreted by mformula.lua (Up/Down = enter superscript/subscript).
+A chars item can also be {formula=<mformula state>} - an embedded structured expression
+(mformula_new.lua), inline in the flow like one wide glyph. `formula.new` inserts one at the cursor
+and enters it; clicking one enters it (state.active_formula). While a formula is active, ALL input
+goes to it exclusively (`formula.exit`, or a click outside it, leaves), which is what keeps the
+arrow keys unambiguous: outside a formula they mean what they always meant (Up/Down = change line),
+inside one mformula_new reinterprets them (Up/Down = into the superscript/subscript).
+
+@date 2026-09-08 08:20
 ]]
 
 local vc = require("virt_composer")
@@ -94,7 +96,7 @@ end
 -- #################################################################################################
 
 --[[ Returns lo, hi (0-indexed cursor positions, lo < hi) covering the selected chars, or nil if
-there is no active (non-empty) selection. ]]
+there is no active (non-empty) selection. @date 2026-09-08 08:20 ]]
 local function selection_range(state)
     local a = state.selection_anchor
     if not a or a == state.cursor_pos then
@@ -107,7 +109,7 @@ local function selection_range(state)
 end
 
 --[[ Deletes the active selection (if any), moves the cursor to its start, and clears it.
-@return true if there was a selection to delete. ]]
+@return true if there was a selection to delete. @date 2026-09-08 08:20 ]]
 local function delete_selection(state)
     local lo, hi = selection_range(state)
     if not lo then
@@ -122,7 +124,8 @@ local function delete_selection(state)
 end
 
 --[[ Called at the start of every cursor-moving key handler: with `extend` (Shift held), starts a
-selection at the current cursor if one isn't already active; otherwise drops any selection. ]]
+selection at the current cursor if one isn't already active; otherwise drops any selection.
+@date 2026-09-08 08:20 ]]
 local function update_selection_for_move(state, extend)
     if extend then
         if not state.selection_anchor then
@@ -137,7 +140,8 @@ end
 greek) fall back to their LaTeX-ish desc (e.g. "\alpha "); a formula embed becomes a LaTeX $$...$$
 span (mformula.to_latex() - see its own comment for exactly what it covers). A literal "$" or "\"
 typed as plain text is backslash-escaped so insert_text() can always tell it apart from a $$ span
-or one of ITS escapes on the way back in. ]]
+or one of ITS escapes on the way back in.
+@date 2026-09-08 08:20 ]]
 local function selection_to_text(state, lo, hi)
     local parts = {}
     for i = lo + 1, hi do
@@ -166,7 +170,8 @@ end
 "$$...$$" span is parsed as a formula embed (mformula.from_latex()); everywhere else, "\name" (e.g.
 "\alpha") is looked up the same way a formula's own macros are (selection_to_text()'s plain-text
 greek/symbol fallback, undone), "\$"/"\\" unescape back to a literal "$"/"\", and anything else
-unmapped - an unrecognized macro included - is skipped, the same leniency plain paste always had. ]]
+unmapped - an unrecognized macro included - is skipped, the same leniency plain paste always had.
+@date 2026-09-08 08:20 ]]
 local function insert_text(state, text, fontset)
     local i = 1
     while i <= #text do
@@ -176,8 +181,8 @@ local function insert_text(state, text, fontset)
             -- not a literal substring.
             local close = text:find("$$", i + 2, true)
             local inner = text:sub(i + 2, close and (close - 1) or #text)
-            -- mexpru.DEFAULT_SIZE, not a live outer size - same reasoning as Ctrl+M's own formula
-            -- construction above (mexpru.DEFAULT_SIZE's own comment).
+            -- mexpru.DEFAULT_SIZE, not a live outer size - the same reasoning as the
+            -- `formula.new` branch in handle_input (mexpru.DEFAULT_SIZE's own comment).
             local formula = mformula.from_latex(fontset, mexpru.DEFAULT_SIZE, inner)
             table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
             state.cursor_pos = state.cursor_pos + 1
@@ -229,7 +234,8 @@ end
 --[[ The whole buffer as text (selection_to_text() over every char) - content.lua's own save
 format is exactly this, one per box, so a save is indistinguishable from "select all, copy" and a
 load from "select all, delete, paste" (undo history included, since it goes through the same
-push_undo() call sites paste already does). ]]
+push_undo() call sites paste already does).
+@date 2026-09-08 08:20 ]]
 function editor_text.to_text(state)
     return selection_to_text(state, 0, #state.chars)
 end
@@ -239,7 +245,8 @@ content.lua's own load, and this file's own undo/redo's restore path (see undo_o
 go through wholesale state.chars replacement already; this is that same operation exposed for a
 fresh (or about to be cleared) editor_text.new() instead of a snapshot table. Does NOT go through
 push_undo() itself - loading a save file replaces the state a box STARTS with, there's nothing
-before it to undo back to. ]]
+before it to undo back to.
+@date 2026-09-08 08:20 ]]
 function editor_text.from_text(state, text, fontset)
     state.chars = {}
     state.cursor_pos = 0
@@ -251,7 +258,8 @@ end
 by content.lua just before calling this) - content.lua's own Ctrl+MouseWheel handler calls this for
 every box any time the zoom actually changes, so already-typed formula content visibly
 catches up (mformula_new.rescale()'s own comment - plain text needs no equivalent call here, it's
-never baked into anything, always measured/drawn fresh from the live `sz` passed to draw() itself). ]]
+never baked into anything, always measured/drawn fresh from the live `sz` passed to draw() itself).
+@date 2026-09-08 08:20 ]]
 function editor_text.rescale(state, fontset)
     for _, item in ipairs(state.chars) do
         if item.formula then
@@ -261,7 +269,8 @@ function editor_text.rescale(state, fontset)
 end
 
 --[[ Nearest recorded glyph-gap position (index into state.chars) to a screen point, using the
-positions the previous frame's draw() recorded. Used by both click-to-place and drag-to-select. ]]
+positions the previous frame's draw() recorded. Used by both click-to-place and drag-to-select.
+@date 2026-09-08 08:20 ]]
 local function nearest_position(state, mpos)
     if not state.last_positions then
         return nil
@@ -289,6 +298,7 @@ end
 -- runs, paste, formula creation, and each individual keystroke INSIDE a formula count separately -
 -- see push_undo()'s comment). Only ever trims from the OLDEST end, one entry at a time, so nothing
 -- recent is ever at risk of being dropped.
+-- @date 2026-09-08 08:20
 local UNDO_STACK_LIMIT = 500
 
 --[[ Recursive copy that's safe on this model's cyclic structure (row.parent_row points back up
@@ -299,7 +309,8 @@ instead of looping forever or duplicating a shared node.
 Keys starting with "_" are skipped - this codebase's own convention for a derived/cache field
 (mformula's _layout_cache/_graph_cache), which would otherwise drag a real mexpr_p/vc object into
 the snapshot for nothing: cheap to drop, and everything that reads a cache already handles it being
-absent by rebuilding from scratch. ]]
+absent by rebuilding from scratch.
+@date 2026-09-08 08:20 ]]
 local function deep_copy(t, seen)
     if type(t) ~= "table" then
         return t
@@ -326,7 +337,8 @@ already claims to be restoring.
 
 `fontset` comes off state._fontset, stashed by handle_input each frame: snapshot() is reached from
 a dozen push_undo() call sites that have no reason to know about fonts, and deep_copy() skips
-"_"-prefixed keys, so parking it there costs nothing and can't leak into a snapshot. ]]
+"_"-prefixed keys, so parking it there costs nothing and can't leak into a snapshot.
+@date 2026-09-08 08:20 ]]
 local function snapshot(state)
     local chars = deep_copy(state.chars)
     if state._fontset then
@@ -366,7 +378,8 @@ recorded step used - then this edit just extends that same step instead of start
 letter at a time; a formula-internal edit always passes nil, so - per this session's own request -
 every keystroke inside a formula is its own step). Any real edit clears the redo stack - it's only
 valid for redoing exactly what was just undone, not a copy of the past made stale by a genuinely
-new edit branching off from it. ]]
+new edit branching off from it.
+@date 2026-09-08 08:20 ]]
 local function commit_undo(state, snap, coalesce_key)
     -- Any real edit outdates the cached pre-edit snapshot (see its own comment in handle_input) -
     -- invalidated here rather than at each call site, since this is the one place every edit passes
@@ -386,7 +399,8 @@ end
 --[[ Convenience for the common case: snapshot state right now, then commit it. The one call site
 that needs to know whether an edit actually happened BEFORE deciding to commit (the active-formula
 case in handle_input, keyed off mformula's own state.version) builds the snapshot up front instead
-and calls commit_undo() directly. ]]
+and calls commit_undo() directly.
+@date 2026-09-08 08:20 ]]
 local function push_undo(state, coalesce_key)
     --[[ Every mutating action in this file funnels through here, which makes it the one place worth
     tagging the frame from (prof.lua / perf_composer.h). A spike frame's report then reads
@@ -398,11 +412,13 @@ local function push_undo(state, coalesce_key)
     commit_undo(state, snapshot(state), coalesce_key)
 end
 
---[[ Ctrl+Z / Ctrl+Shift+Z. Restores the formula that owned input too, by the index snapshot()
+--[[ One step of `edit.undo` / `edit.redo`. Restores the formula that owned input too, by the index
+snapshot()
 recorded - the restored chars are all-new tables, so the old active_formula reference cannot be
 reused, but the item at that index is the same formula and undoing an edit made INSIDE one should
 leave you still inside it. Falls back to plain editing when that index holds no formula any more
-(the undone edit deleted it, say). A no-op when the relevant stack is empty. ]]
+(the undone edit deleted it, say). A no-op when the relevant stack is empty.
+@date 2026-09-08 08:20 ]]
 local function undo_or_redo(state, is_redo)
     local from_stack = is_redo and state.redo_stack or state.undo_stack
     local to_stack = is_redo and state.undo_stack or state.redo_stack
@@ -451,7 +467,8 @@ The split exists because those two have different lifetimes, which is the bug th
 baseline stays valid until an edit changes the tree, but the caret moves freely without bumping
 version, so the caret position inside a cached baseline goes stale immediately. commit stamps the
 freshly-captured path onto the baseline before recording it, so Ctrl+Z restores the tree AND puts
-the caret back where the undone edit started, not where the previous one left it. ]]
+the caret back where the undone edit started, not where the previous one left it.
+@date 2026-09-08 08:20 ]]
 function editor_text.begin_formula_edit(state)
     if not state._undo_baseline then
         state._undo_baseline = snapshot(state)
@@ -474,7 +491,8 @@ end
 
 --[[ Exported for tests only (the convention mformula_new's make_supsub()/make_frac() already use).
 handle_input()'s own Ctrl+Z branch is the real entry point, and it needs real keypresses, so a test
-that wants to undo something has to reach the machinery directly. ]]
+that wants to undo something has to reach the machinery directly.
+@date 2026-09-08 08:20 ]]
 editor_text.push_undo = push_undo
 function editor_text.undo(state) undo_or_redo(state, false) end
 function editor_text.redo(state) undo_or_redo(state, true) end
@@ -485,7 +503,8 @@ function editor_text.redo(state) undo_or_redo(state, true) end
 
 --[[ `fontset`/`sz` are only needed for the one thing keyboard-only input handling never needed
 before: hit-testing a click against an active formula's own drawn geometry (mformula.hit_test()
-has to rebuild/measure rows to know where they land on screen, same as draw() does). ]]
+has to rebuild/measure rows to know where they land on screen, same as draw() does).
+@date 2026-09-08 08:20 ]]
 function editor_text.handle_input(state, fontset, sz)
     -- Parked for snapshot()'s benefit (see its own comment) - "_"-prefixed, so deep_copy() never
     -- carries it into a snapshot.
@@ -517,8 +536,8 @@ function editor_text.handle_input(state, fontset, sz)
         local ctrl_down = keymap.mods()
         local escaped = keymap.pressed("formula.exit")
         -- Ctrl+Left/Right always leave the formula, regardless of where the cursor is inside it -
-        -- plain Left/Right staying parked at the formula's own start/end (mformula.lua's move_left/
-        -- move_right do nothing further once there) is intentional, not something arrow keys
+        -- plain Left/Right staying parked at the formula's own start/end (mformula_new's
+        -- move_left/move_right do nothing further once there) is intentional, not something arrow keys
         -- should escape on their own.
         -- ...but NOT with Shift also held: Ctrl+Shift+Left/Right is the formula's own selection
         -- gesture (mformula_new's own extend_selection()), so intercepting it here would exit the
@@ -776,7 +795,7 @@ function editor_text.handle_input(state, fontset, sz)
                 local entry = glyphmap.entry(key_name, true, is_shift)
                 if not entry then
                     -- No distinct greek glyph for this letter (or none mapped) - fall back to
-                    -- the plain/uppercase Latin letter, same as old/comments.h did.
+                    -- the plain/uppercase Latin letter, the same fallback the C++ comment box had.
                     entry = char.find_by_ascii(is_shift and letter:upper() or letter)
                 end
                 if entry then
@@ -880,7 +899,8 @@ function editor_text.handle_input(state, fontset, sz)
         state.cursor_pos = state.cursor_pos + 1
     end
 
-    -- Left/Right, with Ctrl word-skip (port of old/comments.h's whitespace-then-alnum scan).
+    -- Left/Right, with Ctrl word-skip (the whitespace-then-alnum scan carried over from the C++
+    -- comment box this file grew out of).
     -- A plain (non-shift) arrow with an active selection collapses to that selection's edge,
     -- same as most editors, instead of moving one char from the current cursor. -----------------
     if keymap.pressed("nav.left") or keymap.pressed("nav.select_left")
@@ -956,8 +976,8 @@ function editor_text.handle_input(state, fontset, sz)
         end
     end
 
-    -- Up/Down: preserve column distance across the nearest newline markers (port of
-    -- old/comments.h's algorithm) ----------------------------------------------------------------
+    -- Up/Down: preserve column distance across the nearest newline markers (the C++ comment box's
+    -- own algorithm) ------------------------------------------------------------------------------
     if keymap.pressed("nav.up") or keymap.pressed("nav.select_up") then
         update_selection_for_move(state, is_shift)
         local dist = 0
@@ -1044,8 +1064,9 @@ end
 -- Layout / render
 -- #################################################################################################
 
--- Line height + baseline offset, derived once per font size from real glyph metrics (measuring
--- 'G' for the cap top and 'g' for the descender bottom - same trick old/comments.h used).
+-- Line height + baseline offset, derived once per font size from real glyph metrics: 'G' gives the
+-- cap top and 'g' the descender bottom, which is the trick the C++ comment box used before this.
+-- @date 2026-09-08 08:20
 local metrics_cache = {}
 local function get_metrics(fontset, sz)
     local cached = metrics_cache[sz]
@@ -1103,7 +1124,8 @@ Two things keep it from happening now: a formula with less than this much room l
 line, the same rule plain glyphs already followed, and the column actually passed down is clamped to
 at least this much so even a box narrower than one is never a degenerate column. The C++ loop should
 still refuse to run on a non-positive column - a layout bug must not be able to hang the app - but
-that belongs in math_expr_composer.h, not here. ]]
+that belongs in math_expr_composer.h, not here.
+@date 2026-09-08 08:20 ]]
 local MIN_FORMULA_COLUMN_LINES = 1
 
 --[[ Where a formula goes on the line it is currently on. `used` is how far along that line the
@@ -1116,7 +1138,8 @@ layout has already advanced (pass 1's lx, pass 2's x - pos.x); returns (break_li
                even in a box too narrow to hold one - see MIN_FORMULA_COLUMN_LINES.
 
 Both passes call this rather than each doing the arithmetic, because a disagreement between them
-about which line a formula lands on is its own class of bug (see pass 1's own comment). ]]
+about which line a formula lands on is its own class of bug (see pass 1's own comment).
+@date 2026-09-08 08:20 ]]
 local function formula_line_fit(m, width_limit, used)
     if not width_limit then
         return false, nil
@@ -1135,16 +1158,9 @@ end
 editor_text.formula_line_fit = formula_line_fit
 local FORMULA_BORDER_COLOR = 0xff777777
 local FORMULA_ACTIVE_BORDER_COLOR = 0xff00ffff
--- Muted green for the debug cursor-travel track drawn under the active formula - low-contrast
--- against the editor background so it reads as a guide rather than another foreground element
--- competing with the text/border. Half the opacity of a fully-solid line/dot (twice as faded),
--- offset by drawing it twice as thick (see the AddLine/AddCircleFilled calls below) so it stays
--- readable rather than just fainter.
--- CURSOR_TRACK_COLOR and EMPTY_SLOT_COLOR moved to editor.lua with the drawing that used them,
--- so all three editors share one look instead of drifting apart.
--- Faint outline marking an empty sup/sub slot's clickable area - visible enough to show there's
--- something there to click, subdued enough not to read as actual content.
-local EMPTY_SLOT_COLOR = 0xff888844
+-- The cursor-travel track and the empty-slot outline moved to editor.lua with the drawing that
+-- used them, so all three editors share one look instead of drifting apart. Their local copies
+-- here went with them; nothing in this file draws either any more. -- @date 2026-09-08 08:20
 
 --[[ Draws state onto the current ImGui window, starting at `pos`, using font size `sz`,
 soft-wrapping lines wider than `width_limit` (pass nil/false to disable soft-wrap). The blinking
@@ -1154,11 +1170,12 @@ caret is only drawn when `show_cursor` is true (or omitted) - a caller managing 
 debug bounding-box overlay (vc.mexpr_draw's draw_bb), off by default so it's only on when actually
 visually debugging (content.lua's own wireframe-toggle button).
 `show_graph` (default false) gates the ACTIVE formula's own reachable-position graph (mformula.
-reachable_graph() - ported from the old row-based mformula.lua) - off by default, same
+reachable_graph(), carried over from the old row-based editor) - off by default, same
 reasoning as show_wireframe, content.lua's own graph-toggle button flips it on.
 @return the total content height in pixels (bottom of the last line, relative to pos.y), and the
 widest any single line's own content actually reached (relative to pos.x - may exceed width_limit,
-see max_x's own comment below) - lets a caller (e.g. content.lua's boxes) size itself to fit both. ]]
+see max_x's own comment below) - lets a caller (e.g. content.lua's boxes) size itself to fit both.
+@date 2026-09-08 08:20 ]]
 function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wireframe, show_graph)
     if show_cursor == nil then
         show_cursor = true
@@ -1341,8 +1358,8 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
                 -- the real blinker, also drawn by mformula.draw below) layer on top of the track,
                 -- not the other way around. Active formula only - it'd just be clutter for the
                 -- others. show_graph (content.lua's own graph-toggle button, same
-                -- pattern as show_wireframe) gates this specifically - ported live from the old
-                -- (row-based) mformula.lua, off by default so it doesn't clutter ordinary editing.
+                -- pattern as show_wireframe) gates this specifically - carried over from the old
+                -- row-based editor, off by default so it doesn't clutter ordinary editing.
                 --[[ The cursor highlight, FIRST - before the graph, which is itself before the
                 formula, so this ends up beneath everything: graph, vert contours, glyphs, blinker
                 ("under walk graph and under the mexpr drawing and under the blinker and anything
@@ -1463,8 +1480,8 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
         end
     end
 
-    -- Blinking caret: a real drawn line (vc.ImGui_AddLine), not stored in the model - a faithful
-    -- port of old/comments.h's draw_blinker, now that AddLine is actually exposed to Lua.
+    -- Blinking caret: a real drawn line (vc.ImGui_AddLine), not stored in the model - the same
+    -- blinker the C++ comment box drew, now that AddLine is exposed to Lua.
     -- (~30 frames/half-period, roughly a 0.5s blink at 60fps.) Suppressed while a formula embed
     -- is active - its own caret (drawn above, inside mformula.draw) is the one that should show.
     if show_cursor and not state.active_formula and cursor_screen_pos

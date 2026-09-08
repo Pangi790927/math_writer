@@ -1,3 +1,26 @@
+--[[
+char.lua - THE GLYPH CATALOG: every character the editor can draw, and the eight fonts behind them.
+
+Everything visible in a document comes from here, and a glyph is named three ways that this file is
+what keeps in step:
+
+    ncod   the internal code the C++ side draws by       find_by_ncod()
+    acod   its ascii character, where it has one         find_by_ascii()
+    desc   its LaTeX name - "\alpha", "\int"             find_by_desc()
+
+The DESC is the currency everything outside speaks: the clipboard, the save file, the
+backslash-name-then-space command entry and the letter customiser all name a glyph by it. So
+anything spelled here can be typed, saved and bound to a key, and nothing outside can name a glyph
+that cannot be drawn.
+
+Also here, because they are properties of the catalog rather than of any one editor: the size table
+every logical size is an index into (m_font_sizes, biggest FIRST - so a larger index is a smaller
+glyph), the per-glyph size and baseline corrections the display operators need to sit on a text
+line at all, and the factory Alt+letter Greek layout that glyphmap.lua takes its live copy from.
+
+@date 2026-09-08 08:50
+]]
+
 local vc = require("virt_composer")
 
 local capi = {
@@ -72,9 +95,9 @@ function capi.load_font_set()
         -- consecutive indices being consecutive steps, so a smoothing level has to be INSERTED in
         -- sorted position, not appended past 8 - the old table jumped 72->42, a ~1.7x step, way out
         -- of line with every other step's ~1.2-1.3x, right where content.lua's own default (36, now
-        -- index 12) sits closest to). mformula_new.lua/mformula.lua/mformula_latex.lua's own
+        -- index 12) sits closest to). mformula_new.lua and mformula_latex.lua's own
         -- MAX_SIZE_INDEX=18 (was 16) has to track this table's actual length - checked,
-        -- all three still say so.
+        -- both still say so.
         m_font_sizes = {
             360.0,  288.0,  216.0,  180.0,  --[[  1,  2,  3,  4]]
             144.0,  120.0,  96.0,   72.0,   --[[  5,  6,  7,  8]]
@@ -99,7 +122,7 @@ function capi.load_font_set()
     return ret
 end
 
---[[ Some character definitions ]]
+--[[ Some character definitions @date 2026-09-08 08:50 ]]
 function capi.hash(fontsz)        return {size=fontsz, code=2} end
 function capi.comma(fontsz)       return {size=fontsz, code=11} end
 function capi.plus(fontsz)        return {size=fontsz, code=10} end
@@ -215,7 +238,8 @@ reaches the extensible path at all. There is nothing finer to put in them: cmex1
 \\big|/\\Big| tiers, TeX builds those from these same extension pieces.
 
 _vline_4/_vline_5 (w=2.0) are the widest registered extensions, against the plain bar's own 2.5 -
-half a unit thinner at size 12, which is the closest match available without adding a glyph. ]]
+half a unit thinner at size 12, which is the closest match available without adding a glyph.
+@date 2026-09-08 08:50 ]]
 function capi.bar_bracket(fontsz)
     local space = capi.find_by_ascii(" ")
     local blank = { size=fontsz, code=space and space.ncod or 247 }
@@ -612,7 +636,8 @@ end
 
 --[[ Returns the capi.chars entry for an ascii character (a 1-length string), or nil.
 When a character appears more than once in capi.chars (a few do), the first entry in the table
-wins - same as the old linear-scan behavior this replaces. ]]
+wins - same as the old linear-scan behavior this replaces.
+@date 2026-09-08 08:50 ]]
 function capi.find_by_ascii(ascii_char)
     return by_ascii[ascii_char]
 end
@@ -628,7 +653,8 @@ round-trips to one canonical spelling.
   - to is by far the commonest way to write a rightarrow, and what "->" produces.
   - setminus IS the backslash glyph (TeX 0x6E - see Figure 5), already registered as "\\\\".
   - cong is BACK-COMPATIBILITY: that name used to be attached to the identity sign by mistake, so
-    documents saved before 2026-09-06 still contain it. They load as the glyph they always drew. ]]
+    documents saved before 2026-09-06 still contain it. They load as the glyph they always drew.
+@date 2026-09-08 08:50 ]]
 capi.desc_aliases = {
     ["\\leq"]      = "\\le",
     ["\\geq"]      = "\\ge",
@@ -640,7 +666,8 @@ capi.desc_aliases = {
 }
 
 --[[ Returns the capi.chars entry whose `desc` matches exactly (e.g. "\\alpha"), or nil.
-Falls back to capi.desc_aliases, so an alternate spelling finds the same glyph. ]]
+Falls back to capi.desc_aliases, so an alternate spelling finds the same glyph.
+@date 2026-09-08 08:50 ]]
 function capi.find_by_desc(desc)
     local hit = by_desc[desc]
     if hit then
@@ -650,7 +677,7 @@ function capi.find_by_desc(desc)
     return aliased and by_desc[aliased] or nil
 end
 
---[[ Returns the capi.chars entry for a given ncod (glyph catalog code), or nil. ]]
+--[[ Returns the capi.chars entry for a given ncod (glyph catalog code), or nil. @date 2026-09-08 08:50 ]]
 function capi.find_by_ncod(ncod)
     return by_ncod[ncod]
 end
@@ -658,12 +685,13 @@ end
 -- #################################################################################################
 -- Alt-key Greek input: Alt+letter -> lowercase greek, Alt+Shift+letter -> uppercase greek where
 -- it exists as a distinct glyph (else the caller falls back to the plain/uppercase Latin letter,
--- matching old/comments.h's own fallback behavior).
+-- which is the fallback the C++ comment box had before this).
 -- #################################################################################################
 
---[[ The common "greek keyboard" mnemonic mapping (not old/comments.h's own table, which was
-fairly arbitrary - e.g. it mapped alt+n to eta). 'o', 'q', 'v' are intentionally unmapped: no
-natural greek association (omicron is visually identical to 'o' and isn't in the glyph catalog). ]]
+--[[ The common "greek keyboard" mnemonic mapping. Deliberately not the old C++ table's, which was
+fairly arbitrary - it mapped alt+n to eta. 'o', 'q', 'v' are intentionally unmapped: no
+natural greek association (omicron is visually identical to 'o' and isn't in the glyph catalog).
+@date 2026-09-08 08:50 ]]
 capi.greek_alt = {
     a="\\alpha",   b="\\beta", g="\\gamma",  d="\\delta", e="\\epsilon", z="\\zeta",
     h="\\eta",     j="\\theta", i="\\iota",  k="\\kappa", l="\\lambda",  m="\\mu",
@@ -699,7 +727,8 @@ uppercase wherever one exists". \Sigma and \Pi themselves are still reachable by
 Space, the same route every other unmapped symbol uses.
 
 The letters left alone are the ones genuinely used AS variables - \Delta, \Omega, \Gamma, \Phi,
-\Theta, \Lambda, \Xi, \Upsilon, \Psi. None of those shadows an operator. ]]
+\Theta, \Lambda, \Xi, \Upsilon, \Psi. None of those shadows an operator.
+@date 2026-09-08 08:50 ]]
 capi.greek_alt_shift = {
     g="\\Gamma", d="\\Delta", h="\\Theta", l="\\Lambda", x="\\Xi",
     u="\\Upsilon", f="\\Phi", y="\\Psi",   w="\\Omega",
@@ -715,7 +744,7 @@ capi.greek_alt_shift = {
 }
 
 --[[ How many size-table steps BIGGER (negative - the table runs biggest-to-smallest, see
-mformula.lua's own SUB_SIZE_DELTA comment) a glyph should render at than whatever size it's typed
+mformula_new.lua's own SUB_SIZE_DELTA comment) a glyph should render at than whatever size it's typed
 into, keyed by desc. Only "\\int" uses this so far - a big operator inserted at plain text size
 reads as a thin, undersized squiggle instead of the display-style integral sign it's supposed to
 be (compare main.lua's demo, which draws it via char.integral(sz-5) for exactly this reason) -
@@ -726,7 +755,8 @@ into m_font_sizes above for Ctrl+MouseWheel zoom - those two extra rungs sit exa
 delta's own path from the default (12), so the old "-5" (which used to land on 144pt, 4x the 36pt
 default) only reached 96pt (2.67x) once the table grew under it - visibly "too small" again,
 reported live. -7 from 12 lands back on index 5 (144pt), the same PHYSICAL target -5 always meant
-against the pre-2026-09-04 table - not a new/different visual size, just re-pointed at the same one. ]]
+against the pre-2026-09-04 table - not a new/different visual size, just re-pointed at the same one.
+@date 2026-09-08 08:50 ]]
 capi.size_delta_by_desc = {
     --[[ Every one of these is -7, and that is not a coincidence: it is ONE correction, applied to
     the whole cmex10 display-operator family, because they all share the same defect.
@@ -794,7 +824,8 @@ the same as the "=" it is meant to cross), so the slash landed beside the sign i
 it, and \ne could not be expressed at all.
 
 Only glyphs DESIGNED to overprint belong here. Zeroing anything else makes it collide with its
-neighbour. ]]
+neighbour.
+@date 2026-09-08 08:50 ]]
 capi.adv_by_desc = {
     ["\\not"]        = 0.0,
     ["\\mapstochar"] = 0.0,
@@ -817,7 +848,8 @@ the default level, so a blackboard R floated a third of its own height above the
 on. Reported as "constructs a character in a strange location, not on the same line".
 
 A face-level entry rather than eight identical per-glyph ones - it is a property of the font, and
-this way a ninth set added later is correct without anyone remembering. ]]
+this way a ninth set added later is correct without anyone remembering.
+@date 2026-09-08 08:50 ]]
 capi.y_offset_by_font = {
     [capi.FONT_BBOLD] = 10.0 / 36.0,
 }
@@ -846,7 +878,8 @@ claim is that it "can never drift from what the keys actually do", which only ho
 the same table. Adding a row here adds it to the legend.
 
 `key` is resolved to an integer id once, below, for the same reason greek_key_ids exists: the
-string form of an ImGuiKey costs a yaml node per poll. ]]
+string form of an ImGuiKey costs a yaml node per poll.
+@date 2026-09-08 08:50 ]]
 capi.alt_symbols = {
     --[[ Shift lifts these two from SETS to LOGIC, which is the exact correspondence - union is
     or, intersection is and - so the shape of the key keeps meaning the shape of the sign. Added
@@ -867,7 +900,8 @@ end
 --[[ ImGuiKey name -> lowercase letter, used to poll Alt+letter Greek shortcuts directly (Alt
 combinations don't reliably produce char events, so this can't go through
 vc.ImGui_input_queue_chars() the way plain typing does). Shared by editor.lua (plain text) and
-mformula.lua (inside a formula) so both read Alt+letter the same way. ]]
+mformula_new.lua (inside a formula) so both read Alt+letter the same way.
+@date 2026-09-08 08:50 ]]
 capi.greek_keys = {
     ImGuiKey_A="a", ImGuiKey_B="b", ImGuiKey_C="c", ImGuiKey_D="d", ImGuiKey_E="e",
     ImGuiKey_F="f", ImGuiKey_G="g", ImGuiKey_H="h", ImGuiKey_I="i", ImGuiKey_J="j",
@@ -888,7 +922,8 @@ taking the fast path that was always there.
 
 Built here rather than in either caller so the two cannot drift, and keyed by id -> letter because
 that is exactly what those loops iterate. A name that somehow does not resolve stays a string, which
-still works through the slow path rather than silently never matching. ]]
+still works through the slow path rather than silently never matching.
+@date 2026-09-08 08:50 ]]
 capi.greek_key_ids = {}
 for name, letter in pairs(capi.greek_keys) do
     capi.greek_key_ids[vc[name] or name] = letter
@@ -900,7 +935,8 @@ width when the accent has to be DRAWN rather than set from a glyph (mexpr_frac's
 
 hat and tilde run out of glyphs after their third cmex10 variant; past that mexpr_accent draws the
 shape itself, continuing at the last tier's own height so there is no step at the boundary. A bar
-has no glyph at all in these fonts, so it is always drawn - hence no tiers. ]]
+has no glyph at all in these fonts, so it is always drawn - hence no tiers.
+@date 2026-09-08 08:50 ]]
 function capi.hat_accent(fontsz)
     return {
         kind = "MEXPR_ACCENT_HAT",
@@ -921,7 +957,8 @@ so everything else is drawn (MEXPR_ACCENT_ARROW_R/_L, math_expr_composer.h). Tha
 rather than being a corner case: a vector over a STACK is exactly what this is for, and no glyph
 is anywhere near that wide.
 
-The left one therefore lists no tiers at all - the drawn shape is its only form. ]]
+The left one therefore lists no tiers at all - the drawn shape is its only form.
+@date 2026-09-08 08:50 ]]
 function capi.vec_accent(fontsz)
     return {
         kind = "MEXPR_ACCENT_ARROW_R",

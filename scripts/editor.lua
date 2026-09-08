@@ -2,24 +2,20 @@
 editor.lua - THE SHARED HALF of the editors: everything needed to render and drive ONE formula
 sitting inside a box.
 
-Created 2026-09-06 by splitting the old editor.lua. The flat text/glyph-stream editor moved to
-`editor_text.lua`; what stayed here is the part that was never about text at all.
-
-WHY THE SPLIT HAPPENED. `editor_definition.lua` was written first without this file, on the
-reasoning that a definition box and a text box "share the shape of their interface and none of
-their implementation". That was wrong, and it was wrong in a way that showed up immediately as
-missing features: the definition box had no selection highlight, no graph view, no wireframe view
-and no click-to-place-cursor. All four live here, and none of them has anything to do with a
-character stream - they are what it takes to put an `mformula` container on screen and let someone
-work in it. Any third editor (`editor_formula.lua`) will need exactly the same four.
+Four things live here - the selection highlight, the reachable-position graph, the wireframe view
+and click-to-place-cursor - because they are what it takes to put an `mformula` container on screen
+and let somebody work in it, and not one of them has anything to do with a character stream. All
+three editors need exactly those four. That is the lesson the split was made of (2026-09-06, out of
+the old editor.lua, the flat glyph-stream half going to editor_text.lua): editor_definition.lua was
+written first without this file, on the reasoning that a definition box and a text box "share the
+shape of their interface and none of their implementation", and shipped missing all four.
 
 WHAT IS **NOT** HERE, deliberately:
 
-  - **Undo/redo.** editor_text.lua's formula undo is entangled with its own snapshot system - a
-    cached pre-edit baseline, invalidated by its own commit path, gated on `container.version`.
-    A definition box has no character stream to snapshot alongside the formula, so what an undo
-    step even IS there is an open question. `edit_bracket()` below is the seam: it reports whether
-    a keystroke changed the tree, and each owner decides what to do about it.
+  - **Undo/redo.** What a step even IS differs per owner: editor_text.lua snapshots its whole char
+    stream alongside the formula, and a definition box has no stream to snapshot. `edit_bracket()`
+    below is the seam - it reports whether a keystroke changed the tree, and each owner decides
+    what to do about it.
   - **Layout.** Where a formula sits - inline in a text flow, or stacked as one of a definition's
     slots - is the owner's business entirely.
 
@@ -31,6 +27,8 @@ CONVENTIONS worth stating once, because both callers get them wrong otherwise:
   - `wrap_edge` is an ABSOLUTE screen x - the right edge content may reach. mformula.hit_test()
     and cursor_box() want a RELATIVE width instead, and converting is this file's job, not the
     caller's. Getting that conversion wrong is a real past bug, recorded in editor_text.lua.
+
+@date 2026-09-08 08:01
 ]]
 
 local vc = require("virt_composer")
@@ -40,7 +38,7 @@ local editor = {}
 
 --[[ The soft track under the reachable-position graph, and the outline on a slot marker. Both were
 tuned against the text editor's background; they live here now so all three editors share one look
-rather than drifting apart. ]]
+rather than drifting apart. @date 2026-09-08 08:01 ]]
 local CURSOR_TRACK_COLOR = 0x8055cc55
 local EMPTY_SLOT_COLOR   = 0xff888844
 
@@ -61,7 +59,8 @@ caller sequences itself. The highlight goes down first, then the graph, then the
 highlight ends up beneath the graph, the glyphs, the vert contours and the blinker, which is what
 "under walk graph and under the mexpr drawing and under the blinker and anything else" asks for.
 None of it can move inside mformula.draw(), because anything drawn in there is already on top of
-the graph. ]]
+the graph.
+@date 2026-09-08 08:01 ]]
 function editor.draw_formula(container, fontset, sz, origin, opts)
     opts = opts or {}
     local x, y = origin.x, origin.y
@@ -146,7 +145,8 @@ draw-origin frame: returns l, r, t, b as offsets from `origin`.
 It has to cover every MARKER too, not just the content bbox - the root's trailing marker in
 particular sticks out past `box.width` on purpose (see draw_formula above). Without that, clicking
 a marker poking past the border reads as "outside" and deactivates the formula instead of
-hit-testing into it. ]]
+hit-testing into it.
+@date 2026-09-08 08:01 ]]
 function editor.formula_click_rect(box, markers)
     local l, r, t, b = 0, box.width, box.top, box.bottom
     if markers then
@@ -165,7 +165,8 @@ click in SCREEN coordinates and the origin the formula was drawn at.
 
 `extend` true continues a drag rather than starting a fresh cursor. Mutates the container's
 cursor directly - the same convention mformula's own move_*() uses - rather than returning a
-position for the caller to assign. ]]
+position for the caller to assign.
+@date 2026-09-08 08:01 ]]
 function editor.formula_hit_test(container, fontset, sz, click, draw_x, draw_y, wrap_edge, extend)
     local local_click = {x = click.x - draw_x, y = click.y - draw_y}
     -- ABSOLUTE -> RELATIVE, the same conversion draw_formula does. hit_test() never receives

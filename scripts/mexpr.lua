@@ -1,6 +1,15 @@
--- mexpr.lua - Converts AST nodes to mexpr trees for rendering
--- This module provides functions to convert AST expressions to mexpr format
---
+--[[
+mexpr.lua - AST -> mexpr: turns the meaning tree (ast.lua) into the drawable tree the composer
+lays out. The other direction, and the one the editors actually use today, is mformula_new.lua.
+
+STATUS: NOT ON ANY LIVE PATH. Nothing in the running app calls this - the editors build mexpr
+directly and read LaTeX back through mformula_latex.lua. It matters for phase 2, where
+ast -> mexpr -> ast is what would let the AST be checked against what is on screen
+(docs/phase2_design.md), and the TODO below is what has to be fixed before it can run at all.
+
+@date 2026-09-08 08:55
+]]
+
 -- TODO (2026-09-04): vc.mexpr_bracket() is GONE - math_expr_composer.h split it into
 -- vc.mexpr_bracket_left(fs, expr, opts)/vc.mexpr_bracket_right(fs, expr, opts), each just its own
 -- glyph-like leaf sized to fit `expr` (no more single call gluing brackets+expr into one container -

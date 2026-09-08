@@ -1,10 +1,19 @@
 --[[
-content.lua - the box-management shell around editor.lua, a Lua port of old/content.h's
-cbox_t/content_draw system: independent text boxes stacked vertically, connected to a left rail
-of nodes, with click-to-activate (only the active box receives keyboard input) and click-in-the-
-margin to add a new box. Each box currently holds one editor.lua buffer - old's cbox_i was a
-generic interface (comment/formula/definition boxes); this only implements the one box kind that
-exists so far, but content.add_box is the seam where other kinds would plug in later.
+content.lua - THE DOCUMENT: a stack of boxes hanging off a rail, and the shell that manages them.
+
+A box is one of three kinds - text, formula, definition - and each kind is a separate editor module
+(editor_text, editor_formula, editor_definition). This file knows only that all three expose the
+same shape: new / draw / handle_input / rescale / to_text / from_text. It never learns what any of
+them holds, which is what keeps a new kind from rippling through here: adding one means a colour, a
+radial sector, and a branch in the three places that build a box.
+
+What this file owns is everything AROUND the boxes: the rail and its insertion points, the radial
+menu that picks a kind, which box is active (only that one receives keyboard input), the derivation
+curves between formula boxes, scrolling, zoom, and the save format the whole document is written in.
+It also dispatches the two full-screen panels (panel_help on F1, panel_keymap on F2), which own the
+frame outright while either is open.
+
+@date 2026-09-08 08:30
 ]]
 
 local vc = require("virt_composer")
@@ -38,7 +47,7 @@ local NODE_RADIUS = 6
 -- biggest/360pt, 18 = smallest/8pt - see that table's own comment), not a pixel size. mexpru's own
 -- DEFAULT_SIZE (36pt) - the same nominal size this used to be a plain constant at before Ctrl+
 -- MouseWheel zoom made it live, adjustable state instead - single source of truth
--- since editor.lua's own brand-new-formula construction (Ctrl+M/paste) needs the exact same value
+-- since editor_text.lua's own brand-new-formula construction (formula.new, paste) needs that value
 -- (mexpru.DEFAULT_SIZE's own comment: a fixed LOGICAL baseline, not this live state.font_size).
 local DEFAULT_FONT_SIZE = mexpru.DEFAULT_SIZE
 local MIN_FONT_SIZE, MAX_FONT_SIZE = 1, mexpru.MAX_SIZE_INDEX -- char.lua's own table bounds
@@ -47,15 +56,15 @@ local WIREFRAME_SIZE = 16 -- wireframe-toggle button, sits just left of the clos
 local GRAPH_SIZE = 16    -- graph-toggle button, sits just left of the wireframe button
 local RAIL_CLICK_RADIUS = 16 -- how close to the rail line counts as "clicking the rail"
 
---[[ Box kinds. Until now every box was the text editor; a box is now tagged with which of three
-kinds it is, chosen from the radial menu (see RADIAL_* below). Only KIND_TEXT has any controls -
-the other two are placeholders that draw as a coloured box and swallow no input at all, which is
-deliberate for now: they exist so the radial menu has something real to spawn and so the seam
-content.insert_box's own comment already promised is actually exercised.
+--[[ The three box kinds, chosen from the radial menu (RADIAL_* below) when a box is made and never
+converted afterwards. The kind decides which editor module the box carries - `editor`, `fml` or
+`def` - and its colour; nothing else here branches on it.
 
-The eventual meaning of the other two is in docs/phase2_design.md section 1 - a formula cell and a
-definition cell, both immutable and checked, reached through a one-way promotion door. Nothing of
-that exists yet; today they are coloured rectangles. ]]
+Text is the ordinary editor. Formula and definition are the first two cells of
+docs/phase2_design.md section 1: a formula box holds one immutable expression and records what it
+was derived from, a definition box declares a name and its type. Both are real editors now - they
+were coloured placeholders when the radial menu first needed something to spawn.
+@date 2026-09-08 08:30 ]]
 local KIND_TEXT       = "text"
 local KIND_FORMULA    = "formula"
 local KIND_DEFINITION = "definition"
@@ -191,7 +200,8 @@ local PROF_SPIKE_MS   = 8.0
 
 --[[ The empty shell shared by content.new() (which adds one empty box on top of this) and
 content.deserialize() (which populates `boxes` itself instead) - kept in one place so the two
-can't drift apart on what a freshly-built state actually looks like. ]]
+can't drift apart on what a freshly-built state actually looks like.
+@date 2026-09-08 08:30 ]]
 local function new_shell()
     return {
         boxes = {},
@@ -212,8 +222,8 @@ local function new_shell()
                                  -- it's only on when actually visually debugging.
         show_graph = false,     -- toggled by its own button next to the wireframe one - global, same
                                  -- reasoning as show_wireframe: whether the ACTIVE formula's own
-                                 -- reachable-position graph (mformula_new.reachable_graph(), ported
-                                 -- from the old row-based mformula.lua) is drawn, off by
+                                 -- reachable-position graph (mformula_new.reachable_graph(),
+                                 -- carried over from the old row-based editor) is drawn, off by
                                  -- default so it doesn't clutter ordinary editing.
         font_size = DEFAULT_FONT_SIZE, -- Ctrl+MouseWheel (handle_input()) adjusts this - global, same
                                  -- reasoning as show_wireframe just above. A char.lua size-table
@@ -236,11 +246,13 @@ end
 at or after the insertion point, and returns `index`. `kind` defaults to KIND_TEXT, so every
 existing caller keeps its old behaviour unchanged.
 
-Only a text box gets an `editor`; the other two kinds are `{kind = ...}` and nothing else. That is
-what makes them inert everywhere without a single "is this kind editable" check scattered around -
-every place that would type into, measure or serialise a box already has to reach through
-`box.editor`, so the absence of the field IS the absence of controls. Guard on `box.editor`, not on
-`box.kind`, when adding code here. ]]
+Each kind carries its editor state under its OWN field - `editor`, `fml` or `def` - and everything
+downstream dispatches on which field is present rather than on `box.kind`. That is what keeps the
+kind test in one place: a box that gained a field gained its controls with it, and nothing has to
+be told twice. Guard on the field when adding code here, not on the kind.
+
+A formula box is also given an id at birth, so a box derived from it can name it as its parent.
+@date 2026-09-08 08:30 ]]
 function content.insert_box(state, index, kind)
     kind = kind or KIND_TEXT
     local box = {kind = kind}
@@ -267,13 +279,13 @@ function content.insert_box(state, index, kind)
     return index
 end
 
---[[ Appends a new (empty) box at the end and returns its index. ]]
+--[[ Appends a new (empty) box at the end and returns its index. @date 2026-09-08 08:30 ]]
 function content.add_box(state, kind)
     return content.insert_box(state, #state.boxes + 1, kind)
 end
 
 --[[ Removes box i, fixing up active_index to still point at the same logical box (or nil, if the
-removed box was the active one). ]]
+removed box was the active one). @date 2026-09-08 08:30 ]]
 function content.remove_box(state, i)
     table.remove(state.boxes, i)
     if state.active_index == i then
@@ -300,7 +312,8 @@ them simply draws the other way.
 
 Not undoable, exactly like content.remove_box(): undo lives inside a box and knows nothing about
 the document's shape. Moving is reversible by moving back, which is a good deal cheaper than
-teaching undo about it. ]]
+teaching undo about it.
+@date 2026-09-08 08:30 ]]
 function content.move_box(state, i, dir)
     local j = i + dir
     if not state.boxes[i] or not state.boxes[j] then
@@ -328,7 +341,8 @@ The new box goes directly BELOW its source, which is where a derivation reads. R
 or nil when the box at `i` is not a formula box with content to derive from.
 
 The id comes from content.insert_box(), which derives the next one from what is already in the
-document - so a derived box can never collide with an id already in use. ]]
+document - so a derived box can never collide with an id already in use.
+@date 2026-09-08 08:30 ]]
 function content.derive_identity(state, i)
     local src = state.boxes[i]
     if not (src and src.fml and src.fml.latex and src.fml.latex ~= "") then
@@ -355,7 +369,8 @@ appearing after their parents in the document - a box can be moved anywhere in t
 lineage still holds.
 
 DESTRUCTIVE AND NOT UNDOABLE: undo lives inside each editor, and this removes whole boxes. A paste
-into a box with a long derivation under it discards all of it. ]]
+into a box with a long derivation under it discards all of it.
+@date 2026-09-08 08:30 ]]
 function content.prune_descendants(state, id)
     if not id then
         return 0
@@ -385,23 +400,24 @@ function content.prune_descendants(state, id)
     return removed
 end
 
---[[ Every box's full text (editor.to_text() - the same $$LaTeX$$-for-formulas format Ctrl+C
-already produces, so a save is exactly "select all, copy" done to every box in turn), one after
-another. Each box is length-prefixed ("<byte length>\n<that many bytes>") rather than separated by
-some delimiter line, since a box's own text can itself legitimately contain any character
-including newlines - there's no delimiter string that's actually guaranteed not to collide with
-real content, so this sidesteps that question entirely instead of picking one and hoping. ]]
+--[[ THE SAVE FORMAT: every box in order, each as "<kind> <byte length>\n<that many bytes>".
+
+Length-prefixed rather than delimited, because a box's own text can legitimately contain any
+character, newlines included - there is no delimiter guaranteed not to collide with real content,
+so this sidesteps the question instead of picking one and hoping.
+
+A text box's body is the same $$LaTeX$$ form edit.copy produces, so saving is exactly "select all,
+copy" done to every box in turn, and the file stays readable without this program.
+@date 2026-09-08 08:30 ]]
 function content.serialize(state)
     local parts = {}
     for _, box in ipairs(state.boxes) do
-        --[[ A box with no editor (the formula/definition placeholders) has no text at all, so it
-        writes a zero-length body and is carried across a save/load purely by its kind. It would
-        have been simpler to just skip them, but silently dropping boxes on save is the kind of
-        thing that gets discovered much later and by losing work. ]]
         --[[ Whatever the box's own editor makes of itself. The body is opaque here on purpose:
         this layer stays "kind, length, bytes" and never learns what a definition or a formula is,
-        so a new box kind changes nothing in this function. A kind with no editor at all (the
-        formula box, today) writes an empty body and is carried across a save by its kind alone. ]]
+        so a new box kind changes nothing in this function. A kind that has no editor state yet
+        writes an empty body and is still carried across the save by its kind alone - skipping it
+        would have been simpler and would silently drop boxes, which is the kind of thing found out
+        later, by losing work. ]]
         local text = ""
         if box.editor then
             text = editor.to_text(box.editor)
@@ -426,7 +442,8 @@ rather than losing everything. Always ends up with at least one box, even from a
 string, so the caller never has to special-case "the file had nothing usable in it". `fontset` is
 only needed for editor.from_text()'s benefit (building any $$...$$ formula embeds a box's saved
 text contains - always at mexpru.DEFAULT_SIZE, the same fixed LOGICAL baseline every other new
-formula gets, regardless of state.font_size - see mexpru.DEFAULT_SIZE's own comment). ]]
+formula gets, regardless of state.font_size - see mexpru.DEFAULT_SIZE's own comment).
+@date 2026-09-08 08:30 ]]
 function content.deserialize(text, fontset)
     local state = new_shell()
     local pos = 1
@@ -494,18 +511,14 @@ local function insertion_index_for_y(state, click_y)
     return idx
 end
 
---[[ Scrolls (if needed) so box `index`'s own TOP edge is visible - used when Ctrl+Up/Down
-switches the active box to one that might currently be scrolled out of view, so "switching"
-doesn't leave you looking at a box you can't actually see. Reads LAST frame's own layout (like the
-mouse-wheel handling below already does) - a frame of lag on box positions is imperceptible here
-too. A silent no-op before the very first draw() has ever run (last_layout still nil). ]]
 --[[ Scrolls the least amount that brings the span y..y+h inside the viewport, with `lead` pixels
 of extra room on the side being travelled towards (negative = upwards, positive = downwards, 0 =
 none). The lead is what makes a move feel like it went somewhere: landing the caret exactly on the
 edge it entered from tells you nothing about what is beyond it.
 
 Shared by the caret-follow at the end of handle_input and by the box-move follow, so "bring this
-into view" has one definition and one clamp. ]]
+into view" has one definition and one clamp.
+@date 2026-09-08 08:30 ]]
 local function scroll_span_into_view(state, pos, y, h, lead)
     local display_size = vc.ImGui_GetDisplaySize()
     local viewport_top = pos.y
@@ -522,6 +535,14 @@ local function scroll_span_into_view(state, pos, y, h, lead)
     state.scroll_y = math.max(0, math.min(max_scroll, state.scroll_y))
 end
 
+--[[ Scrolls (if needed) so box `index`'s own TOP edge is visible - used when the active box
+changes to one that is currently out of view, so "switching" does not leave you looking at a box
+you cannot see. Enough of the top to show the move happened, never the whole box: one may be taller
+than the viewport.
+
+Reads LAST frame's layout, like every other mouse-facing helper here, and is a silent no-op before
+the first draw() has run.
+@date 2026-09-08 08:30 ]]
 local function scroll_into_view(state, pos, index)
     local r = state.last_layout and state.last_layout[index]
     if not r then
@@ -541,14 +562,6 @@ local function scroll_into_view(state, pos, index)
     state.scroll_y = math.max(0, math.min(max_scroll, state.scroll_y))
 end
 
---[[ A cheap 3-part identity for "where the caret is right now" in editor_state - the plain outer
-cursor_pos (in the 3rd slot, with the first two nil), or (while a formula owns input) that
-formula's own identity + its internal row/pos - comparing this frame's 3 values against last
-frame's (see the cursor-follow block in handle_input, which stores them in the editor's own
-"_"-prefixed fields, the same convention editor.lua's undo snapshots already use for a derived/
-transient field that isn't part of the model) is how that block tells "the caret actually moved"
-apart from "nothing changed, some OTHER frame just ran" without a real equality check on the whole
-editor state. ]]
 -- #################################################################################################
 -- The radial "which kind of box?" menu
 -- #################################################################################################
@@ -626,16 +639,15 @@ local function radial_sector_at(radial, mx, my)
     return nil
 end
 
---[[ Creates the chosen kind at the menu's insertion index and closes. A text box becomes active
-(there is something to type into); the other two do not - activating a box with no editor would
-just be a state nothing can act on, and it would take the caret away from wherever it was. ]]
+--[[ Creates the chosen kind at the menu's insertion index, closes the menu, and leaves the caret
+in the new box - every kind has an editor to receive it.
+@date 2026-09-08 08:30 ]]
 local function radial_choose(state, kind)
     local index = content.insert_box(state, state.radial.index, kind)
-    --[[ Activate the new box if there is anything in it to type into. Asks which editor field the
-    box got, not which kind it is, for the same reason everything else here does: when
-    editor_formula.lua stops being empty, a formula box starts being activated on creation with no
-    change to this line. Activating a box with no editor at all would just take focus away from
-    wherever it was and give it to something that cannot use it. ]]
+    --[[ Asks which editor field the box got rather than which kind it is, for the same reason
+    everything else here does - a kind that gains an editor starts being activated on creation with
+    no change to this line, and one with none would take focus away from wherever it was and give
+    it to something that cannot use it. ]]
     local box = state.boxes[index]
     if box.editor or box.def or box.fml then
         state.active_index = index
@@ -646,10 +658,11 @@ end
 --[[ Runs while the menu is open, and swallows the whole frame's input either way - the caller
 returns immediately after, so nothing types into a box behind it or clicks one.
 
-Two ways in, and they end differently. Ctrl+N opens a menu that STAYS: it is a click-then-click
+Two ways in, and they end differently. `box.new` opens a menu that STAYS: it is a click-then-click
 menu, since there is no button held down to release. A press on the rail opens one that lives only
 as long as the button - drag out to a sector, release to pick it - which is the "drag-clicking"
-half of the gesture. Escape and a click on the centre both cancel. ]]
+half of the gesture. `radial.cancel` and a click on the centre both cancel.
+@date 2026-09-08 08:30 ]]
 local function radial_handle_input(state)
     local radial = state.radial
     local mpos = vc.ImGui_GetMousePos()
@@ -758,11 +771,12 @@ end
 
 Each wedge is a strip of RADIAL_STEPS quads between RADIAL_INNER and the outer radius, because no
 arc or convex-polygon fill is exposed to Lua (see RADIAL_STEPS' own comment). The hovered wedge
-simply uses the larger outer radius - that IS the grow-on-hover, no animation state anywhere. ]]
---[[ Takes the RADIAL TABLE rather than the whole state (changed 2026-09-07), so the F1 help can
-hand it a made-up one and get the real menu drawn - same wedges, same colours, same geometry - with
-no copy of this code living in the help page. content.draw_demo_radial() below is that entry
-point. ]]
+simply uses the larger outer radius - that IS the grow-on-hover, with no animation state anywhere.
+
+Takes the RADIAL TABLE rather than the whole state (2026-09-07), so the F1 help can hand it a
+made-up one and get the real menu - same wedges, same colours, same geometry - instead of a copy of
+this code living in the help page. content.draw_demo_radial() below is that entry point.
+@date 2026-09-08 08:30 ]]
 local function draw_radial_at(radial)
     local cx, cy = radial.cx, radial.cy
 
@@ -829,6 +843,16 @@ local function draw_radial_at(radial)
     vc.ImGui_AddLine({x = cx + arm, y = cy - arm}, {x = cx - arm, y = cy + arm}, x_color, thickness)
 end
 
+--[[ A cheap three-part identity for "where the caret is right now": the plain outer cursor_pos
+(third slot, first two nil), or - while a formula owns input - that formula's identity plus its own
+row and position.
+
+Comparing this frame's three values against last frame's is how the caret-follow block in
+handle_input tells "the caret actually moved" from "nothing changed, another frame just ran",
+without an equality check over the whole editor state. It parks them in the editor's own
+"_"-prefixed fields, the convention this codebase uses for a transient that is not part of the
+model.
+@date 2026-09-08 08:30 ]]
 local function cursor_sig(editor_state)
     local f = editor_state.active_formula
     if f then
@@ -841,21 +865,6 @@ end
 -- Input handling
 -- #################################################################################################
 
---[[ Pass 1 (mirrors old/content.h's content_draw Pass1): a click on a box's close button removes
-it; a click inside a box activates it (and only it); a click on/near the rail line inserts a new
-box right there - ordering included, so clicking between two boxes' connector nodes inserts
-between them - and activates it. Pass 2: keyboard/mouse for this frame is forwarded only to the
-active box's editor - inactive boxes see no input, so they can't be typed into by accident.
-
-A click that *activates* a previously-inactive box is consumed here and not forwarded to that
-box's editor this frame - each box remembers its own cursor/selection from when it was last
-active, and the click that brings focus back to it shouldn't also yank the cursor to wherever was
-clicked. Only once a box is already active does clicking inside it move the cursor there.
-
-`fontset` is only threaded through for editor.handle_input()'s benefit (hit-testing a click
-against an active formula's own geometry - see its own comment). `pos` is the same draw origin
-draw() itself takes - needed here only to size/clamp the scroll range against the current viewport
-(see the mouse-wheel handling below). ]]
 --[[ Whether the F2 customiser is on screen. Exists for main.lua, which saves the keymap only once
 the panel is closed (see its own comment) - it needs to ask without reaching into this module's
 state table for a field name that is nobody else's business. ]]
@@ -863,6 +872,28 @@ function content.customiser_open(state)
     return state.show_alt_help == true
 end
 
+--[[ ONE FRAME OF INPUT for the whole document, in two passes.
+
+Pass 1 is the mouse against the chrome: a click on a box's close button removes it, a click inside
+a box activates it and only it, a click on or near the rail inserts a new box right there - in the
+order clicked, so clicking between two connector nodes inserts between them.
+
+Pass 2 forwards the frame to the ACTIVE box's editor alone. Inactive boxes see no input at all, so
+nothing can be typed into one by accident.
+
+A click that ACTIVATES a previously-inactive box is consumed here and never reaches that box's
+editor: each box remembers its own cursor and selection from when it was last active, and the click
+that brings focus back should not also yank the caret to wherever it landed. Once a box is already
+active, clicking inside it moves the caret as usual.
+
+Panels come first and take the whole frame - while F1 or F2 is open this returns before any of the
+above, which is what lets those panels use real widgets and read the arrow keys themselves.
+
+  fontset  threaded through for the editors' benefit: hit-testing a click needs a formula's real
+           drawn geometry
+  pos      the same draw origin draw() takes, needed here only to size and clamp the scroll range
+           against the current viewport
+@date 2026-09-08 08:30 ]]
 function content.handle_input(state, fontset, pos)
     -- F1/F2 each toggle their own full-screen panel on/off; while either is showing, every other
     -- input this frame is swallowed here (nothing forwarded to any box) so it can't be typed into
@@ -1201,9 +1232,18 @@ end
 -- Layout / render
 -- #################################################################################################
 
--- F1's keybinding panel - kept as plain lines (a blank one is a section gap) rather than a table
--- of {key, description} pairs since a couple of entries (the formula-mode block) read better as
--- an indented sub-list than as a strict two-column layout.
+--[[ DEAD, AND KEPT ONLY UNTIL SOMEBODY DECIDES TO DELETE IT.
+
+Everything from here to the end of draw_alt_help() - HELP_LINES, draw_help(), the Alt+glyph legend
+and their helpers - was the pre-panel help: F1 drew this flat key list and F2 the glyph legend.
+panel_help.lua and panel_keymap.lua replaced both on 2026-09-07, and nothing has called either
+function since; content.draw() dispatches to the panels instead.
+
+It is also WRONG where it still reads as documentation: the keys here are written as literal text
+and no longer come from the registry, so a rebinding does not reach them, and "F2 - Alt+letter and
+Alt+symbol glyph reference" is not what F2 is any more. Read it as a record of what the help used
+to say, not as a description of the app.
+@date 2026-09-08 08:30 ]]
 local HELP_LINES = {
     "Math Writer - Controls  (F1 to close)",
     "",
@@ -1299,7 +1339,8 @@ the app is being used, since a lag spike is over before anyone can switch views 
 
 Text comes back from C++ already formatted and sorted (prof_report()) and is just split on newlines
 here - the overlay never does arithmetic of its own, so there is only one place where "what a
-millisecond means" is decided. ]]
+millisecond means" is decided.
+@date 2026-09-08 08:30 ]]
 local PROF_BG_COLOR   = 0xdd101010
 local PROF_TEXT_COLOR = 0xffd0ffd0
 local PROF_LINE_H     = 15
@@ -1366,8 +1407,8 @@ local ALT_GLYPH_SZ = DEFAULT_FONT_SIZE -- matches the default box content size (
                          -- of any live Ctrl+MouseWheel zoom (state.font_size), this panel's own
                          -- fixed reference size regardless of what a box is currently zoomed to.
 
---[[ Real line-height/baseline metrics at font size `sz`, same G/g-measuring trick editor.lua's
-own get_metrics() uses (see that file's comment) - char_draw()'s `pos` is a BASELINE, not a
+--[[ Real line-height/baseline metrics at font size `sz`, the same G/g-measuring trick
+editor_text.lua's own get_metrics() uses (see that file's comment) - char_draw()'s `pos` is a BASELINE, not a
 top-left corner the way ImGui_AddText()'s is, so a row whose visual top is `row_top` needs its
 char_draw calls at `row_top - baseline_shift` to land in the same place a same-y AddText call
 would. This is what was actually missing before: mixing an untranslated `y` between the two
@@ -1396,9 +1437,10 @@ local function draw_label(fontset, sz, x, baseline_y, text, color)
     return cx
 end
 
---[[ F2's panel: what Alt+letter and Alt+Shift+letter actually produce, letter by letter - reads
-straight from char.greek_alt/greek_alt_shift (the same tables editor.lua/mformula.lua's own Alt
-handling looks up), with the SAME fallback rule they use for a letter that has no entry there
+--[[ DEAD with the rest of the pre-panel help above - the letter table now lives in panel_keymap's
+Letters section and in the F1 help's own generated one. What it drew: Alt+letter and
+Alt+Shift+letter, letter by letter, straight from char.greek_alt/greek_alt_shift (the same tables
+the editors' Alt handling looks up), with the SAME fallback rule they use for a letter that has no entry there
 (plain lowercase for Alt, plain uppercase for Alt+Shift) - so this can never drift from what the
 keys actually do, only from char.lua's own tables changing (which is exactly what should update
 it). Draws the real glyph (not just its "\name") since "what does this key actually produce" is
@@ -1475,10 +1517,6 @@ local function draw_alt_help(fontset)
     end
 end
 
---[[ Draws every box, stacked vertically from `pos`, each connected to a left rail - or, while
-state.show_help/show_alt_help is set (F1/F2), that panel instead, covering the whole display so
-nothing underneath shows or can be mistaken for still being interactive (handle_input() already
-backs that up by swallowing input while either is up). ]]
 --[[ A box's own CHROME: the coloured fill, the focus border, the connector out to the rail and
 the close "x". Everything about a box that is not its content.
 
@@ -1489,7 +1527,8 @@ the same commit and cannot silently drift out of date.
 
 `rail_x` nil draws no connector (the help's standalone examples), otherwise the node and the line
 to it are drawn as in the document. Returns the close button's rect, which the real caller stores
-in its layout for hit-testing and the help simply ignores. ]]
+in its layout for hit-testing and the help simply ignores.
+@date 2026-09-08 08:30 ]]
 function content.draw_box_chrome(box_x, box_y, box_w, box_h, kind, is_active, rail_x)
     local kind_colors = KIND_COLORS[kind or KIND_TEXT] or KIND_COLORS[KIND_TEXT]
     vc.ImGui_AddRectFilled({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
@@ -1525,23 +1564,38 @@ gains a fourth sector or changes colour, the help picture changes with it.
 
 `hover` names a sector to light up (content.box_kinds() supplies the names), or nil for none. The
 result is inert by construction: this only draws, and the menu's behaviour lives entirely in
-radial_handle_input(), which the help never calls. ]]
+radial_handle_input(), which the help never calls.
+@date 2026-09-08 08:30 ]]
 function content.draw_demo_radial(cx, cy, hover)
     draw_radial_at({cx = cx, cy = cy, hover = hover, selected = nil, over_center = false})
 end
 
 --[[ How much room a drawn menu needs around its centre - the help uses it to reserve space
-without knowing the geometry. ]]
+without knowing the geometry. @date 2026-09-08 08:30 ]]
 function content.radial_extent()
     return RADIAL_OUTER_HOVER
 end
 
 --[[ The kinds, in the order the radial menu offers them, for the help's own example. Exposed
-rather than duplicated so a fourth kind appears in the documentation automatically. ]]
+rather than duplicated so a fourth kind appears in the documentation automatically. @date 2026-09-08 08:30 ]]
 function content.box_kinds()
     return {KIND_TEXT, KIND_FORMULA, KIND_DEFINITION}
 end
 
+--[[ Draws the whole document: every box stacked down from `pos`, each connected to the rail, with
+the derivation curves between formula boxes - or, while a panel is open, that panel instead.
+
+A panel covers the whole display, so nothing underneath shows or can be mistaken for something
+still live; handle_input() backs that up by having already returned for the frame. The profiler
+overlay is drawn on top of either, because a lag spike is over before anyone could switch views.
+
+Records the layout it drew (`state.last_layout`, `last_rail_x`, `last_total_height`) for the next
+frame's hit-testing and scroll clamping - one frame of lag, which is the bargain every mouse-facing
+helper here already makes.
+
+  pos   the document's top-left, before scrolling
+  opts  {max_width = n} to lay out narrower than the window, which the F1 help's examples use
+@date 2026-09-08 08:30 ]]
 function content.draw(state, fontset, pos, opts)
     --[[ Drawn LAST, on top of everything, including the F1/F2 panels - so opening one of those
     doesn't take the numbers away mid-investigation. Hence the flag rather than a straight call:
@@ -1768,8 +1822,8 @@ function content.draw(state, fontset, pos, opts)
     local rail_bottom = math.max(y, viewport_bottom)
     vc.ImGui_AddLine({x=rail_x, y=0}, {x=rail_x, y=rail_bottom}, RAIL_COLOR, 1)
 
-    -- Hover preview: while the mouse sits in the "click to insert a box" zone (mirrors old/
-    -- content.h's own hover affordance there), mark exactly where a click would land - a circle
+    -- Hover preview: while the mouse sits in the "click to insert a box" zone (the C++ content
+    -- shell had the same affordance), mark exactly where a click would land - a circle
     -- on the rail with a small cross through it, at the mouse's own y.
     local mpos = vc.ImGui_GetMousePos()
     if mpos and math.abs(mpos.x - rail_x) <= RAIL_CLICK_RADIUS then

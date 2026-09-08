@@ -1,25 +1,27 @@
 --[[
-panel_help.lua - the F1 screen: what this editor does that no key list can tell you.
+panel_help.lua - the F1 screen: what this editor does that no key list can tell you, with every
+key name in the prose taken from the live keymap.
 
-It replaced content.lua's HELP_LINES, which was a flat list of "key - description" pairs. Two
-things were wrong with that. It said which key did what and never why the editor behaves as it
-does, so the parts people actually get stuck on - why an exponent attaches to the closing bracket,
-why a selection cannot leave its row, how to type NN literally - had nowhere to live. And it
-spelled the keys out as text, so every rebinding made it a liar.
-
-Both are fixed the same way: the prose is written by hand (nothing can derive an explanation), and
-every key name inside it is a PLACEHOLDER resolved through the keymap at draw time.
+The explanations are written by hand, because nothing can derive why an exponent attaches to the
+closing bracket, why a selection cannot leave its row or how to type NN literally - and a flat
+"key - description" list, which this replaced, has nowhere to put any of it. But no key is ever
+written as text. Prose carries PLACEHOLDERS resolved through the keymap at draw time:
 
     "{formula.new} inserts a formula"   ->   "Ctrl+M inserts a formula"
 
-Rebind it in F2 and this page says the new key with no edit here. An action whose binds have all
-been deleted renders "(unbound)", so the sentence still reads - and an id that does not exist
-renders as "{like.this}" rather than vanishing, because a silently-dropped placeholder would be a
-typo nobody ever notices. Only the FIRST bind is shown (keymap.label's own comment): a second
-alternative should not reflow a paragraph.
+so rebinding in F2 changes this page with no edit here, and the page cannot go stale about the
+keyboard. Those two - hand-written why, generated keys - are what the file is for; everything
+below is in service of them.
 
-80 columns, ImGui's own font. That font is fixed-width, so the column count is a real grid rather
-than an approximation, and the wrap below can count characters instead of measuring pixels.
+An action whose binds have all been deleted renders "(unbound)", so the sentence still reads, and
+an id the registry does not have renders as "{like.this}" rather than vanishing, because a
+silently-dropped placeholder is a typo nobody ever notices. Only the FIRST bind is shown
+(keymap.label's own comment): a second alternative should not reflow a paragraph.
+
+The page is an 80-column grid in ImGui's own font. That font is fixed-width, so the column count
+is real rather than an approximation, and wrap() can count characters instead of pixels.
+
+@date 2026-09-08 07:43
 ]]
 
 local vc = require("virt_composer")
@@ -29,11 +31,13 @@ local mexpru = require("mexpru")
 local glyphmap = require("glyphmap")
 local char = require("char")
 
---[[ content.lua is required LAZILY, on first use, and that is not a style choice: content.lua
-requires THIS file (it owns the F1/F2 dispatch), so requiring it back at load time is a cycle - and
-Lua answers a require cycle with a C stack overflow rather than an error naming the problem, which
-is a genuinely miserable thing to debug. By the time any chapter is drawn, content is fully loaded.
-Same idiom mformula_new.lua uses for mformula_latex, for the same reason. ]]
+--[[ content.lua, required on FIRST USE rather than at load.
+
+content.lua requires THIS file (it owns the F1/F2 dispatch), so requiring it back at load time
+closes a cycle - which Lua answers with a C stack overflow rather than an error naming the problem.
+Deferring costs nothing: nothing here runs before content.draw() has called it, by which point
+content is fully loaded. Same idiom as mformula_new.lua's mformula_latex.
+@date 2026-09-08 07:43 ]]
 local content_mod = nil
 local function content_lib()
     if not content_mod then
@@ -44,15 +48,18 @@ end
 
 local panel_help = {}
 
---[[ FONT_SCALE 2 - the page is drawn at twice ImGui's normal size (asked for 2026-09-07). Every
-length below is in UNSCALED units and multiplied on use, so changing this one number moves the whole
+--[[ The page's scale and its grid.
+
+FONT_SCALE 2 - the page is drawn at twice ImGui's normal size (asked for 2026-09-07). Every length
+below is in UNSCALED units and multiplied on use, so changing this one number moves the whole
 layout together rather than leaving the padding at the old size around bigger text.
 
 COLUMNS is a MAXIMUM, not a promise, and that is a compromise worth knowing about. 80 columns of
 doubled ProggyClean is about 1120px, and the window is 1280 wide - which leaves 160px for a sidebar
 whose longest entry ("Digraphs and the number sets") needs about 390. The three constraints do not
 fit together at this window size, so the page takes as many columns as actually remain, capped at
-80. Widen the window and it settles at 80 on its own. ]]
+80. Widen the window and it settles at 80 on its own.
+@date 2026-09-08 07:43 ]]
 local FONT_SCALE   = 2
 local COLUMNS      = 80
 local BG_COLOR     = 0xee1a1a1a
@@ -66,12 +73,26 @@ local KEY_BG       = 0xff4a4a4a
 local KEY_EDGE     = 0xff8a8a8a
 local PAD          = 16
 
---[[ The chapters. Order is the reading order, and it is deliberate: what the app IS, then how to
-put text in it, then the formula language in the order someone actually meets it, then the things
-that only bite once you are fluent.
+--[[ The chapters, and their order is the reading order: what the app IS, then how to put text in
+it, then the formula language in the order someone actually meets it, then the things that only
+bite once you are fluent. Position is meaning here - CHAPTER_NUMBERS below reads the numbering off
+this list, so moving an entry renumbers it and re-files it in one edit.
 
-Placeholders are {action.id} and are resolved against the registry - see the header. Anything not
-in braces is literal. A blank line is a paragraph break; the wrap below preserves it. ]]
+An entry is {title = ..., body = <a long string>, sub = true?}; `sub` makes it a sub-chapter of
+the last top-level entry above it.
+
+A body is prose in a small markup, every piece of which is handled further down this file:
+
+    {action.id}    that action's current first binding, drawn on a chip     resolve()
+    @fig <latex>   a real formula, built once per chapter                   build_figures()
+    @box           a three-box document drawn by content.draw()             draw_box_kind_example
+    @boxkind1..4   one box: text, formula, definition, big definition       draw_box_kind_example
+    @letters       the Alt+letter table, generated from glyphmap            draw_letters_reference
+    @radial        the new-box radial menu, drawn by content.lua            draw_radial_example
+
+An INDENTED line is preformatted and survives verbatim; a blank line is a paragraph break; every
+other line is reflowed to the column width (wrap()). Anything not in braces is literal.
+@date 2026-09-08 07:43 ]]
 local CHAPTERS = {
 {title = "Reading this help", body = [[
 This page explains what the editor does that is not obvious from watching it.
@@ -131,7 +152,11 @@ where you clicked. Once a box is active, clicking inside it moves the cursor
 immediately.
 
 {box.new} opens the new-box menu just after the current box, and clicking the rail
-opens it at the point you clicked - chapter 1 shows what the menu looks like.
+opens it at the point you clicked - chapter 1 shows what the menu looks like. It
+answers the keyboard as well as the mouse: {radial.text}, {radial.formula} and
+{radial.definition} aim at a kind, {radial.dismiss} aims at the x in the middle,
+{radial.commit} makes what is aimed at, and {radial.cancel} closes the menu without
+making anything.
 
 {box.move_up} and {box.move_down} move the BOX itself up or down the stack, rather than
 moving you between boxes, and the box you are in stays the box you are in - the caret
@@ -253,8 +278,9 @@ deletes what is behind the cursor and {text.delete} what is in front.
 MOVING. {nav.left} and {nav.right} move a character; {nav.word_left} and
 {nav.word_right} skip a whole word. {nav.up} and {nav.down} move by line and keep your
 column across the gap. {nav.home} and {nav.end} go to the ends of the line. Hold Shift
-with any of those to select instead of move - {nav.select_left},
-{nav.select_word_right}, {nav.select_end} and so on - and {edit.select_all} takes the
+with any of those to select instead of move - {nav.select_left} and {nav.select_right},
+{nav.select_up} and {nav.select_down}, {nav.select_home} and {nav.select_end},
+{nav.select_word_left} and {nav.select_word_right} - and {edit.select_all} takes the
 whole box.
 
 {edit.copy}, {edit.cut} and {edit.paste} do the obvious things, and {edit.undo} /
@@ -326,6 +352,12 @@ it is called - which is what lets a later reference be recognised as the same th
 THE SHORTHAND ROW IS A VIEW. It restates the slots above as a signature, collapsing runs
 of the same domain into powers. It is a real formula and can be selected and copied like
 any other, but typing into it is discarded: it has no content of its own to change.
+{definition.exit_slot} leaves it and puts the caret back in the name.
+
+MOVING BETWEEN THE SLOTS IS BY MOUSE. Click the name, a parameter's set, or the result
+type to work in it - there is no key that steps from one slot to the next today, and the
+one out of the shorthand is the Escape above. {edit.undo} and {edit.redo} work here as
+they do everywhere, one step per keystroke that actually changed something.
 
 AND IT IS NOT YET CONNECTED TO ANYTHING. Nothing outside the box reads these names today.
 ]]},
@@ -393,6 +425,11 @@ numbers, and ZZ QQ RR CC HH II LL follow the same rule.
 To type one of those literally instead, put a space between the two characters, then
 {nav.left}, {text.backspace}, {nav.right}. The space breaks the pair before it can
 combine, and removing it afterwards leaves the two characters side by side.
+
+THAT WORKS BECAUSE THEY FIRE WHILE YOU TYPE AND AT NO OTHER TIME. Nothing rescans a
+formula afterwards, so a pair that comes together by pasting, by loading a file, or by
+deleting whatever stood between the two characters is left alone - which is also why a
+document reopens looking exactly as it was saved.
 
 A typed ~ means similar-to rather than a literal tilde, and ~= is approximately.
 
@@ -521,12 +558,64 @@ partner in a formula that was fine a moment ago.
 every key name you see here is read from it - change a binding there and this page says
 the new key.
 
-An action can hold more than one binding. This page shows the first; the table shows
-them all.
+TWO WAYS TO SET ONE, because they suit different moments. Click the text and write it -
+"Ctrl+Shift+K" - when you know exactly what you want, or when it is a key this keyboard
+cannot conveniently press. Click the round record button and press the combination when
+you know the shape of the chord in your hands but not its name.
 
-A binding is exact: Ctrl+Z means Ctrl and Z with nothing else held. The exception is
+RECORDING NEVER COMMITS BY ITSELF. Every key pressed while it runs is added to the
+attempt, letting go changes nothing, and pressing the button again clears it and starts
+over; the tick saves and the cross abandons. That is what makes every key bindable,
+Escape included - a design that committed on release would have to hold Escape back as
+its own way out. A second non-modifier key is refused rather than replacing the first.
+
+AN ACTION CAN HOLD MORE THAN ONE BINDING. This page shows the first; the table shows
+them all, with a + to add one and a cross to drop one, and a row says so when another
+action can fire on the same keys.
+
+A BINDING IS EXACT: Ctrl+Z means Ctrl and Z with nothing else held. The exception is
 the +All suffix, which means "with any modifiers" - {text.newline} is written that way,
 so a stray Shift does not swallow your newline.
+
+THE LETTERS SECTION is the other half of the table: what each letter types plain, with
+Alt, and with Alt+Shift. Every letter is listed, not only the ones carrying a Greek
+letter today, because a key with nothing on it is exactly the key you may want to put
+something on. Cells take LaTeX names, checked against the same catalogue the
+backslash-name-space entry uses, and an empty plain cell means "the letter itself". The
+Greek chapter's table is that map, drawn.
+
+CHANGES ARE SAVED WHEN THE PANEL CLOSES rather than as you type, so a half-written
+binding never reaches disk.
+]]},
+
+{title = "Saving and the app's own keys", body = [[
+YOUR DOCUMENT IS SAVED TO math_writer.save next to the application, by {doc.save} and
+again on the way out, and it is read back when the application starts - so you resume on
+what was on screen. It is written in the same $$LaTeX$$ form {edit.copy} produces, which
+means the file is exactly what selecting everything in every box and copying would have
+given you, and it stays readable without this program.
+
+YOUR CONFIGURATION IS NOT IN IT. The key bindings live in keymap.save and the letter map
+in glyphmap.save, beside the document and deliberately outside it: a document handed to
+somebody else, or checked into a repository, should not drag your keyboard habits along
+with it, and either of the two is useful without the other.
+
+THREE KEYS BELONG TO THE APPLICATION rather than to the table {app.customiser} edits.
+They cannot be rebound, and that is what they are for: they read the real keyboard
+directly, so they keep working when the editor's own side has thrown and every frame is
+failing - which is exactly when you need them. They are written here as plain text
+rather than on a chip because no binding stands behind them to look up.
+
+CTRL+Q QUITS, saving on the way, by the same path the window's close button takes.
+
+CTRL+SHIFT+D opens a local port that lets a debugging tool drive this instance, and
+closes it again. Nothing listens until you ask for it: an editor you are working in
+should not sit on an open port.
+
+CTRL+R saves and restarts in place, picking up edited scripts or a rebuilt binary
+without leaving the window. A development convenience, marked temporary in the source,
+and it works only where re-executing through /proc/self/exe does - so on Linux, not on
+Windows.
 ]]},
 
 {title = "When something is slow", body = [[
@@ -539,11 +628,13 @@ intermittent stall without the watching costing anything itself.
 ]]},
 }
 
---[[ "3", "3.1", "3.2", "4" ... - worked out from the list rather than written into each entry,
-so inserting or reordering a chapter renumbers everything automatically and a number can never
-disagree with a position. A chapter marked `sub = true` belongs to the last top-level one above it.
+--[[ The chapter numbers - "3", "3.1", "3.2", "4" ... - read off the list's ORDER rather than
+written into each entry, so a number can never disagree with a position: insert or reorder a
+chapter and everything after it renumbers itself. A `sub` entry numbers under the last top-level
+one above it.
 
-Computed once at load: CHAPTERS never changes at runtime. ]]
+Computed once at load: CHAPTERS never changes at runtime.
+@date 2026-09-08 07:43 ]]
 local CHAPTER_NUMBERS = {}
 do
     local top, sub = 0, 0
@@ -558,14 +649,20 @@ do
     end
 end
 
---[[ Substitutes {action.id} for the action's current first binding. An id the registry does not
-have is left in braces rather than blanked: a placeholder that silently disappears is a typo that
-survives forever, and this way it is visible the first time the chapter is opened. ]]
+--[[ Substitutes {action.id} for that action's current first binding, and marks every substitution
+with KEY_MARK so the drawing pass can tell a key from a word.
+
+An id the registry does not have is left in its braces rather than blanked: a placeholder that
+silently disappears is a typo that survives forever, while a visible one is caught the first time
+the chapter is opened. "@fig" lines are markup for the formula parser, not prose, and pass through
+untouched.
+
+  text -> the same text, placeholders replaced, each replacement between \1 bytes.
+@date 2026-09-08 07:43 ]]
 local function resolve(text)
-    --[[ Line by line, because "@fig" lines are LaTeX and LaTeX is full of braces: x^{2},
-    \\mathbb{N}, \\frac{a}{b}. Substituting inside one would at best leave "{2}" alone and at worst
-    rewrite a figure into nonsense the day an action happens to be called something short. A figure
-    is markup for the formula parser, not prose, so nothing here touches it. ]]
+    --[[ Line by line, so figures can be stepped over: LaTeX is full of braces - x^{2},
+    \\mathbb{N}, \\frac{a}{b} - and substituting inside one would at best leave "{2}" alone and at
+    worst rewrite a figure into nonsense the day an action happens to be called something short. ]]
     local out = {}
     for line in (text .. "\n"):gmatch("([^\n]*)\n") do
         if line:match("^@fig") then
@@ -576,12 +673,10 @@ local function resolve(text)
                 if not ok or label == nil then
                     return "{" .. id .. "}"
                 end
-                --[[ Wrapped in KEY_MARK so draw() can put a chip behind it. Marked HERE because
-                this is the only point that knows a span came from a binding: by the time the line
-                is a string, "Ctrl+W" and the words around it are indistinguishable, and searching
-                the text for key-shaped substrings afterwards would highlight prose that merely
-                mentions one. The marker is a control character precisely because it can never
-                occur in a key name or in the prose. ]]
+                --[[ Marked HERE because this is the only point that knows a span came from a
+                binding: once the line is a string, "Ctrl+W" and the words around it are
+                indistinguishable, and hunting for key-shaped substrings afterwards would put a
+                chip on prose that merely mentions one. A control byte occurs in neither. ]]
                 return "\1" .. label .. "\1"
             end))
         end
@@ -594,7 +689,8 @@ end
 Split on the KEY_MARK control byte: odd pieces are ordinary text, even ones are key names. Each
 piece is submitted as its own ImGui item on the same line, and the chip is a rectangle drawn behind
 the key name on the window draw list - which is why this needs the screen cursor rather than the
-window-relative one. ]]
+window-relative one.
+@date 2026-09-08 07:43 ]]
 local function draw_marked_line(line)
     if line == "" then
         -- A blank string submits no widget at all, which would swallow the paragraph break.
@@ -639,8 +735,11 @@ with a short line after every long one. Consecutive prose lines are joined into 
 and the paragraph is then broken at COLUMNS, so the page reads evenly whatever the bindings are.
 
 An INDENTED line is never joined or broken: the digraph rows and the sample tables are laid out by
-hand and must survive verbatim. A blank line ends a paragraph and is kept, since it is the only
-paragraph break the page has. ]]
+hand and must survive verbatim, and so does an "@" line, which is a figure rather than text. A
+blank line ends a paragraph and is kept, since it is the only paragraph break the page has.
+
+  text, columns -> a list of lines, the chapter's leading and trailing blanks removed.
+@date 2026-09-08 07:43 ]]
 local function wrap(text, columns)
     columns = columns or COLUMNS
     local out = {}
@@ -691,50 +790,54 @@ local function wrap(text, columns)
     return out
 end
 
--- Resolved and wrapped once per chapter selection rather than every frame - the substitution walks
--- the whole chapter and the wrap allocates a table per line, neither of which belongs in a frame
--- that is otherwise just drawing text. Invalidated whenever a binding changes.
+--[[ The rendered chapter: resolved, wrapped and built into figures once per selection rather than
+every frame - the substitution walks the whole chapter and the wrap allocates a table per line,
+neither of which belongs in a frame that is otherwise just drawing text.
+
+Keyed on everything that changes the result: which chapter, the keymap revision (a rebinding
+rewrites the prose) and the column count (a resize rewraps it).
+@date 2026-09-08 07:43 ]]
 local cache = {chapter = nil, stamp = nil, lines = nil, figures = nil}
 
 --[[ The logical size figures are built at. Bigger than mexpru.DEFAULT_SIZE because the page around
 them is drawn at double the normal font - a formula at body size next to doubled text reads as an
-afterthought. char.lua's size table runs biggest-to-smallest, so SUBTRACTING walks it up. ]]
+afterthought. char.lua's size table runs biggest-to-smallest, so SUBTRACTING walks it up.
+@date 2026-09-08 07:43 ]]
 local FIG_SIZE = mexpru.DEFAULT_SIZE - 3
 
---[[ An example of the box stack, drawn with content.lua's OWN chrome function rather than a
-lookalike built here - which is the whole reason content.draw_box_chrome() was split out. The
-example therefore shows the real fill colour per kind, the real focus border, the real rail
-connector and the real close button, and it cannot drift when those change.
+--[[ The example documents the chapters draw, one per @box / @boxkind line, kept by `which`.
 
-Inert by construction: this draws, and every behaviour a box has lives in content.handle_input(),
-which the help never calls. Clicking one of these does nothing at all. ]]
---[[ A REAL, THREE-BOX DOCUMENT, drawn by content.draw() - the same function that draws yours.
+Each is a REAL document handed to content.draw() - the same call that draws yours - rather than a
+lookalike drawn here. That is the whole point of them: the rail, the per-kind fill, the focus
+border, the buttons above each box, the inline formula inside prose, the definition's slots and the
+derivation curve all come out of the code that produces the real thing, at whatever it looks like
+today, so an example cannot drift from the editor and cannot be missing a part the editor has. The
+hand-drawn version this replaced was missing three at once (2026-09-07): no buttons over the boxes,
+a definition rendered as an ordinary formula, and no way to show an inline embed at all.
 
-The earlier version of this hand-drew three coloured rectangles with a formula posed inside each,
-and it was wrong in a way worth recording: it showed what a box LOOKS like rather than what a box
-IS. The buttons above each box were missing entirely, a definition rendered as an ordinary formula
-because nothing here knew what a definition slot is, and the text box could not show an inline
-embed because that lives in the text editor, not in this file. Every one of those gaps came from
-re-drawing instead of calling.
+Built once and kept: building one means parsing LaTeX and laying out an editor.
 
-So this builds an actual content state with one box of each kind, fills each through its own
-editor's own from_text(), and hands the whole thing to content.draw(). Everything follows from
-that for free: the rail, the per-kind fill, the focus border, the close/wireframe/graph buttons,
-the inline formula inside the prose, the definition's slots, and the derivation curve - all of it
-produced by the code that produces the real thing, at whatever it happens to look like today.
-
-Built once and kept, because building it means parsing LaTeX and laying out three editors.
-
-INERT, and structurally so rather than by promise: content.handle_input() is never called on this
-state, and it is a separate state from the document, so there is nothing here that a click could
-reach and nothing it could reach the document through. ]]
+INERT structurally rather than by promise - content.handle_input() is never called on these, and
+they are documents of their own, so there is nothing here a click could reach and nothing it could
+reach your document through.
+@date 2026-09-08 07:43 ]]
 local demo_docs = {}
 
---[[ Builds a one-box document of the given kind, filled with something that shows what that kind
-is FOR - not merely what colour it is.
+--[[ Builds one example document, filled with something that shows what that kind of box is FOR -
+not merely what colour it is.
 
-One box per document rather than one document with three, because each example now sits beside its
-own paragraph instead of all three appearing together. ]]
+One box per document rather than one document holding all of them, because each example sits beside
+the paragraph that talks about it; 6 is the exception, and is the whole stack for the chapter that
+talks about the stack.
+
+  fontset  the fonts to lay the example out with, as for any editor
+  which    1  a text box, with a formula set inline in the prose
+           2  a formula box
+           3  a definition of arity 0 - the membership form
+           4  a definition with five parameters, taken from a real document
+           5  a formula box and a derivation of it (built, but nothing draws it - see draw())
+           6  one box of EACH kind, the middle one active
+@date 2026-09-08 07:43 ]]
 local function build_demo_doc(fontset, which)
     local content = content_lib()
     local editor_text = require("editor_text")
@@ -742,7 +845,6 @@ local function build_demo_doc(fontset, which)
     local kinds = content.box_kinds()
 
     local doc = content.new()                    -- starts with a single empty text box
-    -- 4 is a second DEFINITION example, so it uses the same box kind as 3.
     -- 4 is a second DEFINITION example and 5 a pair of FORMULA boxes, so both borrow
     -- another entry's box kind rather than naming a fourth one.
     local kind_index = (which == 4 and 3) or (which == 5 and 2) or which
@@ -758,14 +860,8 @@ local function build_demo_doc(fontset, which)
                 .. "and the sentence carries on around it.", fontset)
     elseif which == 6 then
         --[[ One of EACH kind in a single document, for the "this is what a stack of boxes looks
-        like" picture. It replaced a hand-drawn version that painted three coloured rectangles with
-        content.draw_box_chrome() and nothing else - so it had no content in the boxes and, more
-        visibly, none of the buttons above them, because those are built in content.draw()'s layout
-        loop rather than in the chrome function. Reported 2026-09-07: "boxes are not generated,
-        there is something wrong with them, but their buttons are not there".
-
-        Same lesson as chapter 3's examples: draw it with the real thing or it is a drawing OF the
-        thing, and drifts. ]]
+        like" picture. The buttons over a box are built in content.draw()'s layout loop rather than
+        in draw_box_chrome(), which is why the hand-drawn version had none - see demo_docs. ]]
         local editor_text = require("editor_text")
         editor_text.from_text(doc.boxes[1].editor, "A text box.", fontset)
         content.insert_box(doc, 2, kinds[2])
@@ -783,10 +879,13 @@ local function build_demo_doc(fontset, which)
 
     elseif which == 2 or which == 5 then
         doc.boxes[1].fml.latex = "\\frac{a+b}{c} = x^{2}"
-        --[[ 5 adds a SECOND box derived from the first, so the derivation chapter shows the curve
-        it talks about instead of merely claiming it exists. Made through the same
-        content.derive_identity() the editor uses, so the link here is a real derivation link -
-        while 2 stays a single box, for the places that only want "this is a formula box". ]]
+        --[[ 5 adds a SECOND box derived from the first, through the same
+        content.derive_identity() the editor uses, so the link drawn is a real derivation link -
+        while 2 stays a single box, for the places that only want "this is a formula box".
+
+        Written for the derivation chapter, to show the curve it talks about rather than merely
+        claim it exists, but no chapter asks for it and draw() maps no "@boxkind5" - so this branch
+        is unreachable today. ]]
         if which == 5 then
             content.derive_identity(doc, 1)
         end
@@ -812,11 +911,11 @@ local function build_demo_doc(fontset, which)
         the same glyph typing RR produces; a plain "R" would draw an ordinary italic letter and
         say something different.
 
-        editor_definition.to_text()'s exact format: the slot count and a newline, then each slot as
-        "<len>\n<latex>" with NO separator between slots. Writing newlines between them instead -
-        which looks more natural, and is what this first did - loads only the FIRST slot, because
-        from_text() reads the separator as the next slot's length and stops. The definition then
-        came out with empty sets, which read as a bug in the editor and was a bug in this string. ]]
+        editor_definition.to_text()'s exact format, and worth reading before writing another one:
+        the slot count and a newline, then each slot as "<len>\n<latex>" with NO separator between
+        slots. Newlines between them - which looks more natural - load only the FIRST slot, because
+        from_text() reads the separator as the next length and stops, and the definition comes out
+        with empty sets: a bug that reads as the editor's and is the string's. ]]
         local slots = {"x", "\\R"}
         local body = {tostring(#slots), "\n"}
         for _, latex in ipairs(slots) do
@@ -831,6 +930,15 @@ local function build_demo_doc(fontset, which)
     return doc
 end
 
+--[[ Draws one example document at the cursor, and reserves the room it took.
+
+Built on first use and kept afterwards. A build that throws is remembered as `false` and the page
+prints a placeholder in its place: a help page must never be the thing that takes the app down, and
+a missing example is a far smaller problem than a chapter that cannot open.
+
+  fontset, which  as build_demo_doc
+  body_w          the text column's width, off which the box's own is worked out below
+@date 2026-09-08 07:43 ]]
 local function draw_box_kind_example(fontset, body_w, which)
     local content = content_lib()
     if demo_docs[which] == nil then
@@ -859,39 +967,31 @@ local function draw_box_kind_example(fontset, body_w, which)
     vc.ImGui_Dummy({x = 10, y = reserved})
 end
 
---[[ THE LETTER REFERENCE, generated from the live glyph map rather than written out.
-
-Listing "Alt+A is alpha, Alt+B beta" in prose was wrong twice over. It duplicated a table that
-already exists, so the two could drift; and once letters became customisable it was not merely at
-risk of being wrong, it was wrong the moment anybody changed anything - the page would keep
-reciting the factory layout while the keys did something else.
-
-So it reads glyphmap, the same map the editor types from. Remap a key and this page says so.
-
-The glyph itself is drawn with fontset:char_draw(), the same call the editor uses to put that
-character on the page - so what is shown here is the actual glyph at the actual size, not a
-description of one. Rows with nothing mapped are skipped: a reference listing 26 keys of which
-several do nothing is mostly noise. ]]
---[[ SMALLER than body text, and note the direction: char.lua's size table runs biggest-to-
-smallest, so a LARGER index is a SMALLER glyph. "- 2" made these bigger than the line they sit on
-and each one spilled into the row below, which read as the glyphs being drawn against the wrong
-key. ]]
+--[[ The size the reference glyphs are built at - SMALLER than the body text they sit beside. Note
+the direction: char.lua's size table runs biggest-to-smallest, so a LARGER index is a SMALLER
+glyph. "- 2" made these bigger than their own line and each one spilled into the row below, which
+read as the glyphs being drawn against the wrong key.
+@date 2026-09-08 07:43 ]]
 local REF_SIZE = mexpru.DEFAULT_SIZE
 
---[[ Glyphs are built and cached as one-symbol formulas, then drawn through mformula, rather than
-placed by hand with fontset:char_draw().
-
-Two attempts at hand-placing put them a row out - char_draw takes a baseline where AddText takes a
-top edge, and the size index runs backwards (a larger number is a smaller glyph), so every guess
-was wrong in a different direction. mformula.measure() answers where the ink actually is, and
-mformula.draw() is the path the @fig figures already use and that already lines up. Reusing it
-means the alignment problem is solved once, in the place that solved it.
-
-Built once per glyph name; the map only changes when somebody edits it, and the cache is dropped
-then. ]]
+--[[ The built glyphs, kept by name. Never invalidated, and needing no invalidation: the key is the
+glyph's own name ("\\alpha") rather than the key that types it, so remapping the keyboard cannot
+make an entry of it wrong. ]]
 local ref_cache = nil
-local ref_stamp = nil
+local ref_stamp = nil   -- unused; nothing invalidates ref_cache, and nothing needs to
 
+--[[ One glyph of the reference, built as a one-symbol formula and kept.
+
+Built through mformula rather than placed by hand with fontset:char_draw(): char_draw takes a
+BASELINE where AddText takes a top edge, and the size index runs backwards, so two attempts at
+hand-placing put every glyph a row out, each wrong in a different direction. mformula.measure()
+answers where the ink actually is and mformula.draw() is the path the @fig figures already use, so
+the alignment problem stays solved in the one place that solved it.
+
+A name that does not parse is remembered as `false` and drawn as nothing.
+
+  fontset, desc -> the built formula, or nil for a nil or unparseable desc.
+@date 2026-09-08 07:43 ]]
 local function ref_glyph(fontset, desc)
     if not desc then
         return nil
@@ -904,6 +1004,22 @@ local function ref_glyph(fontset, desc)
     return ref_cache[desc] or nil
 end
 
+--[[ THE ALT+LETTER TABLE, generated from the live glyph map rather than written out.
+
+Listing "Alt+A is alpha, Alt+B beta" in prose was wrong twice over: it duplicated a table that
+already exists, and once the letters became customisable it was not at risk of going stale, it was
+stale the moment anybody remapped anything - the page would recite the factory layout while the
+keys did something else. So it reads glyphmap, the same map the editor types from, and draws each
+symbol through the same formula path the editor draws it with: remap a key and this page says so,
+and what it shows is the actual glyph rather than a description of one.
+
+Keys with nothing mapped are skipped - a reference listing 26 letters of which several do nothing
+is mostly noise - and each row is as tall as its own glyphs, which is what keeps the display
+operators from colliding with the rows around them (see glyph_height).
+
+  fontset  the fonts to draw the glyphs with
+  body_w   unused: the table is laid out at fixed offsets, for the reason given below
+@date 2026-09-08 07:43 ]]
 local function draw_letters_reference(fontset, body_w)
     local rows = {}
     glyphmap.each(function(key_name, slots)
@@ -936,16 +1052,12 @@ local function draw_letters_reference(fontset, body_w)
         return m.width
     end
 
-    --[[ ROWS ARE AS TALL AS THEIR GLYPHS, not a fixed line.
-
-    A few of these are DISPLAY operators - \\int, \\sum, \\prod, \\bigcup and friends carry a
-    deliberate size boost in char.lua (size_delta_by_desc, -7) because a display integral drawn at
-    body size is a thin squiggle rather than the sign it is meant to be. Drawn into a fixed
-    text-height row they overflow it and collide with the keys above and below - reported
-    2026-09-07: "int prod sum need more space".
-
-    So each row asks its own glyphs how tall they are and takes the larger. The rest of the table
-    is unaffected, since an ordinary Greek letter measures shorter than the line already. ]]
+    --[[ How tall one row has to be, asked of its own glyphs rather than fixed. The DISPLAY
+    operators - \\int, \\sum, \\prod, \\bigcup - carry a size boost in char.lua
+    (size_delta_by_desc, -7), because a display integral at body size is a thin squiggle rather
+    than the sign it means; in a fixed text-height row they overflow and collide with the keys
+    above and below (2026-09-07: "int prod sum need more space"). An ordinary Greek letter measures
+    shorter than the line, so the rest of the table is unaffected. ]]
     local function glyph_height(desc)
         local c = ref_glyph(fontset, desc)
         if not c then
@@ -981,7 +1093,8 @@ end
 
 --[[ The radial new-box menu, drawn by content.lua's own draw_radial_at() through
 content.draw_demo_radial() - same wedges, same colours, same geometry as the live menu, with the
-formula sector lit so the hover state is visible. ]]
+formula sector lit so the hover state is visible.
+@date 2026-09-08 07:43 ]]
 local function draw_radial_example()
     local content = content_lib()
     local r = content.radial_extent()
@@ -996,9 +1109,12 @@ end
 selected - not per frame. from_latex() parses and lays out a whole tree, which is not something to
 repeat sixty times a second for text that never changes.
 
-A figure that fails to parse is stored as `false` and simply not drawn. A help page must never be
-the thing that takes the app down, and a missing diagram is a far smaller problem than a chapter
-that cannot open - the test alongside this file is what catches the typo instead. ]]
+A figure that fails to parse is stored as `false` and drawn as a placeholder rather than raised: a
+help page must never be the thing that takes the app down, and a missing diagram is a far smaller
+problem than a chapter that cannot open. The test alongside this file catches the typo instead.
+
+  lines, fontset -> line index -> formula, for the "@fig" lines only.
+@date 2026-09-08 07:43 ]]
 local function build_figures(lines, fontset)
     local figs = {}
     for i, line in ipairs(lines) do
@@ -1011,13 +1127,29 @@ local function build_figures(lines, fontset)
     return figs
 end
 
+--[[ The panel's state. It is created with the content state and lives there, not here, which is
+what makes a reading position survive closing and reopening the panel.
+
+  chapter         index into CHAPTERS - the chapter on screen
+  scroll_of       chapter index -> the offset that chapter was last read at
+  pending_scroll  a scroll to apply on the coming frames: an offset, "top" or "bottom"
+  pending_frames  how many frames that request has left to run; see draw()
+@date 2026-09-08 07:43 ]]
 function panel_help.new_state()
-    -- scroll_of: chapter index -> the scroll position it was last read at.
     return {chapter = 1, pending_scroll = nil, scroll_of = {}}
 end
 
---[[ Draws the whole screen. Called from content.draw() while state.show_help is set; content's own
-handle_input has already returned early, so this owns the frame and can use real widgets. ]]
+--[[ Draws the whole screen - chapter list on the left, the chapter itself on the right.
+
+Called from content.draw() while state.show_help is set. content's own handle_input has already
+returned early by then, so this owns the frame: it may submit real widgets, and it reads the
+navigation keys itself rather than being handed them.
+
+  hstate   the state from new_state(); read and written
+  stamp    content's keymap revision. It joins the page's cache key, so a rebinding rewrites the
+           prose on the next frame rather than at the next chapter change
+  fontset  the fonts figures and examples are built with; without one they are skipped
+@date 2026-09-08 07:43 ]]
 function panel_help.draw(hstate, stamp, fontset)
     local size = vc.ImGui_GetDisplaySize()
     vc.ImGui_AddRectFilled({x = 0, y = 0}, {x = size.x, y = size.y}, BG_COLOR, 0)
@@ -1099,30 +1231,26 @@ function panel_help.draw(hstate, stamp, fontset)
     local body_w = size.x - x - PAD
     if vc.ImGui_BeginChild("help_body",
             {x = body_w, y = size.y - PAD * 2 - line_h * 3}, 0, 0) then
-        --[[ ARROWS SCROLL FIRST, and only change chapter once the page has nothing left to
-        scroll in that direction (asked for 2026-09-07). A chapter that runs past the window was
-        otherwise unreadable by keyboard alone: Down jumped to the next chapter from the top of
-        this one, so everything below the fold could only be reached with the wheel.
+        --[[ ARROWS SCROLL FIRST, and only turn the page once this one has nothing left to give in
+        that direction (asked for 2026-09-07): a chapter running past the window was otherwise
+        unreadable by keyboard alone, since Down left it from the top and everything below the fold
+        needed the wheel.
 
-        Handled INSIDE the child because that is the window whose scroll these functions report;
-        outside it they would answer for the page behind. A change of chapter parks a request to
-        start at the top or the bottom of the new one, applied on the next frame - the new content
-        has not been laid out yet, so its scroll extent is not known until then, and jumping to the
-        bottom of a page whose height is still the old one lands in the wrong place.
+        Handled INSIDE the child, because that is the window whose scroll these calls report -
+        outside it they answer for the page behind. A chapter change parks a request instead of
+        scrolling now: the new content has not been laid out, so its extent is not known yet.
 
-        Clamped, not wrapped: running off the end of the list and reappearing at the other end
-        loses your place in a way a list you can see all of does not need. ]]
+        Clamped, not wrapped: running off the end of a list you can see all of and reappearing at
+        the other end only loses your place. ]]
         local step = line_h * 3
         local y, maxy = vc.ImGui_GetScrollY(), vc.ImGui_GetScrollMaxY()
 
-        --[[ EACH CHAPTER REMEMBERS WHERE YOU LEFT IT (asked for 2026-09-07). The position is
-        recorded every frame the page is simply being read, and handed back when you return -
-        including after closing and reopening the panel, since this state lives in the content
-        state rather than in this file.
-
-        A REMEMBERED position takes precedence over the directional default below. Landing back
-        where you were reading is what "revisit" means; a chapter you have never opened has nothing
-        to remember and falls back to top or bottom depending on which way you arrived. ]]
+        --[[ EACH CHAPTER REMEMBERS WHERE YOU LEFT IT (asked for 2026-09-07): recorded every frame
+        the page is simply being read, and handed back on return - including after the panel is
+        closed and reopened, since this state lives in the content state rather than in this file.
+        A remembered position beats the directional default below, because landing where you were
+        reading is what returning means; only a chapter never opened falls back to top or bottom
+        depending on which way you arrived at it. ]]
         hstate.scroll_of = hstate.scroll_of or {}
 
         local function go_to_chapter(n, fallback)
@@ -1137,17 +1265,14 @@ function panel_help.draw(hstate, stamp, fontset)
         if hstate.pending_scroll ~= nil then
             --[[ Applied over TWO frames, not one, and the difference is visible.
 
-            ImGui reports a window's scroll extent from the size measured on the PREVIOUS frame.
-            The chapter changes inside this child, so on the following frame the new text is being
-            submitted for the first time and GetScrollMaxY() still describes the OUTGOING chapter.
-            Applying once there clamps against the wrong maximum: leaving a long chapter for a
-            short one and coming back landed part-way through it instead of where it was left,
-            and "bottom" landed at the short chapter's bottom rather than the long one's.
-            Reported 2026-09-07 - scrolling 3 -> 3.1 and back did not return to the end of 3.
-
-            So the request is applied again on the next frame, by which time the extent is the new
-            chapter's own. The first application is not wasted: it puts the page approximately
-            right, so nothing visibly jumps. ]]
+            ImGui reports a window's scroll extent from the size measured on the PREVIOUS frame,
+            and the chapter changes inside this child - so on the following frame GetScrollMaxY()
+            still describes the OUTGOING chapter, and applying once clamps against the wrong
+            maximum. Leaving a long chapter for a short one and coming back landed part-way through
+            it, and "bottom" landed at the short chapter's bottom (2026-09-07: 3 -> 3.1 and back
+            did not return to the end of 3). The second application meets the new chapter's own
+            extent; the first is not wasted, it puts the page approximately right so nothing
+            visibly jumps. ]]
             local want
             if hstate.pending_scroll == "top" then
                 want = 0
@@ -1253,6 +1378,7 @@ function panel_help.draw(hstate, stamp, fontset)
 end
 
 -- Exposed for the tests: every {placeholder} in every chapter must name a real action.
+-- @date 2026-09-08 07:43
 function panel_help.chapters()
     return CHAPTERS
 end

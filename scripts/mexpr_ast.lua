@@ -40,6 +40,7 @@ takes, with free variables numbered in traversal order.
 TRAVERSAL ORDER IS sup, then same-line, then sub - so `a^p_q(x)` reads its power first, then its
 call arguments, then its index. Stated by the user; the same order has to be used by whatever
 compares two patterns later, or two spellings of one declaration will not match.
+@date 2026-09-08 08:55
 ]]
 
 local vc = require("virt_composer")
@@ -57,7 +58,8 @@ local IN_DESC = "\\in"
 -- ################################################################################################
 
 --[[ The glyph an atom carries, as its catalog `desc` ("a", "1", "'", "\\times"), or nil if the node
-is not a symbol atom at all (an empty placeholder, or a composite). ]]
+is not a symbol atom at all (an empty placeholder, or a composite).
+@date 2026-09-08 08:55 ]]
 local function atom_desc(node)
     if not node or node.type ~= vc.MEXPR_TYPE_SYMBOL then
         return nil
@@ -78,7 +80,8 @@ end
 it. A supsub is ONE child of the row, so `a_b` is a single slot whose atom is `a` and whose sub is
 `b` - and mexpru.slot_atom() is what looks through it (and through a dress) to find that atom.
 Every walk over a row has to go through slot_atom or it reads the wrong thing; that blind spot has
-produced seven live bugs so far (docs/phase2_design.md section 8). ]]
+produced seven live bugs so far (docs/phase2_design.md section 8).
+@date 2026-09-08 08:55 ]]
 local function unit(child)
     local u = mexpru.u(child)
     local kind = u and u.kind
@@ -121,7 +124,8 @@ an EXPRESSION that happens to have a constant value. So "is this a number" is a 
 whether an expression has any free variables, answerable only once expressions can be parsed and
 their linked variables computed (section 6b's triple). This function answers the much smaller
 question "is this run of glyphs a written numeral", which is what a lexer can know. Do not extend
-it to try to recognise constant expressions - that check belongs where variables are resolved. ]]
+it to try to recognise constant expressions - that check belongs where variables are resolved.
+@date 2026-09-08 08:55 ]]
 function mexpr_ast.parse_number(text)
     local sign, body = 1, text
     if body:sub(1, 1) == "-" then
@@ -171,7 +175,8 @@ end
 
 Anything the parser never reached is simply absent, and stays unpainted. A LIST rather than a table
 keyed by node, because a Lua table cannot be keyed by an mexpr_p - node identity has to go through
-mexpru.same(), so there is no usable key. ]]
+mexpru.same(), so there is no usable key.
+@date 2026-09-08 08:55 ]]
 function Parser:mark(node, status)
     if node then
         self.marks[#self.marks + 1] = {node = node, status = status}
@@ -179,7 +184,8 @@ function Parser:mark(node, status)
 end
 
 --[[ Everything from unit `i` onward, as "work": an unfinished construct swallows the rest of what
-was typed, and none of it is wrong yet. ]]
+was typed, and none of it is wrong yet.
+@date 2026-09-08 08:55 ]]
 function Parser:mark_rest(units, i)
     for j = i, #units do
         self:mark(units[j].node, "work")
@@ -198,7 +204,8 @@ end
 
 --[[ Records a free variable and emits its numbered slot. Every occurrence gets its own number:
 `F_{m,m}` is two parameters that happen to be spelled the same, which is a thing the user can write
-and which the definition has no reason to collapse. ]]
+and which the definition has no reason to collapse.
+@date 2026-09-08 08:55 ]]
 function Parser:free_var(name)
     self.vars[#self.vars + 1] = name
     self:emit("(" .. #self.vars .. ")")
@@ -210,7 +217,8 @@ closing quote. Returns the text and the index of the CLOSING quote's unit, or ni
 The closing quote's unit is returned rather than the one after it because that unit may carry the
 decorations - typing Ctrl+_ after `'abc'` wraps the closing quote, so `'abc'_n` is
 [', a, b, c, supsub(base=', sub=n)]. Handing the caller the quote's own unit is what lets it find
-those. ]]
+those.
+@date 2026-09-08 08:55 ]]
 function Parser:read_quoted(units, i)
     local text = {}
     local j = i + 1
@@ -240,7 +248,8 @@ function Parser:read_quoted(units, i)
 end
 
 --[[ Is this unit a bracket, and which way round? Bracket atoms carry u(_).bracket - nothing else
-does (mexpru's own bracket model comment). ]]
+does (mexpru's own bracket model comment).
+@date 2026-09-08 08:55 ]]
 local function bracket_of(u)
     local uu = u.atom and mexpru.u(u.atom)
     return uu and uu.bracket
@@ -248,7 +257,8 @@ end
 
 --[[ Splits a row's units into comma-separated groups. Commas are the ONLY separator inside an
 argument list; two atoms side by side with no comma is multiplication, which a name may not
-contain (`F_{m,n}` yes, `F_{mn}` no). ]]
+contain (`F_{m,n}` yes, `F_{mn}` no).
+@date 2026-09-08 08:55 ]]
 local function split_commas(units, p)
     local groups, cur = {}, {}
     for _, u in ipairs(units) do
@@ -267,7 +277,8 @@ local function split_commas(units, p)
 end
 
 --[[ One argument: a single unit, which is either a literal (quoted string or number - NOT a
-parameter) or a free variable, and which may itself carry decorations that recurse. ]]
+parameter) or a free variable, and which may itself carry decorations that recurse.
+@date 2026-09-08 08:55 ]]
 function Parser:parse_argument(units)
     if #units == 0 then
         return self:fail("empty argument", nil)
@@ -330,7 +341,8 @@ end
 --[[ An argument list: comma-separated, each group one argument. Takes a plain ARRAY of nodes,
 not a row node - a sup/sub slot is unwrapped by the caller with row_children(), and a call's
 contents were collected as an array while scanning to the matching bracket. One shape here means
-neither path needs a special case. ]]
+neither path needs a special case.
+@date 2026-09-08 08:55 ]]
 function Parser:parse_arg_list(nodes)
     local units = {}
     for _, ch in ipairs(nodes or {}) do
@@ -350,7 +362,8 @@ function Parser:parse_arg_list(nodes)
 end
 
 --[[ The decorations hanging off one unit, in the fixed order sup -> same-line -> sub. `u.call` is
-set by the caller when a bracketed group followed the base on the same line. ]]
+set by the caller when a bracketed group followed the base on the same line.
+@date 2026-09-08 08:55 ]]
 function Parser:decorations(u)
     if not u then
         return true
@@ -396,7 +409,8 @@ of each atom it reached - "ok", "work" or "bad" (Parser:mark's own comment). On 
 on the pattern as `.marks`. That is what the definition box paints per character, so the user can
 see how far a name got rather than only whether it arrived. ]]
 --[[ The units of a row, in order. Split out so the same reading serves a whole slot and the
-left-hand side of a domain restriction. ]]
+left-hand side of a domain restriction.
+@date 2026-09-08 08:55 ]]
 local function row_units(node)
     local units = {}
     for _, ch in ipairs(row_children(node)) do
@@ -412,7 +426,8 @@ end
 
 --[[ Reads a name pattern out of `units`, using parser `p`. Everything in `units` must belong to the
 name: this is the routine both a name slot (the whole row) and a domain restriction's left-hand
-side (the part before the membership sign) go through, so the rules cannot drift between them. ]]
+side (the part before the membership sign) go through, so the rules cannot drift between them.
+@date 2026-09-08 08:55 ]]
 local function read_pattern(p, units)
     if is_untouched(units) then
         -- Nothing typed yet: not an error to paint, just nothing to say.
@@ -538,7 +553,8 @@ WHAT IS NOT CHECKED: the SET side. It is handed back as the raw nodes after the 
 because validating it means parsing a general expression (`\R ^{2}` is a power) and that parser
 does not exist yet - see docs/phase2_design.md section 3, layer 2. Marking those nodes "ok" rather
 than leaving them blank is deliberate: they were read, they are simply not yet understood, and
-painting them as unreached would be a lie about how far the parse got. ]]
+painting them as unreached would be a lie about how far the parse got.
+@date 2026-09-08 08:55 ]]
 function mexpr_ast.parse_domain(fontset, container)
     local p = new_parser()
     local units = row_units(container.root)

@@ -25,6 +25,7 @@ path handles the key and nothing here is consulted at all.
 
 DEFAULTS LIVE IN char.lua and are never mutated - greek_alt/greek_alt_shift stay the factory
 setting, this file holds the live copy, and "back to default" is a copy from one to the other.
+@date 2026-09-08 08:45
 ]]
 
 local char = require("char")
@@ -45,7 +46,8 @@ could never be described here at all.
 
 So a row is an ImGuiKey NAME - the position ImGui reports, which is what the editor actually polls
 - and the letter is only how the DEFAULTS were written. Which key a row refers to is changed by
-pressing it (the customiser's record button), never by guessing which letter matches it. ]]
+pressing it (the customiser's record button), never by guessing which letter matches it.
+@date 2026-09-08 08:45 ]]
 local function key_name_for(letter)
     return "ImGuiKey_" .. letter:upper()
 end
@@ -56,6 +58,7 @@ local function key_label(name)
     return (name or "?"):gsub("^ImGuiKey_", "")
 end
 
+--[[ The label a person reads for a key, for the customiser's own rows. @date 2026-09-08 08:45 ]]
 function glyphmap.key_label(name)
     return key_label(name)
 end
@@ -63,14 +66,19 @@ end
 --[[ letter -> {plain=, alt=, alt_shift=}. Built from char.lua's tables, which stay the factory
 copy. A missing slot is nil rather than "", so "unset" and "set to nothing" cannot be confused -
 the difference matters for `plain`, where nil means "insert the letter" and would otherwise be
-indistinguishable from "insert nothing". ]]
+indistinguishable from "insert nothing".
+@date 2026-09-08 08:45 ]]
 local live = {}
 
 --[[ Row order, kept explicitly: a table keyed by key name has no order of its own, and the
 customiser's rows and the saved file's lines both have to be stable between runs. New rows are
-appended, so a key added by hand does not reshuffle the ones above it. ]]
+appended, so a key added by hand does not reshuffle the ones above it.
+@date 2026-09-08 08:45 ]]
 local order = {}
 
+--[[ Builds the live table from char.lua's factory tables, one row per letter key. Each row
+remembers which LETTER its slots came from, because a row can later be moved to another key and
+"back to default" still has to know what its default was. @date 2026-09-08 08:45 ]]
 local function install_defaults()
     live, order = {}, {}
     for i = 1, #LETTERS do
@@ -93,7 +101,8 @@ install_defaults()
 --[[ Set by every edit, cleared by whoever writes the file - the same arrangement keymap.lua uses,
 and for the same reason: the customiser saves when it CLOSES, not per keystroke, so a half-typed
 name must never reach disk. install_defaults() deliberately does not set it; loading is not an
-edit. ]]
+edit.
+@date 2026-09-08 08:45 ]]
 local dirty = false
 
 function glyphmap.dirty()   return dirty end
@@ -107,6 +116,7 @@ function glyphmap.each(fn)
     end
 end
 
+--[[ One key's live slots, or nil for a key with no row. @date 2026-09-08 08:45 ]]
 function glyphmap.slots(key)
     return live[key]
 end
@@ -115,7 +125,8 @@ end
 knows nothing about: the person presses the key they mean.
 
 Refuses if that key already has a row, rather than merging two sets of glyphs into one and losing
-whichever lost. The caller shows the reason. ]]
+whichever lost. The caller shows the reason.
+@date 2026-09-08 08:45 ]]
 function glyphmap.rekey(old_key, new_key)
     if not live[old_key] then
         return false, "no such row"
@@ -146,7 +157,8 @@ handles the key exactly as it always did, and nothing in this file is consulted 
 
 A name that no longer resolves returns nil rather than erroring. A saved map can outlive the glyph
 catalogue it was written against, and losing one binding is a far better outcome than an editor
-that cannot start. ]]
+that cannot start.
+@date 2026-09-08 08:45 ]]
 function glyphmap.entry(key, alt, shift)
     local slot = live[key]
     if not slot then
@@ -176,7 +188,8 @@ false plus a reason the customiser can display.
 VALIDATED AGAINST THE GLYPH CATALOGUE, not merely stored: a name the editor cannot draw would
 otherwise sit in the table looking correct and simply do nothing when pressed, which is the worst
 of both. char.find_by_desc() is the same lookup the `\name`-then-Space entry uses, so anything you
-can type by name is bindable, and nothing else is. ]]
+can type by name is bindable, and nothing else is.
+@date 2026-09-08 08:45 ]]
 function glyphmap.set(key, which, name)
     local slot = live[key]
     if not slot then
@@ -272,7 +285,8 @@ had opened the customiser once. ]]
 --[[ "key<TAB>from_letter|plain|alt|alt_shift", one line per row that differs from the factory
 setting - including a row that has simply MOVED to another key, which is a divergence even when its
 glyphs are untouched. `from_letter` rides along so a moved row can still be reset to what it
-started as. ]]
+started as.
+@date 2026-09-08 08:45 ]]
 function glyphmap.serialize()
     local lines = {}
     for _, key in ipairs(order) do
@@ -296,7 +310,8 @@ returns to factory rather than keeping whatever the previous load left behind.
 
 A name that no longer resolves is DROPPED and reported rather than kept: keeping it would leave a
 key that looks bound and does nothing. An unreadable line is skipped for the same reason a bad
-save never stops the app starting. ]]
+save never stops the app starting.
+@date 2026-09-08 08:45 ]]
 function glyphmap.deserialize(text, warn)
     install_defaults()
     if type(text) ~= "string" then
