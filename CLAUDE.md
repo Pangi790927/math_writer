@@ -105,6 +105,13 @@ header. See the amendment to Law 3 for how a citation may travel vs. how comment
    pointer — is commentary, and may be rewritten per repo to fit what that repo does. Inside the
    quote marks, nothing moves; outside them, everything may.
 
+   Which quotes count as a citation, resolved 2026-09-08: only the ones in ALL CAPS. User's own
+   words, verbatim: "all caps, all citations are all caps." A quote given in lowercase or mixed
+   case elsewhere in this file (the git-authorship line and the old "laws for claude" aside in
+   Law 3, the scope note in Law 2) is commentary-grade, not locked — reword or drop it freely if a
+   repo needs to. User's own words, verbatim, on this exact point: "if a git is by me... — no, all
+   caps are the citations that you are not to move, change whatever, the rest I don't care about."
+
 ## Build
 
 Needs three sibling checkouts next to this directory: `../imgui`, `../implot`, `../utils`
