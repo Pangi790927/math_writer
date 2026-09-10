@@ -1,5 +1,5 @@
-text 2141
-$$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)\ 2$$ 
+text 2232
+$$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)$$ 
 
 $$\vec{a}\ \vec{m}\ \vec{F}\ \vec{I}$$
 
@@ -7,13 +7,13 @@ $$F(x)=\frac{T}{2\pi }\int ^{X}_{0}xdx;\ (a+b)^{2}=a^{2}+2ab+b^{2};\ x^{a}\ =\ \
 
 $$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$$$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$$$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$
 
-$$\widehat{\begin{matrix}ABC\end{matrix}}\ =\ \widehat{\begin{matrix}AOC\end{matrix}}\ $$abfc
+$$\widehat{\operatorname{ABC}}\ =\ \widehat{\operatorname{AOC}}\ $$abfc
 
 $$a\bar{a}\ =\ |a|^{2}\ a\ \not =\ b$$
 
-$$\frac{df(x)}{dx}\ =\ \mathop{\begin{matrix}lim\end{matrix}}\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D$$$$\Delta ABC\ \equiv \ \Delta BGD\ $$
+$$\frac{df(x)}{dx}\ =\ \mathop{\lim }\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D$$$$\Delta ABC\ \equiv \ \Delta BGD\ $$
 
-$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ $$$$\int \limits_{a}$$
+$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ $$$$\int \limits^{+\infty }_{-\infty }ax^{2}+bx+c\ \,dx$$$$\sum \limits^{N}_{\begin{matrix}i=0\\j<i\end{matrix}}ji^{2}\pi $$$$\lim \limits_{x\rightarrow 0}(x)\ $$
 deeccasdabcdef abcdefgf
 $$\frac{x^{2}}{y}+\frac{2\pi }{T}$$
 
@@ -42,8 +42,8 @@ a\in \{0,3,4\}7
 a_{n}8
 n\in \N 3
 \R text 102
-$$F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}$$$$a_{1}=-1+1$$text 64
-$$\sum \limits^{N}_{\begin{matrix}k\ =\ 0\end{matrix}}e^{-jkw}$$formula 94
+$$F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}$$$$a_{1}=-1+1$$text 58
+$$\sum 3^{N}_{\begin{matrix}k\ =\ 0\end{matrix}}e^{-jkw}$$formula 94
 3
 84
 F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}1
@@ -82,7 +82,17 @@ a:\N \rightarrow \R 1
 2
 1
 x9
-\{1,2,3\}definition 10
+\{1,2,3\}definition 35
+3
+11
+\vec{F}_{k}8
+k\in \N 7
+\R ^{3}formula 55
+3
+45
+\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}1
+80
+definition 10
 2
 1
 a3
