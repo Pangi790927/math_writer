@@ -25,6 +25,7 @@ local mexpru = require("mexpru")
 new/draw/handle_input/rescale/to_text/from_text - and never what any of them does inside. ]]
 local editor_definition = require("editor_definition")
 local mexpr_ast = require("mexpr_ast")
+local ast = require("ast")
 local keymap = require("keymap")
 local panel_help = require("panel_help")
 local panel_keymap = require("panel_keymap")
@@ -931,6 +932,10 @@ function content.handle_input(state, fontset, pos)
         state.show_ast = not state.show_ast
         return
     end
+    if keymap.pressed("app.ast_string") then
+        state.show_ast_string = not state.show_ast_string
+        return
+    end
     if keymap.pressed("app.profiler_record") or keymap.pressed("app.profiler_reset")
             or keymap.pressed("app.profiler") then
         if keymap.pressed("app.profiler_record") then
@@ -1315,6 +1320,61 @@ local function draw_ast_overlay(state, fontset)
     end
 end
 
+--[[ F5: the RAW ast.lua serialization of the same expression F4 parses - ast.to_string's own
+`(symbol, child1, child2, ...:id)` tuple text, not the indented tree `render()` builds for F4. Where
+F4 is a reading aid, F5 is the ground truth it is read FROM - the tool for exactly the question F4
+cannot answer, like whether a name is showing up somewhere it should be an id instead (a CALL's own
+callee, today - see docs/phase2_design.md section 10, "The id is the real name").
+
+Hard-wrapped by character count rather than measured text width: this is a debug instrument, not
+typeset output, and `ast.to_string`'s tuples have no natural break points to wrap on anyway.
+
+Anchored BOTTOM-LEFT, the one corner F3 (top-right) and F4 (bottom-right) leave free.
+@date 2026-09-10 ]]
+local AST_STR_WIDTH = 480
+local AST_STR_WRAP  = 68
+
+local function wrap_text(text, width)
+    local lines = {}
+    local i, len = 1, #text
+    while i <= len do
+        lines[#lines + 1] = text:sub(i, i + width - 1)
+        i = i + width
+    end
+    if #lines == 0 then
+        lines[1] = ""
+    end
+    return lines
+end
+
+local function draw_ast_string_overlay(state, fontset)
+    local container = active_expression(state)
+    local lines
+    if not container then
+        lines = {"no expression here - put the caret in a formula"}
+    else
+        local decls = content.declarations_before(state, state.active_index)
+        local node, err, ns = mexpr_ast.build(fontset, container, decls.order)
+        if not node then
+            lines = {"no tree: " .. tostring(err)}
+        else
+            lines = wrap_text(ast.to_string(ns, node), AST_STR_WRAP)
+        end
+    end
+
+    local size = vc.ImGui_GetDisplaySize()
+    local h = (size and size.y or 720)
+    local x = 12
+    local y = h - (#lines + 2) * AST_LINE_H - 12
+
+    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
+            {x = x + AST_STR_WIDTH, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
+    vc.ImGui_AddText({x = x, y = y}, AST_TEXT_COLOR, "F5  ast.lua serialization")
+    for i, l in ipairs(lines) do
+        vc.ImGui_AddText({x = x, y = y + i * AST_LINE_H}, AST_TEXT_COLOR, l)
+    end
+end
+
 local function draw_prof_overlay()
     --[[ The overlay measures ITSELF. prof_report() formats a few dozen lines in C++ and this then
     issues an AddText per line, every frame it is visible - not free, and a profiler that quietly
@@ -1487,6 +1547,14 @@ function content.draw(state, fontset, pos, opts)
             local ok, err = pcall(draw_ast_overlay, state, fontset)
             if not ok then
                 vc.ImGui_AddText({x = 24, y = 4}, 0xaa3c3cff, "F4: " .. tostring(err))
+            end
+        end
+        if state.show_ast_string then
+            -- Same reasoning as F4's own pcall - ast.to_string walks a freshly-built, possibly
+            -- half-typed tree every frame this is open.
+            local ok, err = pcall(draw_ast_string_overlay, state, fontset)
+            if not ok then
+                vc.ImGui_AddText({x = 24, y = 20}, 0xaa3c3cff, "F5: " .. tostring(err))
             end
         end
     end

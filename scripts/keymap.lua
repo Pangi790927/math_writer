@@ -402,6 +402,8 @@ local DEFAULTS = {
     {id = "panel.close",          desc = "Close the open panel",                     binds = {"Escape+All"}},
     {id = "app.profiler",         desc = "Toggle the profiler overlay",              binds = {"F3"}},
     {id = "app.ast",             desc = "Show the parse of the expression you are on", binds = {"F4"}},
+    {id = "app.ast_string",      desc = "Show the ast.lua serialization of the expression you are on",
+            binds = {"F5"}},
     {id = "app.profiler_reset",   desc = "Clear the profiler's worst frame",         binds = {"Shift+F3"}},
     {id = "app.profiler_record",  desc = "Record slow frames to perf_spikes.log",    binds = {"Ctrl+F3"}},
     {id = "doc.save",             desc = "Save the document",                        binds = {"Ctrl+S"}},

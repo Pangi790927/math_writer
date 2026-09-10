@@ -241,7 +241,7 @@ what lets a relation's side, a call's argument and a superscript's row go throug
 build_relation   splits on  =  <  >  \le  \ge  and the \ne pseudo-glyph
   build_sum      splits on top-level  +  -
     build_product  segments into factors
-      read_factor    one name-use, numeral, or bracket group
+      read_factor    one name-use, numeral, bracket group, or fraction
 ```
 
 **Extent** — how far a name reaches along a row — has exactly **two** candidates, not a search
@@ -258,6 +258,18 @@ re-parsing the same prefix each time. The plan was to replace the search with an
 walk; what the work actually found is that there was never a search to replace — only two of those
 end positions could ever parse, and everything between them failed for reasons that were never
 interesting.)*
+
+**A fraction bar is a division, whether or not `\div` was ever typed.** 🟢 `\frac{a}{b}` reaches the
+AST as `new_div(num, den)`, num and den each built by recursing `build_expr` over that slot's own
+row - so `\frac{a+2}{b+2}`, nesting, and a fraction inside a call argument all just work through the
+ordinary cascade. A power applied directly to the frac (`\frac{a}{b}^{2}`) and one applied to
+explicit parens around it (`(\frac{a}{b})^{2}`) build the *same* tree - the parens are absorbed by
+the power exactly as `(a+b)^2`'s are (§7), nothing frac-specific about it.
+
+**`\div` written inline is deliberately not the same door.** `a \div b` still refuses with a reason
+(§9) rather than folding into a division tree. Author, 2026-09-10, scoping it down before it was
+built: *"I want to ignore for now any fraction that is not made by a 'towering' fraction, so a/b,
+ignore it, error on it, frac{a}{b}, it's ok, parse it"*.
 
 **Signs** are a property of the product: `-2x` is `MUL(NUM(-2), REF(x))` (folded into the leading
 numeral) and `-x` is `MUL(NUM(-1), REF(x))`. A sign is a separator only with a term behind it.
@@ -303,28 +315,73 @@ carrier of the user's own grouping, and grouping is what `transforms.lua` drags 
 The decision is made **last**, in `build_product`, because "required" is a question about the
 product the factor ended up in, and that is not known until the factors are collected.
 
-## 8. Big operators 🔴
+## 8. Big operators 🟡
 
-`ast.lua` has `SUM`, `PROD` and `INT`, one shape for all three:
+`ast.lua` has `SUM`, `PROD`, `UNION`, `INTERSECT` and `INT`. Only `INT` still has the original single
+shape:
 
 ```
-(S, var, from, to, body)
+(I, var, from, to, body)
 ```
 
-They are the first nodes that **declare** a name. The constructor takes a name, makes the variable
-itself, and **catches** the body's free mentions of it — repointing them at slot 1. Afterwards the
-binding is ordinary structure, so nothing walking the body needs to know it is inside a binder.
+`SUM`/`PROD`/`UNION`/`INTERSECT` share a different one, N variables and a constraint list per side
+rather than one var and a bare from/to - see "Bigop scoping", `phase2_design.md` section 18c, for the
+full record:
+
+```
+(op, n_vars, n_sub, n_sup, var1..varN, sub1..subK, sup1..supM, body)
+```
+
+All five are the first nodes that **declare** a name. The constructor takes names, makes the
+variables itself, and **catches** free mentions of each across every sub, every sup and the body -
+repointing them at the variable it made. Afterwards the binding is ordinary structure, so nothing
+walking the body needs to know it is inside a binder.
 
 The body is built first and caught afterwards because `\int_0^1 x dx` names its variable *after* the
-body. A nearer binder of the same name shadows, but its **bounds** are outside its own scope.
+body. A nearer binder of the same name shadows the whole group - subs, sups and body together, one
+scope - not just the body the old shape split off.
 
-**Nothing builds these from a typed formula.** The open question is how far a body reaches along a
-row: `\sum_{i=1}^{n} i + 1` is either `SUM(...) + 1` or `SUM(..., i+1)`, and that is a notation
-decision the grammar cannot settle.
+**`mexpr_ast` now has a bigop case** (`read_bigop`), for `SUM`/`PROD`/`UNION`/`INTERSECT` only -
+`\int`/`\oint` are refused with a reason, their variable coming from a trailing differential (`dx`)
+that nothing reads yet. It recognizes both forms a row can produce one in: an ordinary supsub whose
+base is one of these glyphs (`\sum_{i=1}^n`, no `\limits`), and the dedicated `bigop` kind
+(`\sum\limits_{...}`) - same meaning, only where the limits are drawn differs.
+
+**Each sub/sup slot is one or more constraints.** A single `horiz` is one; a `vert` stack found there
+(already a general, user-buildable primitive - `mformula_new.new_with_vert()`) is one constraint per
+slot. Each constraint is built as a real relation node through the ordinary cascade (§6/§7 above,
+whatever `=`/`<`/`\in`/etc. produces) and kept in the tree, not discarded once its variables are
+known.
+
+**Spawned variables are the sub's free names minus the sup's**, harvested per constraint (both sides
+of an ordinary relation - `i=j` with both undeclared spawns both, together) via a `ctx.free_seen`
+side-channel set at the one place resolution already fails (`read_factor`'s free-letter branch) -
+walking the finished tree cannot tell a free reference from a declared one after the fact, since both
+produce the identical VREF shape.
+
+**Membership/inclusion is the one asymmetric case.** `i \in S` has an element side and a set side,
+and only the element side is ever eligible to be spawned - `\sum_{i \in S}(i)` spawning `S` alongside
+`i` (nothing in the sup to subtract `S` against) was found live and fixed the same day
+(`ASYMMETRIC_SPAWN_SIDE`, `mexpr_ast.lua`). Sound because a relation is always the ROOT of a
+constraint's own tree, never nested inside it - `build_relation` scans a row's whole top level for
+every relation before recursing at all, so a second one anywhere is a refused chain rather than a
+nested node, and one inside literal parens has no parser at all (§7's own "a relation inside brackets
+does not split").
+
+**The body must be an explicit bracket group right after the operator.** How far an unparenthesized
+body reaches along a row - `\sum_{i=1}^{n} i + 1` as `SUM(...) + 1` or `SUM(..., i+1)` - is still a
+notation question nobody has answered, so it is refused rather than guessed, the same discipline a
+chained relation already gets. `\sum_{i=1}^{n}(i+1)` parses; `\sum_{i=1}^{n} i + 1` does not.
+
+🟡 rather than 🟢 for two reasons: the body-extent question above is still open, and the `vert`-stack
+multi-constraint path has been reviewed but not exercised live - there is no LaTeX text for it, only
+direct `mexpru` construction, which nothing has done yet.
 
 ## 9. Also not built
 
-- 🔴 Division — neither `\div` nor the fraction node reaches the AST.
+- 🔴 `\div` written inline (`a \div b`) - refused with a reason, same as any other unrecognized
+  atom. Only the fraction node reaches the AST (§6) - see the note there for why the gap is
+  deliberate for now, not an oversight.
 - 🔴 Relation chains: `a = b = c` needs a shape nobody has chosen; `ast.new_eq` takes two operands.
 - 🔴 A subscript on anything that is not a declared name.
 - 🔴 Expression arguments in a *declaration* (`phase2_design.md`, "Operations inside a subscript").

@@ -2149,6 +2149,13 @@ Added to `ast.lua` 2026-09-10. One shape for all three:
 (I, var, from, to, body)      \int_{from}^{to} body d(var)
 ```
 
+> **REVISED below, for SUM/PROD only.** "Bigop scoping" (after "Free variables are contextual..."
+> below) replaces `var, from, to` with a constraint list for `SUM`/`PROD` (and the not-yet-added
+> `UNION`/`INTERSECT`) - `from`/`to` turned out to be one relation each (`=` and a bare bound), not
+> general enough for `i<n`, `i \in S`, or more than one variable. `INT` is explicitly EXCLUDED from
+> that change and keeps needing its own shape - its variable comes from a trailing differential, not
+> from a constraint at all, so nothing about its sub/sup was ever "a relation" to generalize.
+
 **They declare rather than consume.** Author: *"int declares a variable name, it offers the insides
 a new reference, itself, the idea is that we will have our free variables that buble up outside of
 the root, while some vars get catched by bigops"*; and *"bigop ops need to create a var, probably
@@ -2241,6 +2248,214 @@ Two things follow, neither implemented:
    `content.declarations_before()`. Until that exists, a bound variable is indistinguishable from a
    free one, which is why the top of a row still refuses an undeclared letter.
 
+### Bigop scoping — how sub/sup constraints spawn variables
+
+Recorded 2026-09-10, in conversation, before any of it is built. Answers the "what is missing is a
+scope stack" gap the previous note left open, for `\sum`/`\prod`/`\bigcup`/`\bigcap` specifically -
+`\int` is excluded throughout, see below.
+
+**`\in`/`\ni`/`\subset`/`\subseteq`/`\supset`/`\supseteq` all become real relation nodes,
+general-purpose, not bigop-only.** Same shape as `EQ` - `ast.new_in`, `ast.new_ni`, `ast.new_subset`,
+`ast.new_subseteq`, `ast.new_supset`, `ast.new_supseteq`, each with its own type constant and its own
+entry in `type_to_symbol`/`symbol_to_type`/`build_relation`'s shared `RELATIONS` table - usable
+anywhere a formula can hold a relation, not carved out as a bigop-only micro-parser the way
+`mexpr_ast.parse_domain`'s membership check is. The full family, not just `\in`/`\subseteq`, per the
+author catching an incomplete first pass: *"subseteq is not the only one... you should add all the
+others in the list, the member_of, member_in ones, and all the includes"*. Three of the six are
+exact mirrors of the other three (`a \ni b` means `b \in a`, `a \supset b` means `b \subset a`,
+`a \supseteq b` means `b \subseteq a`) but each still gets its own type and constructor with operands
+kept in written order, never silently swapped - the same precedent `INEQ_LESS`/`INEQ_GREATER`
+already set for `<`/`>`.
+
+**A constraint is nothing more than one of those relation nodes, kept in the tree.** Not consumed
+and discarded - the bigop remembers it, for display and eventually for domain reasoning, even though
+building it also has a side effect (below). One `horiz` in a sub/sup slot is one constraint; finding
+a `vert` there instead (`mexpru.vert()`'s existing N-slots-stacked primitive, already user-buildable
+via `new_with_vert()` - nothing new needed on the editing side) means one constraint per slot. So a
+bigop's shape moves to something like `(op, {vars}, {sub constraints}, {sup constraints}, body)` - K
+sub constraints, M sup constraints, N spawned variables, in place of the single `var, from, to`.
+
+**The spawned variables are the free names in the constraints, sub minus sup.** Build every sub
+constraint's ast node, harvest every free name anywhere in it (both sides, no left/right role to
+assign), union across all K. Do the same for the M sup constraints. `spawned = sub-union -
+sup-union`. Whatever a sup removes is not bound here at all - it falls out as an ordinary free
+variable of the surrounding formula. "Free" already excludes anything in
+`content.declarations_before()` or bound by an ENCLOSING bigop - author: *"so previously defined
+names are not free, this is maybe important to note... this includes obviously the other BIGOPS
+that are above this one"* - which is exactly the scope-stack, innermost-binder-first rule the
+previous note named as missing, now made concrete by a real consumer rather than deferred again.
+
+**Why sub-minus-sup, and not sub parsed in sequence with sup threaded through it.** The first shape
+tried was simpler - collect every free name in a sub constraint, register it immediately, so a later
+constraint (or the sup) sees it as already bound. It fails on exactly the case the author flagged as
+the one to worry about:
+
+```
+\sum_{i=0,\ j=N}^{N} (i + (N-j))
+```
+
+`j=N`'s right side, `N`, is just as undeclared as `j` at the moment that constraint is read -
+nothing has registered anything yet, so sequential threading captures `N` as a spawn candidate
+regardless of the sup, before the sup is even looked at. Author: *"I want if N is not referenced by
+anyone else than the sum to be a free variable... I think the sup will only remove it's newer
+would-be-spawned objects from the said list"*. Only computing the sup's OWN free set independently
+and subtracting it afterward catches this - `N` is free in both, so it cancels out of the sub side
+and surfaces as an ordinary free variable, exactly as intended. Ordering within the sub side alone
+was checked and doesn't matter: a name a later sub constraint re-mentions after an earlier one
+already spawned it just lands in the same union set either way.
+
+**`\int` is not part of any of this.** Its bounds are bare expressions, never a relation to harvest
+a name out of - classically `\int_a^b f(x)\,dx` has no constraint under the sign at all. Author:
+*"the integral will need to colect the names from the dx, dy, etc. term at the end of the integral,
+we will need a special case for that one"*. Still fully open, deliberately not designed further
+here - a separate mechanism (reading a trailing `d<name>`, possibly several for a multiple integral)
+that this section's constraint machinery has nothing to say about.
+
+**Membership/inclusion is not symmetric, and the fix has to survive connectives that don't exist
+yet.** Found live testing `\sum_{i \in S}(i)`: it spawned `S` alongside `i`, since `S` is exactly as
+free as `i` and there is no sup to subtract it against. `i \in S` has an element side and a set side,
+and only the element side is ever eligible - `ASYMMETRIC_SPAWN_SIDE` in `mexpr_ast.lua` says which
+operand per type (the mirrors point at the OTHER operand: `\ni`/`\supset`/`\supseteq` are eligible on
+slot 2, the rest on slot 1). `=` and the inequalities stay symmetric on purpose - `i=j` spawning both
+sides is the accepted behaviour from earlier in this section, unchanged.
+
+The first version of this checked only the constraint's ROOT node type, reasoned to be safe because
+`build_relation` cannot nest one relation inside another today. Author, catching that reasoning
+before it shipped: *"I don't want the /in to be top-level only, what if we want to write a bolean
+relation?"* - boolean connectives (`\land`/`\lor`/`\lnot`) do not exist yet, but `i \in S \land i \ne
+j` must still only spawn `i` once they do, and a root-only check would need revisiting the day they
+land. `harvest_eligible` instead walks the WHOLE constraint tree: wherever a membership/inclusion
+relation turns up, at any depth, only its eligible side is descended into from there; every other
+node type recurses into all of its children, which already includes a future AND/OR/NOT with zero
+changes needed here - "recurse into every child" is the default for anything not in the table, not a
+special case for today's node set.
+
+On whether the eligible side must itself be a bare name: author, confirming it need not be -
+*"of course the side the operator is facing must be a variable, or else in the future the type
+checker will fail, but it shoulde be allowed to be composed"*. So `harvest_eligible` recurses freely
+into whatever expression sits there (`i+1 \in S` harvests `i`) rather than requiring a single token;
+whether the result is well-typed is the not-yet-built type checker's question (§6's "Types" gap),
+not this layer's.
+
+**What is still open after this.** How far a bigop's body reaches along the row (the note above this
+one, unchanged - a notation question, not a scoping one) - `mexpr_ast.lua`'s `read_bigop` sidesteps
+it for now by requiring the body to be an explicit bracket group right after the operator, refusing
+rather than guessing, same discipline a chained relation already gets. The integral's
+differential-reading mechanism, entirely - though see the note just below, which changes what
+"entirely" means. The `vert`-stack multi-constraint path is written and reviewed but has not been
+exercised live - there is no LaTeX text for it, only direct `mexpru` construction. All the rest of
+this section IS implemented: the relation family, the tuple shape (a flat `(op, n_vars, n_sub, n_sup,
+var1..varN, sub1..subK, sup1..supM, body)`, chosen over three nested list-nodes because it mirrors
+`MAT`'s own existing `(M, m, n, a1...a[m+n])` counts-up-front idiom and needs no new node type), and
+`read_bigop` for `\sum`/`\prod`/`\bigcup`/`\bigcap`. `\int` is excluded throughout, per the next note.
+
+### The integral's differential - a real idea, not yet built
+
+Floated in the same conversation, once the constraint mechanism above made it clear `\int` needed a
+genuinely different answer rather than a missing piece of the same one. Two things ruled out first:
+there is no dedicated "differential d" glyph in `char.lua` - only the ordinary lowercase letter `d`,
+indistinguishable from a variable someone names `d` - though the project already has precedent for
+minting a dedicated glyph for exactly this kind of confusion (`\partial`, deliberately kept separate
+from `d` for partial derivatives, `char.lua`'s own "the other than d" comment). Real LaTeX has this
+same ambiguity and resolves it by convention, not by grammar.
+
+**The idea: treat `\int` as an implicit bracket that closes on `d<letter>`, not as another
+constraint-list bigop.** Author: *"treat integrals like a paranthesis in some limited sense and have
+the d be the end of the integral... the var name is whatever is next to the right of 'd'"*. Concretely
+- scan forward from the integral's position, tracking bracket depth the same way `build_sum`/
+`read_factor` already do for an ordinary bracket group, until a `d` atom immediately followed by
+exactly one letter atom appears at THAT depth; that pair closes the integral, the letter is the
+variable, everything scanned in between is the body. A `d` inside a nested bracket
+(`\int(a+d)\,dx`) never fires early, because it sits at a deeper depth than the integral's own scan.
+
+**This needs no change to `ast.lua`'s `INT` shape at all.** It stays `(var, from, to, body)`,
+untouched - a double integral (`\int\int f\,dx\,dy`) falls out as two nested `INT` nodes from two
+separate `\int` symbols, the same way nesting already works for everything else in this file. All the
+work would be a new forward-scan in `mexpr_ast.lua`; nothing in the AST layer changes.
+
+**The one residual ambiguity is accepted, not solved.** A body that ends with a genuine
+juxtaposition-product against a variable actually named `d` (`\int d \cdot x`, no differential
+intended) cannot be told apart from `\int \, dx` - same as TeX itself cannot. Narrow in practice,
+since everyone already avoids naming a variable `d` for exactly this reason, and not worth
+engineering further around.
+
+Not implemented - deliberately sequenced after the constraint-list mechanism above rather than
+alongside it, to avoid two designs in flight on the same file at once.
+
+### Declaration identity - age, generation, and a persistent namespace
+
+Recorded 2026-09-10, in conversation, before any of it is built. Grew out of testing F5 (a new
+debug key showing `ast.to_string`'s raw serialization, alongside F4's tree view): `CALL` embeds its
+declaration's serialized text directly (`ast.new_call(ctx.ns, hit.decl.text, ...)`), which section
+10's own rule already rules against - *"the id is the real name... the code tells them apart by
+id"* - `VAR`/`VREF` already follow that, `CALL` never did.
+
+**The first fix considered and dropped: a parallel `ctx.decl_ids`/`ns.decl_by_id` cache**, minting a
+per-parse number for each declaration alongside the existing `ns.by_id`. Correct as far as it went,
+but pointless duplication once compared against the obvious alternative: mint a real `ast.lua` node
+for the declaration (`ast.new(ns, ast.DECL)` or similar), the same way `VAR` already exists for a
+variable, and let `CALL` hold *that* node's `.id` - resolved through the `ns.by_id` `CALL` already
+needs to consult, no second table. Author, cutting straight to this: *"so what is the point of this
+instead of using what is already inside ast.lua and building the ast from the definition up"*.
+
+**Then the harder half: should that node be cached, surviving past one parse?** Author: *"maybe we
+can even cache that ast such that it only is rebuilt on definitions that move, but that will happen
+later I guess"*. Deferred, but the shape of it got worked out anyway, because it answers a question
+"Bigop scoping" left unresolved about identity across time (there, resolved narrowly - a bigop's
+OWN variables never need to survive past one parse; a document-wide declaration is a different
+animal, since two SEPARATE formulas' parses both need to resolve against the SAME one).
+
+**Age - the box's own id, fixed at birth, never changing for that box's life** (the same mechanism
+`content.lua`'s formula boxes already have - `box.fml.id`, from a counter derived from what's
+already in the document). Author: *"how about if an ast var got an age (the box it lives in), as
+such, the namespace will hold the ids, with the names and the age"*. This is what makes identity
+safe to key on WITHOUT falling into the trap "Bigop scoping"'s own text-collision worry named: delete
+a box declaring `f(x)`, later create an unrelated box that also happens to say `f(x)` - same text,
+but a different age, so never confusable, with no need to compare spelling at all.
+
+**Generation - the declaration NODE's own id, which bumps every time the box's content is edited.**
+Author: *"reconstructing a definition: allow a delete of a var, it gets rid of the last one and
+re-creates it (look the last_id is increasing only), this way you would reconstruct the node and
+when the ast is re-formed on demand it has access to exactly all the definitions it needs based on
+age and also actualized"*. Never mutate a declaration node in place - tear it down and rebuild it on
+every edit - and staleness detection falls out for free from `ast.new()`'s own monotonic counter,
+no separate version field needed: anything holding an old generation's id can tell, by comparison
+alone, that it predates the current one and needs rebuilding.
+
+**Age and generation answer two different failure modes, together.** Age says whether a reference
+is even looking at the right BOX at all (the text-collision case). Generation says whether it is
+looking at a STALE EDIT of the right box (the in-place-edit case). Neither alone covers both; a
+reference needs to carry both to know which kind of "no longer valid" it is looking at, if either.
+
+**This is what turns `ns` from a per-parse throwaway into a persistent, document-wide registry.**
+Today `ast.new_ns()` is fresh on every single `mexpr_ast.build()` call, and nothing needs to survive
+past it - which is fine for `VAR`/`VREF`, since nothing outside one formula's own tree ever needs to
+resolve one. A declaration is referenced FROM other formulas' separate parses, so it cannot live in
+a namespace that dies with the parse that first created it. Age-tagging is what makes a persistent
+`ns` safe to query directly rather than re-derived from a fresh walk every time: *"and it allows us
+to simply ask the ns for function names"* - a lookup for box K's own visible declarations becomes a
+plain filter, `age <= K's age`, no re-walking `content.declarations_before` from scratch.
+
+**The trie gets the same treatment.** `check_declarations`'s trie (§18d) is rebuilt from scratch on
+every call today, over whatever `declarations_before` already filtered to "visible from here."
+Under a persistent `ns`, the trie can instead be ONE incrementally-grown structure for the whole
+document - inserted once per declaration, never rebuilt - with a lookup for box K simply skipping,
+mid-walk, any node whose age is too young for K, as if it were never inserted at all. Visibility
+becomes a property of the walk, not of what is structurally present.
+
+**Open, not resolved: conflict-checking (`trie_conflict`, and the backward "would this break an
+already-accepted one" check) needs to become age-aware too, not just position-aware.** Two
+declarations whose age-windows never overlap for any common consumer should not be flagged as
+conflicting just because they sit near each other in an incrementally-built trie - today's check
+runs once over a set already pre-filtered to "visible together," which a persistent, age-walked
+trie no longer hands it for free. Position still has a job alongside age even once this exists -
+it is what breaks the tie when two same-age-window declarations DO coexist and conflict, which age
+alone cannot decide. Author, accepting the open end: *"sure"*.
+
+None of this is implemented. `ast.lua`'s `CALL` still embeds raw text today; `ns` is still fresh per
+parse; the trie is still rebuilt from scratch per lookup. This section exists so the reasoning is
+not lost before any of it changes.
+
 ### What this settles from earlier sections
 
 - **"Operations inside a subscript" (above) is answered by the cascade, not by the rollback it
@@ -2254,10 +2469,13 @@ Two things follow, neither implemented:
 
 ### Still not parsed
 
-Division (`\div` and the fraction node), the `\ne` pseudo-glyph (section 7's note - it arrives as a
-dress over `=` and is refused rather than read as `=`), a subscript on anything that is not a
-declared name, and relation chains (`a = b = c`, which needs a shape nobody has chosen). Each fails
-with its reason rather than approximating, and F4 shows the reason.
+`\div` written inline (the fraction node itself is parsed as of 2026-09-10 - see the fraction note
+under "The expression cascade" in `docs/ast_parsing.md` section 6; scoped down on purpose, author:
+*"I want to ignore for now any fraction that is not made by a 'towering' fraction, so a/b, ignore
+it, error on it, frac{a}{b}, it's ok, parse it"*), the `\ne` pseudo-glyph (section 7's note - it
+arrives as a dress over `=` and is refused rather than read as `=`), a subscript on anything that is
+not a declared name, and relation chains (`a = b = c`, which needs a shape nobody has chosen). Each
+fails with its reason rather than approximating, and F4 shows the reason.
 
 ## 18d. The definition trie, and the one serialization that serves both modes
 

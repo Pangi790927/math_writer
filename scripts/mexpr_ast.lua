@@ -512,6 +512,25 @@ local function bracket_of(u)
     return uu and uu.bracket
 end
 
+--[[ Is this unit a fraction, and if so its numerator/denominator rows. Frac atoms carry
+u(_).kind == "frac" plus u(_).num/u(_).den (mexpru.frac's own bookkeeping) - nothing else does,
+the same idiom bracket_of above uses for u(_).bracket.
+@date 2026-09-10 ]]
+local function frac_of(u)
+    local uu = u.atom and mexpru.u(u.atom)
+    return uu and uu.kind == "frac" and uu
+end
+
+--[[ Is this unit a big operator, and if so its own u-table (base/sup/sub - mexpru.bigop()'s own
+bookkeeping, named after supsub's fields on purpose). `slot_atom` does not unwrap "bigop" the way it
+unwraps "supsub"/"dress", so `u.atom` for a bigop unit is already the whole bigop node, not just its
+base glyph - exactly what this needs.
+@date 2026-09-10 ]]
+local function bigop_of(u)
+    local uu = u.atom and mexpru.u(u.atom)
+    return uu and uu.kind == "bigop" and uu
+end
+
 --[[ Splits a row's units into comma-separated groups. Commas are the ONLY separator inside an
 argument list; two atoms side by side with no comma is multiplication, which a name may not
 contain (`F_{m,n}` yes, `F_{mn}` no).
@@ -1256,6 +1275,17 @@ local RELATIONS = {
     [">"]  = ast.new_ineq_greater,
     ["\\le"] = ast.new_ineq_leq,
     ["\\ge"] = ast.new_ineq_geq,
+    --[[ Added 2026-09-10 alongside "Bigop scoping" (docs/phase2_design.md), general purpose rather
+    than bigop-only - a bigop's sub/sup constraints are built through this exact same door. The
+    full membership/inclusion family, six glyphs: whether a given one reaches the row as a single
+    keystroke or a digraph (`\subseteq` is `\subset` then `=`) is irrelevant here - each is already
+    one real glyph in char.lua's catalog by the time a row holds it, same as `\le`/`\ge` above. ]]
+    [IN_DESC] = ast.new_in,
+    ["\\ni"] = ast.new_ni,
+    ["\\subset"] = ast.new_subset,
+    ["\\subseteq"] = ast.new_subseteq,
+    ["\\supset"] = ast.new_supset,
+    ["\\supseteq"] = ast.new_supseteq,
 }
 
 --[[ AN OVERPRINTED RELATION - `\ne` - read as the one symbol the rest of the app already treats it
@@ -1347,6 +1377,19 @@ failed in a place where the row parser would have succeeded - two parsers for on
 drift apart.
 @date 2026-09-10 04:30 ]]
 local build_expr
+
+--[[ Forward-declared alongside build_expr for the same reason: a bigop's sub/sup constraints
+(read_constraints, near read_factor) are built through build_relation - the full cascade, not just
+build_expr - since a constraint IS a relation (`i=1`, `i \in S`), not a plain expression.
+@date 2026-09-10 ]]
+local build_relation
+
+--[[ Forward-declared for the same reason - a bigop's unbracketed body (read_bigop, near
+read_factor) is read at PRODUCT order: build_product over whatever factors remain in the current
+term, not build_expr over the whole thing, so a top-level `+` (already split off by build_sum before
+build_product ever runs) is never in reach without explicit parens.
+@date 2026-09-10 ]]
+local build_product
 
 --[[ `units[i..j]` as a list of its own. The unit tables are shared, not copied - nothing downstream
 mutates them except `.call`, which read_pattern sets on a base unit it owns. ]]
@@ -1442,6 +1485,211 @@ row down to one unit, re-reading the same prefix each time, when only two of tho
 Everything between them fails for a reason that was never interesting - trailing content, or a
 bracket cut in half.
 @date 2026-09-10 12:40 ]]
+--[[ The operators this parser gives the constraint-list treatment ("Bigop scoping",
+docs/phase2_design.md) - N variables, K sub constraints, M sup constraints. `\int` is deliberately
+absent: its variable comes from a trailing differential, not a relation, so it is refused rather
+than routed through this at all (§8/§9, docs/ast_parsing.md).
+@date 2026-09-10 ]]
+local BIGOP_CONSTRUCTORS = {
+    ["\\sum"]    = ast.new_sum,
+    ["\\prod"]   = ast.new_prod,
+    ["\\bigcup"] = ast.new_union,
+    ["\\bigcap"] = ast.new_intersect,
+}
+
+--[[ The constraint ROWS a sub or sup slot holds: a container's units are ONE constraint, unless
+they are a single `vert` atom (mexpru.vert()'s own N-slots-stacked primitive, already user-buildable
+via new_with_vert() - nothing new on the editing side), in which case each of its slots is its own
+constraint. `container` may be nil (an untouched sub/sup), which is zero constraints, not one empty
+one.
+@date 2026-09-10 ]]
+local function constraint_rows(container)
+    if not container then
+        return {}
+    end
+    local units = row_units(container)
+    if is_untouched(units) then
+        return {}
+    end
+    if #units == 1 then
+        local uu = units[1].atom and mexpru.u(units[1].atom)
+        if uu and uu.kind == "vert" and uu.slots then
+            local rows = {}
+            for _, slot in ipairs(uu.slots) do
+                rows[#rows + 1] = row_units(slot)
+            end
+            return rows
+        end
+    end
+    return {units}
+end
+
+--[[ Membership/inclusion is NOT symmetric the way `=` is: `i \in S` has an element side and a set
+side, and only the element side is ever eligible to be a bigop's own variable - found live testing
+`\sum_{i \in S}(i)`, which spawned `S` alongside `i` for want of a sup to subtract it against (no
+sup, no subtraction, and `S` is exactly as free as `i` at the point the constraint is built).
+
+ONE SIDE PER TYPE, keyed by node type rather than guessed from shape - a mirror relation (`\ni`,
+`\supset`, `\supseteq`) points the eligible side at the OTHER operand, since `a \ni b` means `b \in
+a` and `a \supset b` means `b \subset a`. `=` and the numeric inequalities are absent on purpose -
+`i=j` spawning both sides is the accepted, asked-for behaviour there (§18c), unchanged.
+
+NOT KEYED TO "THE ROOT" - a relation cannot nest inside another today (build_relation refuses a
+second one at a row's top level rather than building it nested, and one inside literal parens has no
+parser at all), but that is a fact about what exists RIGHT NOW, not a rule to lean on. Author,
+2026-09-10, catching exactly this: "I don't want the /in to be top-level only, what if we want to
+write a bolean relation?" - boolean connectives (`\land`/`\lor`/`\lnot`) do not exist yet, but when
+they do, `i \in S \land i \ne j` must still only spawn `i`. So this walks the WHOLE constraint tree
+instead of checking one node: wherever a membership/inclusion relation turns up, at any depth, only
+its eligible side counts from that point down; every other node type (today: ADD/MUL/EQ/INEQ_*/CALL/
+... - tomorrow, also AND/OR/NOT) recurses into all of its children as before. Nothing here needs to
+change when a boolean layer is added - it already falls out of "recurse into every child" being the
+default for anything not in this table.
+@date 2026-09-10 ]]
+local ASYMMETRIC_SPAWN_SIDE = {
+    [ast.IN]       = 1, -- a \in b       - a is the element
+    [ast.NI]       = 2, -- a \ni b       - b is the element  (== b \in a)
+    [ast.SUBSET]   = 1, -- a \subset b   - a is the varying (sub)set
+    [ast.SUBSETEQ] = 1,
+    [ast.SUPSET]   = 2, -- a \supset b   - b is the varying (sub)set  (== b \subset a)
+    [ast.SUPSETEQ] = 2,
+}
+
+--[[ Every name eligible to be spawned anywhere in `node` - a VREF's name counts, UNLESS it is only
+reachable through the ineligible side of a membership/inclusion relation somewhere above it, in
+which case that whole branch is never descended into at all. Not a resolution walk - it does not
+care whether a name is free or declared, only whether it is mentioned in an eligible position -
+`read_constraints` intersects this with `ctx.free_seen` to answer "and was it actually free".
+@date 2026-09-10 ]]
+local function harvest_eligible(ns, node, out)
+    if type(node) ~= "table" or not node.type then
+        return
+    end
+    if node.type == ast.VREF then
+        local target = ns.by_id[node[1]]
+        if target and target.type == ast.VAR then
+            out[target[1]] = true
+        end
+        return
+    end
+    local side = ASYMMETRIC_SPAWN_SIDE[node.type]
+    if side then
+        harvest_eligible(ns, node[side], out)
+        return
+    end
+    for i = 1, #node do
+        harvest_eligible(ns, node[i], out)
+    end
+end
+
+--[[ Builds every constraint row a sub or sup slot holds, and harvests the free names that showed up
+in each - both sides of an ordinary relation, no left/right role assigned to either (§18c "Bigop
+scoping"), but only the eligible side of a membership/inclusion relation wherever one appears
+(harvest_eligible above). `ctx.free_seen` is reset per constraint and drained into one ordered,
+deduped list per call - order is first-seen, which only matters for determinism, since the caller
+unions this with nothing that cares about order (sub-minus-sup is a plain set operation).
+@date 2026-09-10 ]]
+local function read_constraints(ctx, container)
+    local rows = constraint_rows(container)
+    local nodes, free_list, seen = {}, {}, {}
+    local outer_free_seen = ctx.free_seen
+    for _, row in ipairs(rows) do
+        ctx.free_seen = {}
+        local node, err = build_relation(ctx, row)
+        if not node then
+            ctx.free_seen = outer_free_seen
+            return nil, err
+        end
+        nodes[#nodes + 1] = node
+
+        local eligible = {}
+        harvest_eligible(ctx.ns, node, eligible)
+
+        for name in pairs(ctx.free_seen) do
+            if eligible[name] and not seen[name] then
+                seen[name] = true
+                free_list[#free_list + 1] = name
+            end
+        end
+    end
+    ctx.free_seen = outer_free_seen
+    return nodes, nil, free_list
+end
+
+--[[ A big operator: BIGOP_CONSTRUCTORS[glyph](vars, subs, sups, body). Reads the sub/sup constraint
+rows, spawns whichever names are free in the sub side and not the sup side (sub-minus-sup - see
+constraint_rows and "Bigop scoping" for why the sup cannot spawn its own), then reads the body at
+PRODUCT ORDER - exactly what `build_product` would consume as the REST of this factor's own term,
+brackets or not.
+
+THE BODY-EXTENT QUESTION (docs/ast_parsing.md §8) IS SETTLED THIS WAY, not sidestepped. Author,
+2026-09-10: *"keep product order as the solution, so sum[i]{i} should work, sum[i]{i^2} same,
+sum[i]{i^2 + i} has no way to be explicitly constructed and in exchange would need paranthesis, but
+allow the simple sums to build"*. The `+` in `\sum_{i=1}^n i + 1` was never actually reachable from
+here in the first place - `build_sum` (case 2, ABOVE `build_product` in the cascade) already splits
+a row into terms on every top-level `+`/`-` before `build_product` ever runs, so by the time a factor
+reader sees this row at all, `\sum_{i=1}^n i` and `+ 1` are already two separate terms build_sum will
+add. What was open was only how much of the REMAINING factors in the bigop's OWN term its body
+should swallow - all of them, same as any other factor that eats what follows it (a coefficient, a
+sign) - so `\sum_{i}i^2` reads its whole remaining term as the body via `build_product`, and reaching
+past a `+` needs the explicit parens that already make it one factor (`\sum_i(i^2+i)`), exactly as
+asked. `\sum_{i=1}^{n}(i+1)` and `\sum_{i=1}^{n} i` (no parens - reads as `SUM(...,i)`, one factor)
+both parse now; only a bare `+`/`-` inside the body without parens still needs them.
+
+WHICH KIND OF UNIT THIS EVEN IS varies with how the row was typed. Plain `\sum_{i=1}^{n}` (no
+`\limits`) is an ORDINARY supsub whose base happens to be `\sum` - `slot_atom` unwraps it same as any
+other decorated letter, so `atom_desc(u0.atom)` already IS the glyph and `u0.sub`/`u0.sup` already
+ARE the constraints, no different from reading a numeral's own decorations. `\sum\limits_{i=1}^{n}`
+(and anything already rebuilt as one - mformula_new's own "wants_limits" flag) is `mexpru.bigop()`'s
+own "bigop" kind instead, which `slot_atom` does NOT unwrap - `bigop_of` is what reads THAT one, off
+`u0.atom` directly rather than through the unwrapped `d`. Same meaning either way - only where the
+limits are DRAWN differs - so both are read identically here.
+@date 2026-09-10 ]]
+local function read_bigop(ctx, units, i, glyph, sub_container, sup_container)
+    if glyph == "\\int" or glyph == "\\oint" then
+        return nil, nil, "not parsed yet: the integral's variable comes from its trailing "
+                .. "differential (dx), which is not built"
+    end
+    local make = BIGOP_CONSTRUCTORS[glyph]
+    if not make then
+        return nil, nil, "not parsed yet: " .. tostring(glyph)
+    end
+
+    local subs, sub_err, sub_free = read_constraints(ctx, sub_container)
+    if not subs then
+        return nil, nil, sub_err
+    end
+    local sups, sup_err, sup_free = read_constraints(ctx, sup_container)
+    if not sups then
+        return nil, nil, sup_err
+    end
+
+    local sup_free_set = {}
+    for _, name in ipairs(sup_free) do
+        sup_free_set[name] = true
+    end
+    local vars = {}
+    for _, name in ipairs(sub_free) do
+        if not sup_free_set[name] then
+            vars[#vars + 1] = name
+        end
+    end
+    if #vars == 0 then
+        return nil, nil, glyph .. " has no new variable in its sub - everything free there is "
+                .. "also free in its sup, so nothing is spawned"
+    end
+
+    local rest = slice(units, i + 1, #units)
+    local body, body_err = build_product(ctx, rest, false)
+    if not body then
+        return nil, nil, glyph .. " needs a body: " .. tostring(body_err)
+    end
+
+    -- The body consumed everything remaining in this term - nothing is left for build_product's
+    -- own caller to read after this factor.
+    return make(ctx.ns, vars, subs, sups, body), #units + 1
+end
+
 local function name_extents(ctx, units, i)
     local tail = slice(units, i, #units)
     local out = {}
@@ -1492,6 +1740,38 @@ local function read_factor(ctx, units, i)
     local u0 = units[i]
     local d = atom_desc(u0.atom)
     local b = bracket_of(u0)
+    local fr = frac_of(u0)
+
+    -- ---- CASE 3a: a big operator - see read_bigop for the constraint/body handling ------------
+    do
+        --[[ Two shapes read as the same thing here - see read_bigop's own note. A bigop-kind unit
+        (u0.atom not unwrapped by slot_atom) carries its glyph on bg.base; an ordinary supsub-kind
+        one (e.g. `\sum_{i=1}^{n}` with no `\limits`) is already unwrapped, so `d` IS the glyph. ]]
+        local bg = bigop_of(u0)
+        local glyph = bg and atom_desc(bg.base) or d
+        if glyph == "\\int" or glyph == "\\oint" or BIGOP_CONSTRUCTORS[glyph] then
+            local sub_container = bg and bg.sub or u0.sub
+            local sup_container = bg and bg.sup or u0.sup
+            return read_bigop(ctx, units, i, glyph, sub_container, sup_container)
+        end
+    end
+
+    -- ---- CASE 3b: a fraction bar, which is a division whether or not \div was ever typed -----
+    if fr then
+        local num, nerr = build_expr(ctx, row_units(fr.num))
+        if not num then
+            return nil, nil, nerr
+        end
+        local den, derr = build_expr(ctx, row_units(fr.den))
+        if not den then
+            return nil, nil, derr
+        end
+        local node, err = apply_power(ctx, ast.new_div(ctx.ns, num, den), u0)
+        if not node then
+            return nil, nil, err
+        end
+        return node, i + 1
+    end
 
     -- ---- CASE 3: a bracket group, which is a cell around whatever it holds ------------------
     if b then
@@ -1583,6 +1863,17 @@ local function read_factor(ctx, units, i)
         product - which is also the reading that says something true about `a`, because a letter
         with no declaration is an independent variable, and an independent variable is not
         applicable to anything. ]]
+        --[[ `ctx.free_seen`, when present, is a bigop's own harvesting side-channel (see
+        `read_constraints` below) - the ONLY reader of "was this specific mention free, or did it
+        resolve against a declaration". The tree itself cannot answer that after the fact: a free
+        `n` and a declared bare `n` both end up as the identical VREF shape, since both go through
+        `var_ref`. Recording it here, at the one place resolution has already failed, is cheaper and
+        more honest than re-deriving it from a finished tree. Ordinary parsing never sets this field,
+        so this is a no-op everywhere outside a bigop's own constraint reading.
+        @date 2026-09-10 ]]
+        if ctx.free_seen then
+            ctx.free_seen[d] = true
+        end
         local node, err = apply_power(ctx, var_ref(ctx, d), u0)
         if not node then
             return nil, nil, err
@@ -1643,7 +1934,7 @@ quoted, and a named operator is written as a 1-tall vert (operator_name), so `bb
 a single name. That is what those two constructs are FOR - without them this layer would be
 guessing.
 @date 2026-09-10 04:30 ]]
-local function build_product(ctx, units, negative)
+function build_product(ctx, units, negative)
     local factors, bracketed, i = {}, {}, 1
     while i <= #units do
         local d = atom_desc(units[i].atom)
@@ -1754,7 +2045,7 @@ TOP LEVEL ONLY - bracket depth is tracked, so the `=` inside `f(a=b)` is not a s
 only: `a = b = c` is ordinary mathematics but ast.new_eq takes two operands, so a chain needs a
 shape nobody has chosen yet. Refused with a reason rather than silently associating one way.
 @date 2026-09-10 06:20 ]]
-local function build_relation(ctx, units)
+function build_relation(ctx, units)
     local depth, at = 0, nil
     local i = 1
     while i <= #units do
@@ -1870,6 +2161,24 @@ local NODE_LABEL = {
     [ast.DIV]           = "DIV",
     [ast.EXP]           = "POW",
     [ast.CELL]          = "CELL",
+    [ast.IN]            = "IN",
+    [ast.NI]            = "NI",
+    [ast.SUBSET]        = "SUBSET",
+    [ast.SUBSETEQ]      = "SUBSETEQ",
+    [ast.SUPSET]        = "SUPSET",
+    [ast.SUPSETEQ]      = "SUPSETEQ",
+}
+
+--[[ SUM/PROD/UNION/INTERSECT's own shape - (op, n_vars, n_sub, n_sup, var1..varN, sub1..subK,
+sup1..supM, body), ast.lua's own "Bigop scoping" comment. The first three slots are plain counts,
+not nodes - `render` cannot walk them generically the way it walks everything else, same reason
+CALL already gets its own branch below for its callee string.
+@date 2026-09-10 ]]
+local GROUP_BIGOP_LABEL = {
+    [ast.SUM]       = "SUM",
+    [ast.PROD]      = "PROD",
+    [ast.UNION]     = "UNION",
+    [ast.INTERSECT] = "INTERSECT",
 }
 
 --[[ One node, and its children under it. Walks the REAL tree - `mexpr_ast.build`'s output - rather
@@ -1902,6 +2211,16 @@ local function render(ns, node, depth, out)
         line("CALL " .. string.format("%q", tostring(node[1])))
         for i = 2, #node do
             render(ns, node[i], depth + 1, out)
+        end
+        return
+    end
+    if GROUP_BIGOP_LABEL[t] then
+        local n_vars, n_sub, n_sup = node[1], node[2], node[3]
+        line(GROUP_BIGOP_LABEL[t] .. " " .. n_vars .. " var/" .. n_sub .. " sub/" .. n_sup .. " sup")
+        local idx = 3
+        for _ = 1, n_vars + n_sub + n_sup + 1 do -- +1 is the body, always last
+            idx = idx + 1
+            render(ns, node[idx], depth + 1, out)
         end
         return
     end
