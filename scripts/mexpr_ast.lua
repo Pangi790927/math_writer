@@ -924,7 +924,7 @@ local function read_pattern(p, units)
 
     -- ---- an optional call: ONE bracketed group, immediately after the base -----------------
     local call_row = nil
-    if next_i <= #units and bracket_of(units[next_i]) then
+    if not p.no_call and next_i <= #units and bracket_of(units[next_i]) then
         local open = bracket_of(units[next_i])
         if not open.is_open then
             p:mark(units[next_i].node, "bad")
@@ -975,11 +975,16 @@ local function read_pattern(p, units)
     end
 
     -- ---- nothing may follow ---------------------------------------------------------------
-    if next_i <= #units then
+    --[[ UNLESS THE CALLER ASKED FOR A PREFIX. A declaration must be the whole slot, so trailing
+    content is an error there; a USE sits in a row next to other factors, and the question it asks
+    is not "is this row a name" but "where does the name end". `p.partial` is that question, and
+    `consumed` is the answer - see read_factor, which is the only caller that asks it. ]]
+    if next_i <= #units and not p.partial then
         p:mark(units[next_i].node, "bad")
         return nil, "a name may not be followed by anything else - `a^{'x'}y` is a product, "
                 .. "not a name", units[next_i].node, p.marks
     end
+    p.consumed = next_i - 1
 
     -- ---- emit -----------------------------------------------------------------------------
     -- (still inside read_pattern)
@@ -1007,6 +1012,8 @@ local function read_pattern(p, units)
         exprs = p.exprs,
         -- Every group, either mode - what check_declarations walks looking for a nested definition.
         groups = p.groups,
+        -- How many units the name took, for a caller reading a name out of a longer row.
+        consumed = p.consumed,
     }
 end
 
@@ -1208,7 +1215,7 @@ function is the step before it: resolution against content.declarations_before()
 building both live above, because both need a namespace and a declaration table that a row alone
 cannot supply. See docs/phase2_design.md, "Case 1 in full".
 @date 2026-09-10 03:45 ]]
-function mexpr_ast.parse_use_units(units, decls)
+function mexpr_ast.parse_use_units(units, decls, opts)
 
     --[[ POWERS ARE ALLOWED HERE AND REFUSED IN A DECLARATION, and the asymmetry is the point:
     `f^2(x)` is a use of `f`, so the power is an operation ON the reference and comes back in
@@ -1221,13 +1228,18 @@ function mexpr_ast.parse_use_units(units, decls)
     --[[ The declarations are needed DURING the parse, not only after it: whether a decorated group
     is an argument or part of the name is decided by whether anything answers to it. ]]
     p.decls = decls
+    --[[ `partial` lets the name stop before the units do, and `no_call` refuses to swallow a
+    bracket group that follows the base. Together they are how read_factor asks for the two - and
+    only two - extents a name can have in a row. ]]
+    p.partial = opts and opts.partial
+    p.no_call = opts and opts.no_call
 
     local res, err, node, marks = read_pattern(p, units)
     if not res then
         return nil, err, node, marks
     end
     return {key = res.text, tokens = res.tokens, args = res.exprs or {},
-            sups = res.sups or {}, marks = res.marks}
+            sups = res.sups or {}, marks = res.marks, consumed = res.consumed}
 end
 
 -- The whole row, which is what a caller with a container has. Both halves exist because a
@@ -1418,22 +1430,48 @@ formula ends up meaning something nobody wrote.
 Only when nothing resolves is the factor a plain value, and then it is a single thing: a numeral, a
 bracket group, or a free variable.
 @date 2026-09-10 04:30 ]]
+--[[ THE TWO EXTENTS A NAME CAN HAVE, longest first, as parsed uses of the row from `i` on.
+
+A NAME'S LENGTH IN UNITS IS NOT OPEN-ENDED, which is the whole reason this is a pair and not a
+search. read_pattern reads a base, then AT MOST ONE bracketed group, and then nothing - and a
+subscript rides on the base's own unit, consuming no units of the row at all. So a name ends either
+where its base does, or after the one bracket group that may follow it. There is no third place.
+
+That is what replaced the retry loop here (2026-09-10): it tried every end position from the whole
+row down to one unit, re-reading the same prefix each time, when only two of those could ever parse.
+Everything between them fails for a reason that was never interesting - trailing content, or a
+bracket cut in half.
+@date 2026-09-10 12:40 ]]
+local function name_extents(ctx, units, i)
+    local tail = slice(units, i, #units)
+    local out = {}
+    local greedy = mexpr_ast.parse_use_units(tail, ctx.decls, {partial = true})
+    if greedy then
+        out[#out + 1] = greedy
+    end
+    --[[ Only worth asking when the greedy read swallowed a call: without one the two readings are
+    the same, and `f(x)` would otherwise be offered twice and report itself as ambiguous. ]]
+    if greedy and greedy.consumed and greedy.consumed > 1 then
+        local bare = mexpr_ast.parse_use_units(tail, ctx.decls, {partial = true, no_call = true})
+        if bare and bare.consumed ~= greedy.consumed then
+            out[#out + 1] = bare
+        end
+    end
+    return out
+end
+
 local function read_factor(ctx, units, i)
     local hits = {}
-    for j = #units, i, -1 do
-        local use = mexpr_ast.parse_use_units(slice(units, i, j), ctx.decls)
-        if use then
-            local hit, why, count = mexpr_ast.resolve_use(use, ctx.decls)
-            if hit then
-                hits[#hits + 1] = {use = use, hit = hit, stop = j}
-            elseif count and count > 1 then
-                --[[ AN AMBIGUITY IS REPORTED, NOT STEPPED OVER. Every other extent that fails to
-                resolve means "this is not where the name ends, read on"; several declarations
-                answering to one extent means the row itself is ambiguous, and letting the loop
-                carry on would report it as `no declaration matches` - the opposite of what
-                happened. ]]
-                return nil, nil, why
-            end
+    for _, use in ipairs(name_extents(ctx, units, i)) do
+        local hit, why, count = mexpr_ast.resolve_use(use, ctx.decls)
+        if hit then
+            hits[#hits + 1] = {use = use, hit = hit, stop = i + use.consumed - 1}
+        elseif count and count > 1 then
+            --[[ AN AMBIGUITY IS REPORTED, NOT STEPPED OVER. An extent that fails to resolve means
+            "this is not where the name ends, read on"; several declarations answering to ONE extent
+            means the row itself is ambiguous, and carrying on would report it as `no declaration
+            matches` - the opposite of what happened. ]]
+            return nil, nil, why
         end
     end
     if #hits > 1 then

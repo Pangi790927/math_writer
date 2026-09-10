@@ -244,10 +244,20 @@ build_relation   splits on  =  <  >  \le  \ge  and the \ne pseudo-glyph
       read_factor    one name-use, numeral, or bracket group
 ```
 
-**Extent** — how far a name reaches along a row — is decided by offering every extent from the
-current position to the end of the row to the name parser and keeping the ones that resolve.
-Exactly one, or it is an ambiguity. 🟡 *This is O(n) re-parses per factor; walking the §4 trie
-incrementally would give the same answer in one pass, and hasn't been done.*
+**Extent** — how far a name reaches along a row — has exactly **two** candidates, not a search
+space. 🟢 `read_pattern` reads a base, then at most one bracketed group, then nothing; a subscript
+rides on the base's own unit and costs no row units. So a name ends either where its base does, or
+after the one bracket group that may follow it. `read_factor` asks for both and resolves each.
+
+Which one wins is the declarations' answer: `f(x)` is a CALL with `f(y)` declared and a product with
+`f` declared. Both declared is an ambiguity rather than a preference — the two readings differ in
+extent, so specificity (§5) has nothing to compare.
+
+*(This was a search until 2026-09-10: every end position from the whole row down to one unit,
+re-parsing the same prefix each time. The plan was to replace the search with an incremental trie
+walk; what the work actually found is that there was never a search to replace — only two of those
+end positions could ever parse, and everything between them failed for reasons that were never
+interesting.)*
 
 **Signs** are a property of the product: `-2x` is `MUL(NUM(-2), REF(x))` (folded into the leading
 numeral) and `-x` is `MUL(NUM(-1), REF(x))`. A sign is a separator only with a term behind it.

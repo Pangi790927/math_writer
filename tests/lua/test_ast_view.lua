@@ -307,6 +307,50 @@ function run_test()
         check("two candidates are reported, not picked", v:find("matches 2", 1, true) ~= nil, v)
     end
 
+    -- ------------------------------------------------- HOW FAR A NAME REACHES ALONG A ROW
+    do
+        --[[ THE EXTENT IS A PAIR, NOT A SEARCH, and that is the assumption this block exists to
+        guard. read_pattern reads a base, then AT MOST ONE bracketed group, then nothing - and a
+        subscript rides on the base's own unit, consuming no units of the row. So a name ends either
+        where its base does or after the one bracket group that may follow it. There is no third
+        place, which is why read_factor asks for exactly two readings.
+
+        Until 2026-09-10 it searched instead: every end position from the whole row down to a single
+        unit, re-parsing the same prefix each time. Everything between the two real answers failed
+        for reasons that were never interesting - trailing content, or a bracket cut in half.
+
+        If a name ever gains a second call, or a decoration that costs a row unit, this stops being
+        true and these cases are where it will show. ]]
+        local f_call, f_bare = decl(fs, "f(y)"), decl(fs, "f")
+
+        --[[ THE SAME ROW, TWO DECLARATIONS, TWO READINGS. Nothing about `f(x)` says which it is;
+        the declaration is the only thing that does. ]]
+        local v = view(fs, "f(x)", {f_call})
+        check("declared with a call, the bracket group is the argument",
+                v == [[0:CALL "f(),(1)" / 1:REF "x"]], v)
+
+        v = view(fs, "f(x)", {f_bare})
+        check("declared bare, the same brackets are a product",
+                v == [[0:MUL / 1:REF "f" / 1:REF "x"]], v)
+
+        --[[ AND BOTH DECLARED IS AN AMBIGUITY, not a preference. Two readings of one factor differ
+        in EXTENT, so specificity has nothing to compare - ranking cannot help here and does not
+        try. ]]
+        v = view(fs, "a_{1}(x)", {decl(fs, "a_{1}"), decl(fs, "a_{1}(m)")})
+        check("both declared is two readings of the factor",
+                v:find("two readings", 1, true) ~= nil, v)
+
+        --[[ The name stops where it stops; the rest of the row is other factors. `f(x)(y)` in
+        particular is NOT a second call - read_pattern takes one and no more. ]]
+        v = view(fs, "f(x)y", {f_call})
+        check("a name is followed by the rest of the row",
+                v == [[0:MUL / 1:CALL "f(),(1)" / 2:REF "x" / 1:REF "y"]], v)
+
+        v = view(fs, "f(x)(y)", {f_call})
+        check("a second bracket group is a separate factor",
+                v == [[0:MUL / 1:CALL "f(),(1)" / 2:REF "x" / 1:REF "y"]], v)
+    end
+
     if checks_failed == 0 then
         print("PASS: the viewer renders the tree the parser built (" .. checks_run .. " checks)")
     end
