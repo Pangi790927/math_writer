@@ -5,13 +5,6 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#ifndef _WIN32
-#include <unistd.h>   /* execv - the Ctrl+R reload below. POSIX-only, and so is the reload itself:
-                         MSVC has no <unistd.h> at all, so an unguarded include broke the whole
-                         Windows build - main.exe could not be rebuilt from 2026-09-07 until this
-                         guard, and stale binaries fail in the Lua layer instead (F1/F2 called an
-                         ImGui_PushFont their main.exe did not export yet). */
-#endif
 
 #include "imgui_helpers.h"
 #include "imgui_internal.h"
@@ -94,15 +87,8 @@ namespace perfc = perf_composer;
 namespace appm = app_mode;
 namespace alogc = async_log_composer;
 
-/*  TEMPORARY DEVELOPMENT AID (added 2026-09-07, on request) - see the Ctrl+R block in the main
- *  loop. Holds this process's own argv so it can hand the same arguments to its replacement.
- *  Delete this, the include above and that block together when the reload key is no longer
- *  wanted; nothing else refers to any of them. */
-static char *const *g_argv = nullptr;
-
 int main(int argc, char const *argv[])
 {
-    g_argv = (char *const *)argv;
     /*  PRESENTATION (no arguments) vs TESTING ("--test") - see app_mode.h for what each is and why
     they are kept apart. This block runs before ANYTHING else in main(): logger_init() only takes
     effect if nothing has logged yet (logger_log_autoinit() auto-inits on first use and then keeps
@@ -153,15 +139,35 @@ int main(int argc, char const *argv[])
     ImFontConfig config;
     config.MergeMode = true;
 
-    auto vs = vc::create_state();
+    /*  Building a Lua state happens TWICE - once here and once per Ctrl+R - so it is written
+    once. A reload that registered a different set of composers than startup did would produce an
+    app that behaves differently after the first reload than it did when launched, which is the
+    worst possible thing for a key whose whole purpose is "try the change".
+
+    Registering onto a fresh state is safe to repeat: set_lua_class_member() assigns into
+    vs->lua_class_members (per-state, and empty in a new one) and add_internal_func() assigns into
+    the one process-wide table there is (c_function_t::internal_funcs, see virt_composer.h) - both
+    are map assignments, so a second call overwrites with the same thing rather than duplicating or
+    refusing. Checked 2026-09-10 before the reload key was written. */
+    /*  Returns int, not vc::err_e, because ASSERT_FN expands to `return -1` and err_e is an
+    unscoped enum - int does not implicitly convert back to it, so an err_e return type would not
+    compile. 0 is success here, as everywhere else ASSERT_FN is used. */
+    auto build_lua_state = [&](std::shared_ptr<vc::virt_state_t>& out) -> int {
+        out = vc::create_state();
+        ASSERT_FN(CHK_PTR(out));
+        ASSERT_FN(charc::register_meta(out.get()));
+        ASSERT_FN(mexpr::register_meta(out.get()));
+        ASSERT_FN(imgc::register_meta(out.get()));
+        ASSERT_FN(perfc::register_meta(out.get()));
+        ASSERT_FN(appm::register_meta(out.get()));
+        ASSERT_FN(alogc::register_meta(out.get()));
+        ASSERT_FN(vc::parse_config(out.get(), "math_writer.yaml"));
+        return 0;
+    };
+
+    std::shared_ptr<vc::virt_state_t> vs;
+    ASSERT_FN(build_lua_state(vs));
     ASSERT_FN(CHK_PTR(vs));
-    ASSERT_FN(charc::register_meta(vs.get()));
-    ASSERT_FN(mexpr::register_meta(vs.get()));
-    ASSERT_FN(imgc::register_meta(vs.get()));
-    ASSERT_FN(perfc::register_meta(vs.get()));
-    ASSERT_FN(appm::register_meta(vs.get()));
-    ASSERT_FN(alogc::register_meta(vs.get()));
-    ASSERT_FN(vc::parse_config(vs.get(), "math_writer.yaml"));
 
     imgui_prepare_render();
     imgui_render(clear_color);
@@ -207,11 +213,14 @@ int main(int argc, char const *argv[])
             continue ;
         }
 
-        /*  TEMPORARY: Ctrl+R restarts the app in place, so an edit to the Lua scripts (or a
-        rebuilt binary) can be tried without leaving the window and starting it again. Requested
-        2026-09-07 as a development convenience and meant to be deleted afterwards - it is marked
-        in three places (this block, g_argv above, the <unistd.h> include) and nothing else refers
-        to it.
+        /*  TEMPORARY: Ctrl+R rebuilds the Lua state in place, so an edit to the scripts can be
+        tried without leaving the window and starting the app again. Requested 2026-09-07 as a
+        development convenience and meant to be deleted afterwards - this block and the
+        build_lua_state lambda it shares with startup are all there is to it now.
+
+        It used to re-exec the whole process, which needed <unistd.h> and a static copy of argv;
+        both went with it on 2026-09-10, when it became a Lua-only reload. See the block below for
+        why that is better than a restart and what it costs.
 
         In C++ beside Ctrl+Q rather than as a keymap action, and deliberately: the moment a reload
         is most wanted is right after a Lua change has broken something, which is precisely when a
@@ -266,8 +275,9 @@ int main(int argc, char const *argv[])
                 believed it both times, and nothing was listening. The port is a fixed single
                 resource (see main.cpp's own note on why only one instance may hold it), so
                 "already taken" is an ordinary outcome here, not an unlikely one. */
-                /*  Braces are not optional here: DBG() expands to a compound statement, so a
-                braceless if/else around it does not compile. */
+                /*  Braces here are style, not necessity - they were necessity until
+                2026-09-10, when DBG_RAW stopped baking a ";" into itself (see debug.h). A
+                braceless if/else around a DBG compiles now. */
                 /*  USER_PORT, not the test one. A session's --test instance owns TEST_PORT for
                 as long as it runs, and sharing a single port meant the two competed for it - the
                 developer's own instance could silently lose the race and be told otherwise (see
@@ -288,20 +298,52 @@ int main(int argc, char const *argv[])
         bool reload_combo = ctrl_now && glfwGetKey(imgui_window, GLFW_KEY_R) == GLFW_PRESS;
         if (!reload_combo)
             reload_armed = true;
-        else if (reload_armed && g_argv) {
-            DBG("Ctrl+R: saving and re-executing");
-            /* The same call the window's close button ends up making, so nothing is lost. */
+        else if (reload_armed) {
+            /*  RELOADS THE LUA SIDE ONLY, in place: the window, the GL context, ImGui, the async
+            log thread and the debug pipe all stay exactly as they are, and only the Lua state is
+            torn down and rebuilt. That is what makes this instant and flicker-free, and it is why
+            it replaced an execv() re-exec of the whole process (which was POSIX-only, so on
+            Windows Ctrl+R saved the document and then did nothing at all).
+
+            THE PRICE, and it is deliberate: a rebuilt BINARY is not picked up, only changed
+            scripts. Confirmed as fine 2026-09-10 - a C++ change means rebuilding, which means
+            relaunching anyway.
+
+            The document survives because the two calls bracket the teardown exactly as startup and
+            shutdown do: test_shutdown writes math_writer.save (and the keymap), the new state's
+            test_init reads it straight back, so the reloaded instance opens on what was on screen.
+
+            NOTHING C++ MAY HOLD ACROSS THIS LINE. Destroying the old state closes its lua_State,
+            and virt_composer.h is explicit that any vc::object_t/ref_t obtained from a state dies
+            with it - unenforced, so a stale one is a use-after-free rather than an error. Checked
+            when this was written: main() holds only `vs` itself, and none of the six composers
+            caches a ref_t or lua_State* between calls. Anything added later that does must be
+            rebuilt here too. */
+            DBG("Ctrl+R: saving and reloading the Lua state");
             vc::call_lua<int>(vs.get(), "test_shutdown");
-#ifndef _WIN32
-            execv("/proc/self/exe", g_argv);
-            /* Only reachable if execv failed; carry on rather than dying over a convenience. */
-            DBG("Ctrl+R: execv failed, staying in this process");
-#else
-            /*  Windows has neither execv nor /proc/self/exe, so the reload stops after the save.
-            Nothing is lost - the document has just been written by the call above - the app simply
-            stays where it is. */
-            DBG("Ctrl+R: re-exec is POSIX-only; saved, staying in this process");
-#endif
+
+            /*  Into a SEPARATE pointer, and only swapped in once it is fully built: a half-built
+            state assigned over `vs` would leave the frame loop calling test_draw on it. If the
+            rebuild fails the old state is already gone (the save above ran), so it says so loudly
+            and carries on with a state that cannot draw - rather than pretending. */
+            std::shared_ptr<vc::virt_state_t> fresh;
+            if (build_lua_state(fresh) == 0 && fresh) {
+                vs = fresh;
+                auto [rel_ret, rel_err] = vc::call_lua<int>(vs.get(), "test_init");
+                /*  Braced by choice. This is where the DBG_RAW bug was found: the macro used
+                to end in "));", so `DBG(x);` was the call plus a stray empty statement and this
+                else had no if (C2181). Fixed in debug.h the same day - do/while(0), no baked-in
+                semicolon - so the braces are now ordinary style rather than a workaround. */
+                if (rel_ret < 0 || rel_err < 0) {
+                    DBG("Ctrl+R: test_init failed after reload");
+                }
+                else {
+                    DBG("Ctrl+R: Lua reloaded");
+                }
+            }
+            else {
+                DBG("Ctrl+R: rebuild FAILED - the scripts are probably not parseable");
+            }
             reload_armed = false;
         }
 

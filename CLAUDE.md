@@ -160,8 +160,8 @@ registration needed.
 
 C++ core (`char_draw_composer.h` = fonts/glyphs, `math_expr_composer.h` = expression layout) is
 exposed to Lua via `virt_composer`. The actual math model lives in Lua: `ast.lua` (the AST),
-`char.lua` (glyph catalog), `mexpr.lua` (AST → drawable tree), `transforms.lua` (algebraic
-term-dragging, WIP). Full detail and data-flow diagram in `README.md`.
+`char.lua` (glyph catalog), `transforms.lua` (algebraic term-dragging, WIP). Full detail and
+data-flow diagram in `README.md`.
 
 ## Where the project is
 
@@ -169,24 +169,31 @@ term-dragging, WIP). Full detail and data-flow diagram in `README.md`.
 editor passed it's stage, time for second stage". Typing, navigation, brackets, accents, big
 operators, undo/redo, save/load and LaTeX in both directions all work; `tests/` covers them.
 
-**Phase 2 is linking the editor to the AST**, and its design is written up in
-**`docs/phase2_design.md`** — read that before touching `ast.lua`, `mexpr.lua` or `transforms.lua`.
-It records decisions made in conversation that are not derivable from the code: three editors with
-a one-way promotion door, immutable cells forming a proof DAG, why `mexpr -> ast` must be direct
-rather than routed through LaTeX, how names and subscripts identify, and what would be needed to
-talk to Lean. Nothing in it is implemented yet.
+**Phase 2 is linking the editor to the AST.** Two documents, different jobs:
+
+- **`docs/ast_parsing.md`** — what the parser DOES today: the name serialization, which
+  definitions may coexist, how a use resolves, the expression cascade. Read this one to work on
+  `mexpr_ast.lua`; it marks every item implemented / partly / designed-only.
+- **`docs/phase2_design.md`** — the design RECORD, and read it before touching `ast.lua`
+  or `transforms.lua`. It records decisions made in conversation that are not derivable from
+  the code: three editors with a one-way promotion door, immutable cells forming a proof DAG,
+  why `mexpr -> ast` must be direct rather than routed through LaTeX, how names and subscripts
+  identify, and what would be needed to talk to Lean.
 
 ## Known WIP / intentionally incomplete
 
 - `transforms.lua` — term-dragging is deliberately unfinished, flagged in-file. Don't fill in the
   remaining cases without asking first; this is exploratory design work still being thought
   through, not a bug to fix.
-- Fraction layout (`mexpr_frac` in `math_expr_composer.h`, and its caller in `mexpr.lua`) has open
-  rough edges noted in comments.
-- `mexpr.lua`'s four `vc.mexpr_bracket()` calls use a signature the C++ no longer has (it split
-  into `mexpr_bracket_left`/`_right`). Only reachable from `main.lua`'s dead demo, so harmless
-  today — but they must be fixed before `ast -> mexpr -> ast` can serve as a test oracle. See
-  that file's own header.
+- Fraction layout (`mexpr_frac` in `math_expr_composer.h`, and its caller `mexpru.mexpr_frac`) has
+  open rough edges noted in comments.
+- **`scripts/mexpr.lua` was deleted 2026-09-09** as unreachable — nothing required it but
+  `main.lua`'s dead `demo_draw()`. It was the only `ast -> mexpr` writer, so `docs/phase2_design.md`
+  section 12 ("regenerate the changed subtree through mexpr.lua") now describes a file to be
+  written rather than repaired. It is still in git: `git show c109aaf:scripts/mexpr.lua`. Its four
+  `vc.mexpr_bracket()` calls used a signature the C++ no longer has, which is part of why it went.
+- `ast.lua`'s `to_latex()` went the same day and for the same reason. LaTeX in the running app is
+  `mformula_latex.lua`'s, over the mexpr tree, and is unaffected.
 - Roughly 18 LaTeX macros are still dropped silently on paste (`\ast \oplus \otimes \vdots
   \langle \lfloor \quad \sin \lim` and friends). Deferred deliberately as a paste-from-outside
   nuisance; `docs/phase2_design.md` explains why phase 2 raises their priority.

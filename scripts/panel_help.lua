@@ -978,7 +978,6 @@ local REF_SIZE = mexpru.DEFAULT_SIZE
 glyph's own name ("\\alpha") rather than the key that types it, so remapping the keyboard cannot
 make an entry of it wrong. ]]
 local ref_cache = nil
-local ref_stamp = nil   -- unused; nothing invalidates ref_cache, and nothing needs to
 
 --[[ One glyph of the reference, built as a one-symbol formula and kept.
 

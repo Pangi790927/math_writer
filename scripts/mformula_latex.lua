@@ -949,8 +949,8 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                         -- char.lua's own size_delta_by_desc (currently just "\\int") - a big
                         -- operator built at plain text size reads as a thin, undersized squiggle
                         -- instead of the display-style glyph it's supposed to be (see that
-                        -- table's own comment; main.lua's demo draws \\int the same bigger way via
-                        -- char.integral(sz-5)). Clamped into the valid [1, MAX_SIZE_INDEX] table
+                        -- table's own comment; main.lua's dead demo does the same bigger \\int
+                        -- by hand at sz-5). Clamped into the valid [1, MAX_SIZE_INDEX] table
                         -- range the same way every other size computation in this codebase is -
                         -- size_delta_by_desc's deltas are small relative to the table (-5 vs 18
                         -- entries) so this only ever matters for glyphs already near an edge.

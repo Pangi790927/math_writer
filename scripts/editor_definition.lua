@@ -96,7 +96,6 @@ local INITIAL_ARITY = 1
 
 local SEP_COLON = ":"
 local SEP_ARROW = "\\rightarrow"
-local SEP_TIMES = "\\times"
 local SEP_IN    = "\\in"
 --[[ Parameter cells are DOMAIN RESTRICTIONS - one set per parameter - so they read as a list
 and are separated by commas. The cartesian product appears only in the shorthand, where the
@@ -279,6 +278,37 @@ blanking the row on every keystroke would make it useless exactly when you are w
 @date 2026-09-08 08:12 ]]
 local function pattern_latex(state)
     return state.pattern and state.pattern.text or nil
+end
+
+--[[ WHAT THIS BOX DECLARES, for anything outside that needs to resolve a reference to it:
+
+    {text = "f(),(1)", name = "f", arity = 1}
+
+or nil while the name slot does not parse. `text` is the identity - the same string a use site
+builds for itself (docs/phase2_design.md, "Answered: a use is a REF"), so resolving is a string
+compare rather than a tree match.
+
+A DELIBERATELY SMALL SHAPE, not `state.pattern` itself: that table is the name parser's own result
+and carries its marks, its token list and its declined superscripts, none of which is any business
+of a caller asking "what is declared here". Handing it out whole would couple every reader to the
+parser's internals and make either one hard to change.
+
+Held from the last VALID parse, like everything else derived from the name (see pattern_latex
+below), so a reference does not break for the keystrokes it takes to retype a name.
+@date 2026-09-10 02:30 ]]
+function editor_definition.declaration(state)
+    local pat = state and state.pattern
+    if not pat or not pat.text then
+        return nil
+    end
+    --[[ `tokens` rides along because the TEXT is not a structure: resolving a use walks the two
+    token lists position by position (mexpr_ast.match_use), and splitting the string back apart to
+    get them would be a second, drifting definition of what a token is. ]]
+    --[[ `groups` rides along for the same reason `tokens` does: the checks that decide whether
+    a definition may exist at all walk its argument groups (mexpr_ast.check_declarations), and
+    re-deriving them from the text would be a second definition of what an argument is. ]]
+    return {text = pat.text, name = pat.name, arity = pat.arity, tokens = pat.tokens,
+            groups = pat.groups}
 end
 
 --[[ Rebuilds each derived row, and only when the string it would draw actually changes - otherwise

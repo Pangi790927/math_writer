@@ -1,5 +1,5 @@
-text 2081
-$$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)\ $$ 
+text 2141
+$$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)\ 2$$ 
 
 $$\vec{a}\ \vec{m}\ \vec{F}\ \vec{I}$$
 
@@ -11,27 +11,26 @@ $$\widehat{\begin{matrix}ABC\end{matrix}}\ =\ \widehat{\begin{matrix}AOC\end{mat
 
 $$a\bar{a}\ =\ |a|^{2}\ a\ \not =\ b$$
 
-$$\frac{df(x)}{dx}\ =\ \mathop{\begin{matrix}lim\end{matrix}}\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D\ ;\ \Delta ABC\ \equiv \ \Delta BGD\ $$
+$$\frac{df(x)}{dx}\ =\ \mathop{\begin{matrix}lim\end{matrix}}\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D$$$$\Delta ABC\ \equiv \ \Delta BGD\ $$
 
-$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ \int \limits_{a}$$
+$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ $$$$\int \limits_{a}$$
 deeccasdabcdef abcdefgf
 $$\frac{x^{2}}{y}+\frac{2\pi }{T}$$
 
 $$\ \left\lvert \widehat{\begin{matrix}\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \end{matrix}}\right\rvert \ \widehat{\begin{matrix}\left\lvert \begin{matrix}\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \\\ 0\ 1\ 2\ 3\ \end{matrix}\right\rvert \end{matrix}}\ $$
 
 
-$$\left(\frac{a}{b}\right)$$ $$\left(\frac{a}{b}\right)^{2}\ \ \ \frac{a}{b}\ +\ \left\{\ \left[\ \left(\frac{A}{B}\right);\right]\ \right\}\ +\ \left\{\frac{\{a\}}{b\frac{\pi }{2}}\right\}\ +\ q+\frac{c}{d}\ ;\ \frac{a}{b}+q+\frac{c}{d}\ A...\cdot \cdot \cdot B\ $$
+$$\left(\frac{a}{b}\right)$$ $$\left(\frac{a}{b}\right)^{2}\ \ \ \frac{a}{b}\ +\ \left\{\ \left[\ \left(\frac{A}{B}\right);\right]\ \right\}\ +\ \left\{\frac{\{a\}}{b\frac{\pi }{2}}\right\}\ +\ q+\frac{c}{d}\ ;\ \frac{a}{b}+q+\frac{c}{d}\ A...\cdot \cdot \cdot B\ $$ This formula is also known as:
+     $$dddddddddddd$$ FFFFFFFFF
 
 $$\mathop{\bigcup }\limits_{I\subseteq \R }M$$
 
 $$\bigcup \limits_{M\subset \R }M\ =\ \R $$
 
-$$$$
-
-Houses for everyone! Ok what is next?2definition 106
+Houses for everyone! Ok what is next?definition 96
 7
-35
-F_{1^{23.22},'abcd^{2}',n,m}(t,v,a)8
+25
+F_{1,'acdefg',n,m}(t,v,a)8
 n\in \N 8
 m\in \N 8
 t\in \R 8
@@ -42,7 +41,18 @@ a\in \{0,3,4\}7
 5
 a_{n}8
 n\in \N 3
-\R formula 30
+\R text 102
+$$F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}$$$$a_{1}=-1+1$$formula 94
+3
+84
+F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}1
+70
+formula 35
+3
+25
+F_{1,'acdefg',m,m}(1,2,3)1
+60
+formula 30
 3
 20
 a:\N \rightarrow \R 1

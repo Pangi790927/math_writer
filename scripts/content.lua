@@ -24,6 +24,7 @@ local mexpru = require("mexpru")
 --[[ One editor module per box kind. content.lua knows only that each exposes the same shape -
 new/draw/handle_input/rescale/to_text/from_text - and never what any of them does inside. ]]
 local editor_definition = require("editor_definition")
+local mexpr_ast = require("mexpr_ast")
 local keymap = require("keymap")
 local panel_help = require("panel_help")
 local panel_keymap = require("panel_keymap")
@@ -167,7 +168,6 @@ local CURVE_GUTTER       = 96
 local RAIL_COLOR         = 0xff777777
 local BOX_BORDER_COLOR   = 0xff777777
 local BOX_ACTIVE_COLOR   = 0xffffffff
-local BOX_FILL_COLOR     = 0x33ffffff
 local CLOSE_COLOR        = 0xffaaaaaa
 local HOVER_COLOR        = 0xff66ff66
 local GRAPH_OFF_COLOR    = 0xff888888
@@ -927,6 +927,10 @@ function content.handle_input(state, fontset, pos)
     is unchanged from when Ctrl and Shift were read off F3 directly: record first, then reset, then
     the plain toggle. With exact matching they can no longer overlap anyway, but the order is kept
     so behaviour does not depend on that. ]]
+    if keymap.pressed("app.ast") then
+        state.show_ast = not state.show_ast
+        return
+    end
     if keymap.pressed("app.profiler_record") or keymap.pressed("app.profiler_reset")
             or keymap.pressed("app.profiler") then
         if keymap.pressed("app.profiler_record") then
@@ -1232,107 +1236,6 @@ end
 -- Layout / render
 -- #################################################################################################
 
---[[ DEAD, AND KEPT ONLY UNTIL SOMEBODY DECIDES TO DELETE IT.
-
-Everything from here to the end of draw_alt_help() - HELP_LINES, draw_help(), the Alt+glyph legend
-and their helpers - was the pre-panel help: F1 drew this flat key list and F2 the glyph legend.
-panel_help.lua and panel_keymap.lua replaced both on 2026-09-07, and nothing has called either
-function since; content.draw() dispatches to the panels instead.
-
-It is also WRONG where it still reads as documentation: the keys here are written as literal text
-and no longer come from the registry, so a rebinding does not reach them, and "F2 - Alt+letter and
-Alt+symbol glyph reference" is not what F2 is any more. Read it as a record of what the help used
-to say, not as a description of the app.
-@date 2026-09-08 08:30 ]]
-local HELP_LINES = {
-    "Math Writer - Controls  (F1 to close)",
-    "",
-    "General",
-    "  F1                       Toggle this panel",
-    "  F2                       Alt+letter and Alt+symbol glyph reference",
-    "  Click inside a box       Activate it / place the cursor",
-    "  Click the left rail      Insert a new box there",
-    "  Click a box's x          Close that box",
-    "  Ctrl+Up / Ctrl+Down       Switch to the previous / next box",
-    "  Ctrl+N                   New box right after the current one",
-    "  Mouse wheel              Scroll",
-    "  Ctrl+Mouse wheel          Zoom text size in / out",
-    "  F3 / Shift+F3             Profiler overlay on-off / clear its worst frame",
-    "  Ctrl+F3                   Record frames slower than 8ms to perf_spikes.log",
-    "  Buttons above a box       Graph / wireframe overlays, and close",
-    "",
-    "Plain text",
-    "  Type                     Insert a character",
-    "  Alt+letter                Greek lowercase (a=alpha, b=beta, ...) / Alt+Q = partial",
-    "  Alt+Shift+letter           Greek uppercase / S = sum, P = product, Q = integral",
-    "                             A = for-all, E = exists",
-    "  Space / Enter             Space / newline",
-    "  Backspace / Delete         Delete before / after the cursor",
-    "  Left / Right               Move (Ctrl+Left/Right = word skip, or enter a formula)",
-    "  Up / Down                 Move by line",
-    "  Home / End                 Start / end of line",
-    "",
-    "Formula embeds",
-    "  Ctrl+M                   Insert a formula here and enter it",
-    "  Ctrl+Shift+-              Wrap the character before the cursor into a subscript",
-    "  Ctrl+Shift+=              Wrap the character before the cursor into a superscript",
-    "  Ctrl+/                   Insert an empty fraction here and enter its numerator",
-    "  Ctrl+=                   Insert a stack here and enter its first cell",
-    "  Click a formula            Enter it",
-    "  Inside a formula:",
-    "    Type / Alt+letter          Same as plain text, inside the formula",
-    "    >= <= -> <- => <=> <-> != == .. _| ||   Become one symbol as you type",
-    "    NN ZZ QQ RR CC HH II LL    The number sets (doubled capital = double struck)",
-    "    To type those literally     Put a space between, then Left, Backspace, Right",
-    "    ~                          Similar-to  (~= gives approximately)",
-    "    = after a relation         Its or-equal form: Alt+< then = gives included-or-equal",
-    "    Space                      A real space (keeps its width)",
-    "    Left / Right                Walk through it, including sup/sub bases",
-    "    Up / Down                  Jump into/between superscript & subscript, or numerator & denominator",
-    "    Shift+Left/Right            Sprint: jump to the next ( ) = ; or to the slot's edge",
-    "    Ctrl+Shift+Left/Right       Select within the row (click-drag also selects)",
-    "    Alt+Up / Alt+Down           Go back the way you came in - from a numerator or",
-    "                               denominator, back onto the fraction itself",
-    "    Ctrl+Shift+= / Ctrl+Shift+-   Superscript / subscript on the character before the cursor",
-    "    Ctrl+Shift+[ / Ctrl+Shift+]  Limit above / below - makes a big operator (sum, integral)",
-    "    " .. "\\" .. "name then Space         Any symbol by its LaTeX name: " .. "\\" .. "sum, "
-            .. "\\" .. "infty, " .. "\\" .. "partial ...",
-    "    Alt+[ / Alt+]              Union / intersection; with Shift, or / and",
-    "    Alt+1                      Negation                  (F2 lists them all)",
-    "    Alt+, / Alt+.              Belongs to / contains",
-    "    Alt+< / Alt+>              Included in / includes; type = after for the or-equal form",
-    "    Ctrl+/                     Insert an empty fraction at the cursor",
-    "    Ctrl+= / Ctrl+-            Start a stack / add a cell to it, or drop a cell",
-    "    Ctrl+6 / Ctrl+` / Ctrl+G     Hat / tilde / bar ABOVE the character (press again = off)",
-    "    the same three with Shift    ...the same accent BELOW it instead",
-    "    Ctrl+. / Ctrl+,            Add / remove a dot above it (up to three)",
-    "    Ctrl+Shift+. / Ctrl+Shift+,   Vector arrow above it, pointing right / left",
-    "    ( [ {  then  ) ] }           Brackets pair up and resize to fit what's between them",
-    "    Ctrl+Shift+\\               A | delimiter - the same shortcut opens and closes it",
-    "                               (a typed | stays an ordinary character)",
-    "    Ctrl+Left/Right, Escape,     Exit the formula",
-    "      or click outside",
-    "    Click inside                Place the cursor there",
-    "",
-    "Clipboard & undo",
-    "  Ctrl+A                   Select all",
-    "  Ctrl+C / Ctrl+X            Copy / cut (a formula becomes $$LaTeX$$)",
-    "  Ctrl+V                   Paste ($$...$$ spans become formulas)",
-    "  Ctrl+Z / Ctrl+Shift+Z      Undo / redo",
-    "  Ctrl+S                   Save everything to math_writer.save",
-}
-
-local HELP_LINE_HEIGHT = 17
-local HELP_BG_COLOR = 0xee1a1a1a
-local HELP_TEXT_COLOR = 0xffe0e0e0
-
---[[ Laid out in as many columns as it takes to fit the display's own height, rather than one long
-run - the list outgrew a 720p window the moment the formula section filled out, and a
-help panel whose bottom entries are off-screen is worse than useless. Breaks at a blank line where
-it can, so a section is never split across a column boundary. ]]
-local HELP_COLUMN_W = 620
-local HELP_TOP = 16
-
 --[[ The profiler overlay (F3 - prof.lua / perf_composer.h). A translucent panel in the top-right
 corner, NOT one of the full-screen panels below: the whole reason it exists is to be readable while
 the app is being used, since a lag spike is over before anyone can switch views to look at it.
@@ -1345,6 +1248,72 @@ local PROF_BG_COLOR   = 0xdd101010
 local PROF_TEXT_COLOR = 0xffd0ffd0
 local PROF_LINE_H     = 15
 local PROF_WIDTH      = 430
+
+--[[ The formula the caret is actually in, whichever kind of box holds it - or nil.
+
+Each box kind keeps its live container somewhere different, which is why this exists rather than
+the viewer reaching in: a formula box holds one outright, a text box holds whichever embedded
+formula currently owns input (nil while typing plain text), and a definition box holds a list of
+slots with `current` saying which has the caret. `current` is negative while the caret is on a
+DERIVED row - the shorthand or the computed name - which is not an editable expression, hence the
+`> 0`.
+@date 2026-09-10 05:10 ]]
+local function active_expression(state)
+    local box = state.active_index and state.boxes[state.active_index]
+    if not box then
+        return nil
+    end
+    if box.fml then
+        return box.fml.formula
+    end
+    if box.editor then
+        return box.editor.active_formula
+    end
+    if box.def and box.def.slots and box.def.current and box.def.current > 0 then
+        return box.def.slots[box.def.current]
+    end
+    return nil
+end
+
+--[[ F4: what the parser made of the expression the caret is in, as a cascade.
+
+An instrument for building the expression parser, not a feature for reading documents - which is
+why it shows the parse rather than the formula, and why it says `<expr>` for anything not parsed
+yet instead of a shape that has not been earned (mexpr_ast.describe's own comment).
+
+Anchored BOTTOM-RIGHT rather than top-right like the profiler: boxes grow downward from the top
+left, so this is the corner least likely to sit over what is being edited. With F3 also on the two
+do not overlap for the same reason.
+@date 2026-09-10 05:10 ]]
+local AST_BG_COLOR   = 0xdd101010
+local AST_TEXT_COLOR = 0xffd0d0ff
+local AST_LINE_H     = 15
+local AST_WIDTH      = 430
+
+local function draw_ast_overlay(state, fontset)
+    local container = active_expression(state)
+    local lines
+    if not container then
+        lines = {{depth = 0, text = "no expression here - put the caret in a formula"}}
+    else
+        local decls = content.declarations_before(state, state.active_index)
+        -- .order, not .by_text: resolution WALKS the candidates, since a use site cannot build
+        -- the key it would otherwise be looked up by (mexpr_ast.match_use).
+        lines = mexpr_ast.describe(fontset, container, decls.order)
+    end
+
+    local size = vc.ImGui_GetDisplaySize()
+    local w, h = (size and size.x or 1280), (size and size.y or 720)
+    local x = w - AST_WIDTH - 12
+    local y = h - (#lines + 2) * AST_LINE_H - 12
+
+    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
+            {x = x + AST_WIDTH, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
+    vc.ImGui_AddText({x = x, y = y}, AST_TEXT_COLOR, "F4  parse of the current expression")
+    for i, l in ipairs(lines) do
+        vc.ImGui_AddText({x = x + l.depth * 16, y = y + i * AST_LINE_H}, AST_TEXT_COLOR, l.text)
+    end
+end
 
 local function draw_prof_overlay()
     --[[ The overlay measures ITSELF. prof_report() formats a few dozen lines in C++ and this then
@@ -1373,148 +1342,6 @@ local function draw_prof_overlay()
     vc.ImGui_AddText({x = x, y = y + #lines * PROF_LINE_H - PROF_LINE_H + 2}, PROF_TEXT_COLOR,
             "F3 off   Shift+F3 clear worst   " .. rec)
     prof.stop("lua.prof_overlay")
-end
-
-local function draw_help()
-    local size = vc.ImGui_GetDisplaySize()
-    vc.ImGui_AddRectFilled({x=0, y=0}, {x=size.x, y=size.y}, HELP_BG_COLOR, 0)
-
-    local per_col = math.max(1, math.floor((size.y - HELP_TOP * 2) / HELP_LINE_HEIGHT))
-    local x, row = 40, 0
-    for i, line in ipairs(HELP_LINES) do
-        if row >= per_col then
-            -- Prefer breaking on the blank line that separates two sections: look back a few rows
-            -- for one rather than slicing a section in half.
-            x, row = x + HELP_COLUMN_W, 0
-        end
-        vc.ImGui_AddText({x = x, y = HELP_TOP + row * HELP_LINE_HEIGHT}, HELP_TEXT_COLOR, line)
-        row = row + 1
-        -- A blank line close to the bottom of a column ends it early, keeping sections whole.
-        if line == "" and row > per_col - 8 then
-            x, row = x + HELP_COLUMN_W, 0
-        end
-    end
-end
-
--- a, b, c, ..., z - built once rather than typed out as a literal list, so this can't itself get
--- out of sync with the alphabet.
-local ALT_LETTERS = {}
-for c = string.byte("a"), string.byte("z") do
-    ALT_LETTERS[#ALT_LETTERS + 1] = string.char(c)
-end
-
-local ALT_GLYPH_SZ = DEFAULT_FONT_SIZE -- matches the default box content size (36pt) - independent
-                         -- of any live Ctrl+MouseWheel zoom (state.font_size), this panel's own
-                         -- fixed reference size regardless of what a box is currently zoomed to.
-
---[[ Real line-height/baseline metrics at font size `sz`, the same G/g-measuring trick
-editor_text.lua's own get_metrics() uses (see that file's comment) - char_draw()'s `pos` is a BASELINE, not a
-top-left corner the way ImGui_AddText()'s is, so a row whose visual top is `row_top` needs its
-char_draw calls at `row_top - baseline_shift` to land in the same place a same-y AddText call
-would. This is what was actually missing before: mixing an untranslated `y` between the two
-conventions is why the symbol and its name/row landed at different heights. ]]
-local function glyph_metrics(fontset, sz)
-    local G, g = char.find_by_ascii("G"), char.find_by_ascii("g")
-    local G_sz = fontset:char_get_sz({size=sz, code=G.ncod})
-    local g_sz = fontset:char_get_sz({size=sz, code=g.ncod})
-    return {line_height = g_sz.bl.y - G_sz.tr.y, baseline_shift = G_sz.tr.y}
-end
-
---[[ Draws `text` (ASCII only - macro names like "\alpha" and the "(plain)" fallback) one glyph at
-a time via char_draw(), at the SAME size/baseline the math symbol next to it uses - rather than
-ImGui_AddText()'s fixed-size UI font, which is a different size AND a different (top-left, not
-baseline) convention, so pairing the two directly is exactly what left the name and its symbol
-misaligned. Returns the x just past the last glyph drawn. ]]
-local function draw_label(fontset, sz, x, baseline_y, text, color)
-    local cx = x
-    for i = 1, #text do
-        local entry = char.find_by_ascii(text:sub(i, i))
-        if entry then
-            fontset:char_draw({size=sz, code=entry.ncod}, {x=cx, y=baseline_y}, color, false, 0)
-            cx = cx + fontset:char_get_sz({size=sz, code=entry.ncod}).adv
-        end
-    end
-    return cx
-end
-
---[[ DEAD with the rest of the pre-panel help above - the letter table now lives in panel_keymap's
-Letters section and in the F1 help's own generated one. What it drew: Alt+letter and
-Alt+Shift+letter, letter by letter, straight from char.greek_alt/greek_alt_shift (the same tables
-the editors' Alt handling looks up), with the SAME fallback rule they use for a letter that has no entry there
-(plain lowercase for Alt, plain uppercase for Alt+Shift) - so this can never drift from what the
-keys actually do, only from char.lua's own tables changing (which is exactly what should update
-it). Draws the real glyph (not just its "\name") since "what does this key actually produce" is
-the question a legend like this exists to answer. ]]
-local function draw_alt_help(fontset)
-    local size = vc.ImGui_GetDisplaySize()
-    vc.ImGui_AddRectFilled({x=0, y=0}, {x=size.x, y=size.y}, HELP_BG_COLOR, 0)
-    vc.ImGui_AddText({x=40, y=16}, HELP_TEXT_COLOR,
-            "Math Writer - Alt+letter / Alt+Shift+letter, and Alt+symbol  (F2 to close)")
-
-    local gm = glyph_metrics(fontset, ALT_GLYPH_SZ)
-    local row_h = gm.line_height + 10
-
-    local col_key, col_glyph, col_name = 40, 90, 160
-    local col_key2, col_glyph2, col_name2 = 660, 710, 780
-    local row0_top = 56
-
-    vc.ImGui_AddText({x=col_key, y=row0_top - 20}, HELP_TEXT_COLOR, "Alt+")
-    vc.ImGui_AddText({x=col_key2, y=row0_top - 20}, HELP_TEXT_COLOR, "Alt+Shift+")
-
-    for i, letter in ipairs(ALT_LETTERS) do
-        local row = (i - 1) % 13
-        local col = (i - 1) < 13 and 0 or 1
-        local row_top = row0_top + row * row_h
-        local baseline = row_top - gm.baseline_shift
-        local kx, gx, nx = (col == 0) and col_key or col_key2,
-                (col == 0) and col_glyph or col_glyph2,
-                (col == 0) and col_name or col_name2
-
-        vc.ImGui_AddText({x=kx, y=row_top}, HELP_TEXT_COLOR, letter)
-
-        local lo_desc = char.greek_alt[letter]
-        local lo_entry = (lo_desc and char.find_by_desc(lo_desc)) or char.find_by_ascii(letter)
-        if lo_entry then
-            fontset:char_draw({size=ALT_GLYPH_SZ, code=lo_entry.ncod}, {x=gx, y=baseline},
-                    HELP_TEXT_COLOR, false, 0)
-        end
-        draw_label(fontset, ALT_GLYPH_SZ, nx, baseline, lo_desc or "(plain)", HELP_TEXT_COLOR)
-
-        local hi_desc = char.greek_alt_shift[letter]
-        local hi_entry = (hi_desc and char.find_by_desc(hi_desc)) or char.find_by_ascii(letter:upper())
-        if hi_entry then
-            fontset:char_draw({size=ALT_GLYPH_SZ, code=hi_entry.ncod}, {x=gx + 260, y=baseline},
-                    HELP_TEXT_COLOR, false, 0)
-        end
-        draw_label(fontset, ALT_GLYPH_SZ, nx + 260, baseline, hi_desc or "(plain)", HELP_TEXT_COLOR)
-    end
-
-    --[[ The Alt+punctuation symbols, under the letters. Read from char.alt_symbols - the same table
-    the key handler polls - so this section cannot fall out of step with the keys either. ]]
-    local sym_top = row0_top + 13 * row_h + 24
-    vc.ImGui_AddText({x=col_key, y=sym_top - 20}, HELP_TEXT_COLOR,
-            "Alt+ (symbols)                                   Alt+Shift+")
-    for i, sym in ipairs(char.alt_symbols) do
-        local row_top = sym_top + (i - 1) * row_h
-        local baseline = row_top - gm.baseline_shift
-        vc.ImGui_AddText({x=col_key, y=row_top}, HELP_TEXT_COLOR, sym.label)
-
-        local lo = char.find_by_desc(sym.plain)
-        if lo then
-            fontset:char_draw({size=ALT_GLYPH_SZ, code=lo.ncod}, {x=col_glyph, y=baseline},
-                    HELP_TEXT_COLOR, false, 0)
-        end
-        draw_label(fontset, ALT_GLYPH_SZ, col_name, baseline, sym.plain, HELP_TEXT_COLOR)
-
-        if sym.shift then
-            local hi = char.find_by_desc(sym.shift)
-            if hi then
-                fontset:char_draw({size=ALT_GLYPH_SZ, code=hi.ncod},
-                        {x=col_glyph + 260, y=baseline}, HELP_TEXT_COLOR, false, 0)
-            end
-            draw_label(fontset, ALT_GLYPH_SZ, col_name + 260, baseline, sym.shift, HELP_TEXT_COLOR)
-        end
-    end
 end
 
 --[[ A box's own CHROME: the coloured fill, the focus border, the connector out to the rail and
@@ -1582,6 +1409,55 @@ function content.box_kinds()
     return {KIND_TEXT, KIND_FORMULA, KIND_DEFINITION}
 end
 
+--[[ Every name declared ABOVE box `index`, keyed by its pattern text - what a box at that position
+is allowed to refer to.
+
+SCOPE IS DOCUMENT POSITION, and that is the whole rule: a box sees the definitions above it and
+nothing else. Author, 2026-09-10: "the definition module should know to provide all the definitions
+for the boxes above an i'th box, the idea is that later definitions will be unknown". So a document
+reads top to bottom the way a proof does - a name means what it meant where it was used, and
+inserting a definition cannot silently change the meaning of everything above it.
+
+STRICTLY above: box `index` does not see its own declaration. A definition that could refer to
+itself is a different feature (recursion) and needs to be asked for deliberately rather than
+falling out of an off-by-one here.
+
+REDECLARATION: a later box wins, because the walk goes downward and overwrites. That makes the
+answer well-defined rather than correct - whether shadowing should be allowed at all, or reported
+as a conflict the way keymap.conflicts() reports one, is open. It is written down here so the next
+reader knows it was chosen rather than stumbled into.
+
+Returns a table keyed by text plus `order`, the same declarations in document order, because a
+resolver wants the lookup and a person reading the document wants the sequence.
+@date 2026-09-10 02:30 ]]
+function content.declarations_before(state, index)
+    local by_text, order = {}, {}
+    local written = {}
+    for i = 1, math.min((index or (#state.boxes + 1)) - 1, #state.boxes) do
+        local box = state.boxes[i]
+        local decl = box and box.def and editor_definition.declaration(box.def)
+        if decl then
+            decl.box_index = i
+            written[#written + 1] = decl
+        end
+    end
+
+    --[[ WHAT WAS WRITTEN IS NOT WHAT IS IN SCOPE. A definition that overlaps an earlier one, or
+    contains one, is refused rather than added (mexpr_ast.check_declarations) - and the refusal
+    matters to everything downstream, not only to the person who wrote it: the use site decides
+    whether a decorated group is an argument or part of a name by asking whether anything answers
+    to it, and that answer is only reliable while those rules hold.
+
+    The earlier definition wins, which is the same rule as this function's own: a name means what
+    was said above it. ]]
+    local checked = mexpr_ast.check_declarations(written)
+    for _, decl in ipairs(checked.accepted) do
+        by_text[decl.text] = decl
+        order[#order + 1] = decl
+    end
+    return {by_text = by_text, order = order}
+end
+
 --[[ Draws the whole document: every box stacked down from `pos`, each connected to the rail, with
 the derivation curves between formula boxes - or, while a panel is open, that panel instead.
 
@@ -1603,6 +1479,15 @@ function content.draw(state, fontset, pos, opts)
     local function overlay()
         if prof.overlay_visible() then
             draw_prof_overlay()
+        end
+        if state.show_ast then
+            --[[ pcall: this runs the PARSER every frame on whatever is being typed, which is
+            half-written by definition. A throw here would take the document's draw with it, and an
+            inspection tool that can crash the thing it inspects is worse than no tool. ]]
+            local ok, err = pcall(draw_ast_overlay, state, fontset)
+            if not ok then
+                vc.ImGui_AddText({x = 24, y = 4}, 0xaa3c3cff, "F4: " .. tostring(err))
+            end
         end
     end
 

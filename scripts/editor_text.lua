@@ -55,7 +55,6 @@ function editor_text.new()
         mouse_selecting = false, -- true while a click+drag selection is in progress
         mouse_click_origin = nil, -- position of the click that started the current drag, if any
         last_positions = nil,   -- filled in by draw(), read by handle_input() next frame
-        last_line_height = nil,
         last_cursor_y = nil,    -- filled in by draw(): absolute screen y of the caret right now
         last_cursor_h = nil,    -- (plain text or an active formula's own - see draw()'s comment),
                                  -- read by content.lua to keep it scrolled into view
@@ -270,24 +269,64 @@ end
 
 --[[ Nearest recorded glyph-gap position (index into state.chars) to a screen point, using the
 positions the previous frame's draw() recorded. Used by both click-to-place and drag-to-select.
-@date 2026-09-08 08:20 ]]
+
+LINE FIRST, THEN COLUMN, and strictly in that order - never one blended distance. Pick the line
+whose band the click is in (or the nearest band), then the nearest gap ON THAT LINE, with the
+horizontal distance unable to influence the first choice at all.
+
+It used to be a weighted sum: |dx| + dy, plus a large penalty once dy passed one line height. Two
+things are wrong with that and only the second is obvious. The penalty compares against ONE line
+height for the whole box, so a line grown to hold a formula reaches outside its own threshold and a
+click low in it scores as "some other line". And even between two lines both inside the threshold,
+a big enough |dx| difference outvotes dy - so clicking just under a short line, above a long one,
+lands on the short line because there was a gap nearer the pointer up there. Requested 2026-09-09:
+"when you click your cursor goes to the nearest line first, nearest column after".
+
+THIS IS THE TEXT EDITOR'S RULE ONLY. Inside a formula the cursor moves through a tree, where "the
+line above" is not a meaningful place and a click means the nearest NODE - mformula.hit_test() owns
+that and is deliberately untouched. Author's own words, same day: "this is different of how it
+works and should work inside formulas".
+
+Line identity is compared with ==, which is exact rather than lucky: every position on one line is
+handed the same `line_top` upvalue by draw(), so they carry bit-identical numbers.
+@date 2026-09-09 23:05 ]]
 local function nearest_position(state, mpos)
     if not state.last_positions then
         return nil
     end
-    local line_height = state.last_line_height or 20
-    local best_i, best_dist = nil, math.huge
+
+    -- 1. THE LINE. Distance to the band, so anywhere inside a tall line scores zero and ties are
+    -- broken by the topmost - never by how far along the line the pointer happens to be.
+    local best_y, best_dy = nil, math.huge
     for _, p in ipairs(state.last_positions) do
-        local dy = math.abs(p.y - mpos.y)
-        local same_line_penalty = (dy > line_height) and 1e6 or 0
-        local dist = same_line_penalty + math.abs(p.x - mpos.x) + dy
-        if dist < best_dist then
-            best_dist = dist
-            best_i = p.i
+        local dy = 0
+        if mpos.y < p.y0 then
+            dy = p.y0 - mpos.y
+        elseif mpos.y > p.y1 then
+            dy = mpos.y - p.y1
+        end
+        if dy < best_dy then
+            best_dy, best_y = dy, p.y
+        end
+    end
+
+    -- 2. THE COLUMN, among that line's own gaps and no others.
+    local best_i, best_dx = nil, math.huge
+    for _, p in ipairs(state.last_positions) do
+        if p.y == best_y then
+            local dx = math.abs(p.x - mpos.x)
+            if dx < best_dx then
+                best_dx, best_i = dx, p.i
+            end
         end
     end
     return best_i
 end
+
+-- Exported for tests only (same convention as formula_line_fit below): it is a pure function of
+-- draw()'s recorded positions, so it can be checked without an ImGui frame - which is the whole
+-- reason the line/column split lives in here rather than inline in handle_input().
+editor_text.nearest_position = nearest_position
 
 -- #################################################################################################
 -- Undo / redo
@@ -1128,34 +1167,162 @@ that belongs in math_expr_composer.h, not here.
 @date 2026-09-08 08:20 ]]
 local MIN_FORMULA_COLUMN_LINES = 1
 
+--[[ How many rows a WRAPPING FORMULA drops, where a word drops one. Two, so a formula that
+moved always lands with a clear row between it and the text it left behind.
+
+WHY A FORMULA IS DIFFERENT from a word, and this is a real defect underneath a preference: what a
+formula DRAWS is bigger than the line height reserved for it. Pass 1 reserves from the formula's
+own box.top/box.bottom, but pass 2 draws its border around formula_click_rect(), which is already
+grown to cover any slot marker poking out, and then adds a further margin on each side. So a
+formula's visible box is at least one margin taller than the room the line kept for it, top and
+bottom, and two of them on adjacent rows overlap. Reported live 2026-09-09: "the gray boxes
+intersect if you look at them after the wrap".
+
+TWO ROWS DOES NOT FIX THAT DEFECT, and is not meant to - it is the author's own spacing rule,
+verbatim: "either way, formulas should be spaced two spaces away from other things". The overlap
+survives everywhere formulas are vertically adjacent WITHOUT a wrap having moved one, which this
+never touches. Fixing it properly means pass 1 reserving from the same rect pass 2 draws, margin
+included; that is a behaviour change nobody has asked for yet.
+
+Words deliberately stay at one row - author's own words, same day: "in the new formulation, words
+dont jump multiple rows".
+@date 2026-09-09 22:05 ]]
+local FORMULA_WRAP_ROWS = 2
+
+--[[ Where on its own row a formula that WAS MOVED by the wrapper sits: hard against the right
+margin, not at the left where everything else starts.
+
+It is a signal, not decoration. A formula alone on a row is ambiguous - it reads exactly the same
+whether somebody typed it there on purpose or the wrapper pushed it down out of the line above,
+and those mean different things to whoever is reading the document back. Author's own words,
+2026-09-09: "you can't really tell if a formulas is by itself, or it was moved by the wrapper, so,
+it would be way more visible at the right end". Left edge therefore means "this is where it was
+put", right edge means "this was moved".
+
+`run_width` is the formula's whole advance, margins included, so the returned offset puts its right
+margin on the column's right margin. Clamped at zero because the caller also breaks for a formula
+too wide for any line at all (the MIN_FORMULA_COLUMN_LINES guard, not the fit rule) - that one
+starts at the left and wraps inside its own column, which is the only thing it can do.
+@date 2026-09-09 22:40 ]]
+local function wrapped_formula_x(width_limit, run_width)
+    if not width_limit or not run_width then
+        return 0
+    end
+    return math.max(0, width_limit - run_width)
+end
+
+--[[ THE RULE BOTH KINDS OF UNBREAKABLE RUN FOLLOW: a run that does not fit in what is left of
+this line moves to the next one - but ONLY if the next line can actually hold it.
+
+A run is anything the layout must keep whole: a formula, or a word (see measure_runs). `used` is
+how far along the line the layout has already advanced, `run_width` how much the run will advance
+it by, both in the same units.
+
+The "only if it fits" half is what stops the rule eating itself. A run WIDER than a whole line
+fits nowhere, so moving it down gains nothing and would repeat on every line forever; it stays
+put and is cut the way it always was - a word by the per-glyph check that follows this one, a
+formula by wrapping inside its own column. False at the start of a line for that same reason.
+
+Answering false is always safe: it means "leave it where it is", which is what this editor did
+before the rule existed.
+@date 2026-09-09 21:51 ]]
+local function run_moves_down(width_limit, used, run_width)
+    if not width_limit or not run_width or used <= 0 then
+        return false
+    end
+    if run_width <= width_limit - used then
+        return false                    -- it fits right here
+    end
+    return run_width <= width_limit     -- ...and the next line is only better if it fits there
+end
+
 --[[ Where a formula goes on the line it is currently on. `used` is how far along that line the
 layout has already advanced (pass 1's lx, pass 2's x - pos.x); returns (break_line, column):
 
-  break_line - start a new line before drawing it, the same rule a glyph that doesn't fit follows.
-               Never true at the start of a line, where breaking would gain nothing and could
-               repeat forever.
+  break_line - start a new line before drawing it, FORMULA_WRAP_ROWS of them (see there - a
+               formula lands two rows down, not one). Two independent reasons, either one
+               enough: what is left of the line is too narrow to be a legal column at all (the
+               hang guard above), or run_moves_down() says the formula would sit better on the
+               next line. Never true at the start of a line.
   column     - the CONTENT width to hand down, floored at MIN_FORMULA_COLUMN_LINES worth so it is positive
                even in a box too narrow to hold one - see MIN_FORMULA_COLUMN_LINES.
 
+`run_width` is this formula's whole advance - its natural, UNWRAPPED width plus both margins, as
+measure_runs() reports it. Natural, not wrapped: the question being asked is "how much room does
+it want", and a formula measured inside the column it is trying to escape has already answered
+"exactly the column", which would make the rule a no-op. Pass nil and the fit rule is skipped,
+leaving the pre-2026-09-09 behaviour.
+
 Both passes call this rather than each doing the arithmetic, because a disagreement between them
 about which line a formula lands on is its own class of bug (see pass 1's own comment).
-@date 2026-09-08 08:20 ]]
-local function formula_line_fit(m, width_limit, used)
+@date 2026-09-09 21:51 ]]
+local function formula_line_fit(m, width_limit, used, run_width)
     if not width_limit then
         return false, nil
     end
     local min_col = m.line_height * MIN_FORMULA_COLUMN_LINES
     local remaining = width_limit - used - 2 * FORMULA_MARGIN
-    if used > 0 and remaining < min_col then
+    if used > 0 and (remaining < min_col
+            or run_moves_down(width_limit, used, run_width)) then
         -- Break: the column becomes the whole line's worth, measured from its start.
         return true, math.max(min_col, width_limit - 2 * FORMULA_MARGIN)
     end
     return false, math.max(min_col, remaining)
 end
 
+--[[ How wide is everything that has to stay whole on one line, measured ONCE for both of draw()'s
+passes. Keyed by the item's own index in state.chars, set only on the item that STARTS a run:
+
+  a formula - its natural width plus both margins, i.e. exactly what lx/x advance by.
+  a word    - a maximal run of items with no whitespace, no newline and no formula in it, summed
+              over each glyph's own advance at its own effective size (item.size_off).
+
+WHY A WORD IS A NON-WHITESPACE RUN and not a run of is_alnum(): "end." has to travel as one thing.
+Splitting on anything finer orphans the punctuation onto the next line by itself, which is the
+same defect this rule was asked to remove, in a smaller size.
+
+WHY MEASURED HERE rather than inside each pass: the two passes have to agree about which line
+every item lands on, and pass 1's own comment records what happens when they don't. Both reading
+one table makes them agree by construction, instead of by both doing the same arithmetic right.
+
+Costs one extra mformula.measure() per formula per draw - the passes still measure again, at the
+column they are granted, for the height. Against the profiler's own lua.ce.total that is noise; if
+it ever stops being noise, this natural measure can be reused whenever the formula turns out to
+fit its column, because content_extent() returns the same numbers in that case.
+@date 2026-09-09 21:51 ]]
+local function measure_runs(state, fontset, sz)
+    local runs, i, n = {}, 1, #state.chars
+    while i <= n do
+        local item = state.chars[i]
+        if item.newline or is_whitespace(item) then
+            i = i + 1
+        elseif item.formula then
+            runs[i] = mformula.measure(item.formula, fontset, sz, nil).width + 2 * FORMULA_MARGIN
+            i = i + 1
+        else
+            local start, total = i, 0
+            while i <= n do
+                local it = state.chars[i]
+                if it.newline or it.formula or is_whitespace(it) then
+                    break
+                end
+                local eff_sz = math.max(1, math.min(MAX_SIZE_INDEX, sz + (it.size_off or 0)))
+                total = total + fontset:char_get_sz({size = eff_sz, code = it.code}).adv
+                i = i + 1
+            end
+            runs[start] = total
+        end
+    end
+    return runs
+end
+
 -- Exported for tests only (the convention mformula_new's make_supsub()/make_frac() already use):
--- the passes that call it live inside draw(), which needs a real ImGui frame to run.
+-- the passes that call them live inside draw(), which needs a real ImGui frame to run.
 editor_text.formula_line_fit = formula_line_fit
+editor_text.run_moves_down = run_moves_down
+editor_text.measure_runs = measure_runs
+editor_text.FORMULA_WRAP_ROWS = FORMULA_WRAP_ROWS
+editor_text.wrapped_formula_x = wrapped_formula_x
 local FORMULA_BORDER_COLOR = 0xff777777
 local FORMULA_ACTIVE_BORDER_COLOR = 0xff00ffff
 -- The cursor-travel track and the empty-slot outline moved to editor.lua with the drawing that
@@ -1181,6 +1348,9 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
         show_cursor = true
     end
     local m = get_metrics(fontset, sz)
+    -- Every formula's and every word's own width, measured once and read by BOTH passes below so
+    -- they cannot disagree about which line one lands on - see measure_runs' own comment.
+    local runs = measure_runs(state, fontset, sz)
 
     -- Pass 1 (measure only, nothing drawn): a normal line spans [baseline_shift, baseline_shift
     -- + line_height] relative to its own baseline. Find how far past that envelope the tallest
@@ -1201,11 +1371,17 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
                     line_extra_top[line_idx], line_extra_bottom[line_idx] = 0, 0
                     lx = 0
                 elseif item.formula then
-                    local break_line, wrap_width = formula_line_fit(m, width_limit, lx)
+                    local break_line, wrap_width = formula_line_fit(m, width_limit, lx, runs[i+1])
                     if break_line then
-                        line_idx = line_idx + 1
-                        line_extra_top[line_idx], line_extra_bottom[line_idx] = 0, 0
-                        lx = 0
+                        -- FORMULA_WRAP_ROWS rows, not one - pass 2 skips exactly as many, or the
+                        -- two would disagree about which line everything after this sits on.
+                        for _ = 1, FORMULA_WRAP_ROWS do
+                            line_idx = line_idx + 1
+                            line_extra_top[line_idx], line_extra_bottom[line_idx] = 0, 0
+                        end
+                        -- NOT zero: a moved formula lands against the RIGHT margin, and pass 2
+                        -- puts it in the same place. See wrapped_formula_x.
+                        lx = wrapped_formula_x(width_limit, runs[i+1])
                     end
                     -- Mirrors pass 2's own content_x = x + margin (x here IS pos.x + lx at this
                     -- exact point, same reasoning as the width_limit line-break check just below) -
@@ -1217,8 +1393,24 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
                     -- width_limit - lx - margin ends up occupying width_limit + margin once that
                     -- advance lands. See pass 2's own wrap_edge comment for why that mattered.
                     local box = mformula.measure(item.formula, fontset, sz, wrap_width)
-                    local extra_top = math.max(0, m.baseline_shift - box.top)
-                    local extra_bottom = math.max(0, box.bottom - (m.baseline_shift + m.line_height))
+                    --[[ Reserve from the rect pass 2 actually DRAWS, not from the formula's own
+                    content box. Pass 2 borders it around formula_click_rect() - already grown to
+                    cover a slot marker poking out - and then a margin further out on each side.
+                    Reserving from box.top/box.bottom alone left the visible border taller than
+                    its own line by at least that margin, top and bottom, so two formulas on
+                    neighbouring rows overlapped on screen: reported live 2026-09-09, "the gray
+                    boxes intersect". Calling the same function pass 2 does is what keeps the two
+                    from drifting apart again.
+
+                    Markers exist for the ACTIVE formula only (editor.draw_formula computes them
+                    inside its active-only block), so only that one pays for slot_markers here. ]]
+                    local markers = (item.formula == state.active_formula)
+                            and mformula.slot_markers(item.formula, fontset, sz) or nil
+                    local _, _, rect_t, rect_b = editor.formula_click_rect(box, markers)
+                    local extra_top = math.max(0,
+                            m.baseline_shift - (rect_t - FORMULA_MARGIN))
+                    local extra_bottom = math.max(0,
+                            (rect_b + FORMULA_MARGIN) - (m.baseline_shift + m.line_height))
                     line_extra_top[line_idx] = math.max(line_extra_top[line_idx], extra_top)
                     line_extra_bottom[line_idx] = math.max(line_extra_bottom[line_idx], extra_bottom)
                     -- +2*margin: pass 2 reserves a margin's worth of gap on EACH side of the box
@@ -1241,6 +1433,18 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
                                 math.max(0, m.baseline_shift - (item_sz.tr.y + yshift)))
                         line_extra_bottom[line_idx] = math.max(line_extra_bottom[line_idx],
                                 math.max(0, (item_sz.bl.y + yshift) - (m.baseline_shift + m.line_height)))
+                    end
+                    --[[ Two checks, in this order, and both are needed. The first moves a
+                    whole WORD down when it would fit better there (run_moves_down); runs[i+1] is
+                    set only on a word's first glyph, so this asks the question once per word
+                    rather than once per letter. The second is the original per-glyph cut, which
+                    still has to be here: it is what renders a word too long for any line at all,
+                    the case the first check deliberately declines. Pass 2 does the same two in
+                    the same order. ]]
+                    if run_moves_down(width_limit, lx, runs[i+1]) then
+                        line_idx = line_idx + 1
+                        line_extra_top[line_idx], line_extra_bottom[line_idx] = 0, 0
+                        lx = 0
                     end
                     if width_limit and lx + item_sz.adv > width_limit then
                         line_idx = line_idx + 1
@@ -1285,24 +1489,60 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
         local item = state.chars[i+1]
         local item_sz = nil
         local eff_sz = sz
+        --[[ The column this formula is granted, taken from the SAME call that decides whether it
+        moves. It used to be re-derived further down, which worked only while a moved formula
+        restarted at x = pos.x: the second call then saw used == 0 and answered "a whole line",
+        the same as the first. Right-aligning broke that - the second call sees a nearly-full line
+        and answers "exactly your own width", and content_extent() tests wrapping against the RAW
+        bounding box while reporting the baseline-converted one, so a column of exactly the
+        reported width can still wrap by a hair. It did: "a+b+c+d+e+" with the "f" dropped onto a
+        row of its own. Asking once and remembering removes the second question rather than
+        tuning an epsilon into it. ]]
+        local formula_column = nil
         --[[ The line break happens HERE, before positions/cursor_screen_pos are recorded below,
         so both agree with where the item actually lands. A formula follows the same rule as a
         glyph - no usable room left, start a new line - which pass 1 above applies identically. ]]
         if item and not item.newline then
             if item.formula then
-                if (formula_line_fit(m, width_limit, x - pos.x)) then
-                    newline()
+                local break_line
+                break_line, formula_column = formula_line_fit(m, width_limit, x - pos.x, runs[i+1])
+                if break_line then
+                    -- Same count, then the same offset, as pass 1's own loop - both halves have
+                    -- to match or the two passes disagree about where this formula is.
+                    for _ = 1, FORMULA_WRAP_ROWS do
+                        newline()
+                    end
+                    --[[ A moved formula is granted a WHOLE line's column (formula_column, above,
+                    from before this move) and is then pushed right by however much of it it did
+                    not need. Keeping the column whole is what makes the push purely horizontal:
+                    the formula lays out exactly as it would have at the left margin. ]]
+                    x = pos.x + wrapped_formula_x(width_limit, runs[i+1])
                 end
             else
                 eff_sz = math.max(1, math.min(MAX_SIZE_INDEX, sz + (item.size_off or 0)))
                 item_sz = fontset:char_get_sz({size=eff_sz, code=item.code})
+                -- The whole word first, then the single glyph - pass 1 runs the same two in the
+                -- same order, and its comment says why both are needed.
+                if run_moves_down(width_limit, x - pos.x, runs[i+1]) then
+                    newline()
+                end
                 if width_limit and (x - pos.x) + item_sz.adv > width_limit then
                     newline()
                 end
             end
         end
 
-        positions[#positions+1] = {x=x, y=line_top, i=i}
+        --[[ y is the line's TEXT top, which is what the caret is drawn from; y0/y1 are its whole
+        VISUAL band, which is what a click has to be measured against. They differ whenever a line
+        holds something taller than plain text - a formula, a boosted integral - because line_top
+        already has that line's extra_top folded in by newline(), so the tall part lives ABOVE y.
+        Clicking on the top half of a big formula has to pick that formula's line, not the one
+        whose text top happens to be nearer. Same reasoning downwards for extra_bottom. ]]
+        positions[#positions+1] = {
+            x = x, y = line_top, i = i,
+            y0 = line_top - (line_extra_top[line_idx] or 0),
+            y1 = line_top + m.line_height + (line_extra_bottom[line_idx] or 0),
+        }
         if i == state.cursor_pos then
             cursor_screen_pos = {x=x, y=line_top}
         end
@@ -1345,7 +1585,6 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
                 -- content_x + the column formula_line_fit() grants, so [content_x, wrap_edge]
                 -- is never degenerate - see MIN_FORMULA_COLUMN_LINES for what a zero one does.
                 -- Identical to pos.x + width_limit - FORMULA_MARGIN whenever there is real room.
-                local _, formula_column = formula_line_fit(m, width_limit, x - pos.x)
                 local wrap_edge = formula_column and (content_x + formula_column)
 
                 -- Debug: a graph of every position ANY navigation key can reach - Left/Right
@@ -1434,7 +1673,6 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
 
     state.last_positions = positions
     state.last_formula_boxes = formula_boxes
-    state.last_line_height = m.line_height
 
     -- Restart the blink cycle whenever the caret moves (or the buffer changes under it) so it is ON
     -- immediately and you can see where it landed, rather than possibly arriving mid-dark-phase.

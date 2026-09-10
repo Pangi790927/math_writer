@@ -151,14 +151,12 @@ PRETTY["ImGuiKey_Insert"]     = "Insert"
 PRETTY["ImGuiKey_PageUp"]     = "PageUp"
 PRETTY["ImGuiKey_PageDown"]   = "PageDown"
 
---[[ "Ctrl+Shift+K" -> {ctrl=true, shift=true, alt=false, key="ImGuiKey_K"}, or nil plus a reason.
-
-Case-insensitive on the modifiers and on named keys; a single printable character keeps its own
-case for the alias lookup ("/" and "." are keys, not letters). Returns the REASON on failure
-because the customiser shows it in the box rather than just refusing silently - a field that
-rejects without saying why is the thing that makes a settings screen infuriating.
-@date 2026-09-08 08:40 ]]
-function keymap.parse(text)
+--[[ The tokenising half of parse(), split out so parse() and parse_filter() cannot disagree about
+what a binding string means. It answers with whatever the text described, INCLUDING a bind with no
+key in it - deciding whether that is acceptable is the caller's business, and it is the only thing
+the two callers differ on.
+@date 2026-09-09 23:40 ]]
+local function parse_tokens(text)
     if type(text) ~= "string" then
         return nil, "not text"
     end
@@ -226,10 +224,83 @@ function keymap.parse(text)
             end
         end
     end
+    return bind
+end
+
+--[[ "Ctrl+Shift+K" -> {ctrl=true, shift=true, alt=false, key="ImGuiKey_K"}, or nil plus a reason.
+
+Case-insensitive on the modifiers and on named keys; a single printable character keeps its own
+case for the alias lookup ("/" and "." are keys, not letters). Returns the REASON on failure
+because the customiser shows it in the box rather than just refusing silently - a field that
+rejects without saying why is the thing that makes a settings screen infuriating.
+@date 2026-09-09 23:40 ]]
+function keymap.parse(text)
+    local bind, err = parse_tokens(text)
+    if not bind then
+        return nil, err
+    end
     if not bind.key then
         return nil, "no key, only modifiers"
     end
     return bind
+end
+
+--[[ Like parse(), but a bind with NO key is a legitimate answer rather than an error: "Ctrl+" is a
+complete thought when the thing being described is a filter rather than a binding.
+
+Returns nil, nil for text that describes nothing at all (empty, or only whitespace and "+"), which
+the customiser reads as "no filter" - distinct from nil plus a reason, which is a typo worth
+showing. Both callers of parse_tokens() are here, so "Ctrl" means exactly one thing in this file.
+@date 2026-09-09 23:40 ]]
+function keymap.parse_filter(text)
+    if type(text) ~= "string" or text:match("^[%s+]*$") then
+        return nil, nil
+    end
+    local bind, err = parse_tokens(text)
+    if not bind then
+        return nil, err
+    end
+    if not bind.key and not bind.ctrl and not bind.shift and not bind.alt and not bind.any_mods then
+        return nil, nil
+    end
+    return bind
+end
+
+--[[ Does `bind` answer to `filter`? The rule the F2 customiser's search box runs on.
+
+WHICH HALVES ARE COMPARED IS DECIDED BY WHICH HALVES THE FILTER HAS, and that is the whole design:
+a filter naming modifiers and a key matches both, a filter naming only modifiers ignores the key,
+and one naming only a key ignores the modifiers. Author's own words, 2026-09-09: "I want to filter
+only those with maching cotrol and key, if key is missing, match only by contor and in reverse the
+same". So "Ctrl+" finds every Ctrl binding whatever key it uses, and "K" finds every binding on K
+whatever modifiers it carries.
+
+MODIFIERS COMPARE EXACTLY, not as a subset: "Ctrl+" answers Ctrl+S but NOT Ctrl+Shift+Z. Searching
+for a chord you half-remember is the point, and a Ctrl filter that returns all forty Ctrl-anything
+bindings has not narrowed anything. A bind carrying the "+All" wildcard has stopped caring about
+modifiers by its own definition, so it answers any modifier filter - refusing it would hide exactly
+the bindings that are hardest to find by memory.
+@date 2026-09-09 23:40 ]]
+function keymap.filter_matches(bind, filter)
+    if not filter then
+        return true
+    end
+    if not bind or not bind.key then
+        return false
+    end
+    if filter.key and bind.key ~= filter.key then
+        return false
+    end
+    local filter_names_mods = filter.ctrl or filter.shift or filter.alt or filter.any_mods
+    if filter_names_mods and not bind.any_mods then
+        if filter.any_mods then
+            return bind.any_mods == true
+        end
+        if bind.ctrl ~= filter.ctrl or bind.shift ~= filter.shift or bind.alt ~= filter.alt then
+            return false
+        end
+    end
+    return true
 end
 
 --[[ The inverse. Modifier order is fixed at Ctrl+Shift+Alt regardless of how it was typed, so the
@@ -330,6 +401,7 @@ local DEFAULTS = {
     would mean rebinding one silently rebinds the other. ]]
     {id = "panel.close",          desc = "Close the open panel",                     binds = {"Escape+All"}},
     {id = "app.profiler",         desc = "Toggle the profiler overlay",              binds = {"F3"}},
+    {id = "app.ast",             desc = "Show the parse of the expression you are on", binds = {"F4"}},
     {id = "app.profiler_reset",   desc = "Clear the profiler's worst frame",         binds = {"Shift+F3"}},
     {id = "app.profiler_record",  desc = "Record slow frames to perf_spikes.log",    binds = {"Ctrl+F3"}},
     {id = "doc.save",             desc = "Save the document",                        binds = {"Ctrl+S"}},
@@ -400,8 +472,19 @@ local DEFAULTS = {
     {id = "text.delete",          desc = "Delete after the cursor",  repeat_ = true, binds = {"Delete"}},
 
     -- Moving the cursor ------------------------------------------------------------------------
-    {id = "nav.left",             desc = "Move left",              repeat_ = true,   binds = {"Left"}},
-    {id = "nav.right",            desc = "Move right",             repeat_ = true,   binds = {"Right"}},
+    --[[ Alt+Left/Right move too, as a SECOND bind rather than a wildcard. Reported 2026-09-10:
+    "I can't go left-right in a horiz while holding alt" - because a bind matches modifiers exactly,
+    so holding Alt stopped plain Left matching and nothing else claimed it.
+
+    Not "Left+All", which would have been the shorter fix and a wrong one: Shift+Left is a selection
+    and a sprint, Ctrl+Left is a word skip and a formula exit. A wildcard here would swallow all
+    four. Alt is the only modifier Left and Right had no meaning under - Alt+Up/Down are already
+    back_up/back_down - so it is the only one that can be added without taking something away.
+
+    Why anyone holds Alt while navigating: it is the Greek-letter modifier, so it is down for whole
+    runs of typing, and letting go of it to move one atom left is exactly the friction reported. ]]
+    {id = "nav.left",             desc = "Move left",              repeat_ = true,   binds = {"Left", "Alt+Left"}},
+    {id = "nav.right",            desc = "Move right",             repeat_ = true,   binds = {"Right", "Alt+Right"}},
     {id = "nav.up",               desc = "Move up a line",         repeat_ = true,   binds = {"Up"}},
     {id = "nav.down",             desc = "Move down a line",       repeat_ = true,   binds = {"Down"}},
     {id = "nav.home",             desc = "Start of the line",      repeat_ = true,   binds = {"Home"}},
@@ -453,6 +536,31 @@ local DEFAULTS = {
     {id = "math.select_right",   desc = "Select within the row, right",    repeat_ = true, binds = {"Ctrl+Shift+Right"}},
     {id = "math.back_up",        desc = "Go back up the way you came",     repeat_ = true, binds = {"Alt+Up"}},
     {id = "math.back_down",      desc = "Go back down the way you came",   repeat_ = true, binds = {"Alt+Down"}},
+
+    --[[ THE THREE KEYS C++ OWNS. main.cpp polls these itself with glfwGetKey() - the REAL OS
+    keyboard - rather than through this registry, and that is not an oversight to be tidied away:
+    each of them is wanted precisely when the Lua side has thrown and is erroring every frame,
+    which is exactly when a binding that had to travel through Lua would stop answering. See
+    main.cpp's own comments on all three.
+
+    They are listed here anyway, because a shortcut nobody can find is barely a shortcut: this is
+    what puts them in the F1 help, in the F2 table and - the reason they were added, 2026-09-09 -
+    in the F2 search box, where "Ctrl+R is not found" was the complaint.
+
+    `owner = "cpp"` is the whole of the honesty: keymap.set_bind() refuses them, and the customiser
+    draws no controls on their rows at all - no Rec, no +, no default - so nothing offers an edit
+    that C++ would never read. Listed last, after every rebindable action, for the same reason.
+    Making them genuinely rebindable is a main.cpp change - resolve the bind
+    ONCE at startup, while Lua is known good, cache it as a GLFW key plus modifier flags and poll
+    that - which keeps the works-when-Lua-is-broken property because the cache outlives Lua. Until
+    that exists, `binds` here is a DESCRIPTION of what main.cpp hardcodes, and the two are kept in
+    step by hand. ]]
+    {id = "app.quit",             desc = "Quit (C++: always works, even if Lua has thrown)",
+                                  owner = "cpp", binds = {"Ctrl+Q"}},
+    {id = "app.reload",           desc = "Save and restart in place (C++; re-exec is POSIX-only)",
+                                  owner = "cpp", binds = {"Ctrl+R"}},
+    {id = "app.debug_pipe",       desc = "Hand this instance over for inspection, and take it back",
+                                  owner = "cpp", binds = {"Ctrl+Shift+D"}},
 }
 
 --[[ The LIVE table: id -> {desc=, repeat_=, binds={parsed, ...}}. Separate from DEFAULTS so the
@@ -496,7 +604,8 @@ local function install_defaults()
             end
             parsed[#parsed + 1] = bind
         end
-        actions[entry.id] = {desc = entry.desc, repeat_ = entry.repeat_, binds = parsed}
+        actions[entry.id] = {desc = entry.desc, repeat_ = entry.repeat_, binds = parsed,
+                             owner = entry.owner}
     end
 end
 
@@ -566,11 +675,13 @@ function keymap.key_label(name)
     return PRETTY[name] or (name and name:gsub("^ImGuiKey_", "")) or "?"
 end
 
---[[ An action's description, or its id when there is no such action - the customiser and the help
-both show this. @date 2026-09-08 08:40 ]]
-function keymap.describe(id)
+--[[ Who handles this action: "cpp" when main.cpp polls the key itself with glfwGetKey() and this
+registry only DESCRIBES it, nil for everything else. The customiser asks so it can show a note
+where the edit controls would go, rather than offering an edit nothing would read.
+@date 2026-09-09 23:55 ]]
+function keymap.owner_of(id)
     local action = actions[id]
-    return action and action.desc or id
+    return action and action.owner or nil
 end
 
 -- Every action, in DEFAULTS order rather than a random hash walk, so the customiser's table and
@@ -581,10 +692,25 @@ function keymap.each(fn)
     end
 end
 
---[[ An action's live binds, in the order they are tried. Empty for an unknown id. @date 2026-09-08 08:40 ]]
-function keymap.binds_of(id)
-    local action = actions[id]
-    return action and action.binds or {}
+--[[ Every action holding at least one bind that answers `filter`, as a set of ids. nil filter is
+"everything", so the customiser can hand its own state straight through without a special case.
+@date 2026-09-09 23:40 ]]
+function keymap.filter_ids(filter)
+    local hits = {}
+    for _, entry in ipairs(DEFAULTS) do
+        local action = actions[entry.id]
+        if not filter then
+            hits[entry.id] = true
+        elseif action then
+            for _, bind in ipairs(action.binds) do
+                if keymap.filter_matches(bind, filter) then
+                    hits[entry.id] = true
+                    break
+                end
+            end
+        end
+    end
+    return hits
 end
 
 -- #############################################################################################
@@ -603,6 +729,13 @@ function keymap.set_bind(id, index, text)
     if not action then
         return false, "no such action"
     end
+    --[[ A C++-owned key is refused HERE rather than only hidden in the customiser, so the refusal
+    holds for every route in - a hand-edited keymap.save included. Accepting it would write a
+    binding that main.cpp never reads, and the shortcut would then say one thing on screen and do
+    another, which is worse than not being editable at all. ]]
+    if action.owner == "cpp" then
+        return false, "set in C++ (main.cpp), not rebindable here"
+    end
     local bind, why = keymap.parse(text)
     if not bind then
         return false, why
@@ -616,6 +749,9 @@ end
 "(unbound)" everywhere and simply never fires. @date 2026-09-08 08:40 ]]
 function keymap.remove_bind(id, index)
     local action = actions[id]
+    if action and action.owner == "cpp" then
+        return false
+    end
     if action and action.binds[index] then
         table.remove(action.binds, index)
         dirty = true

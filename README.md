@@ -146,8 +146,7 @@ own `create()` factory.
 | `content.lua` | the box-management shell - independent boxes, the left rail, click-to-activate |
 | `mexpru.lua` | wraps the raw `vc.mexpr_*` creators so every node carries a Lua table in its `u` field; owns `slot_atom`, which every row walk must use |
 | `char.lua` | the glyph catalog - ASCII, LaTeX-named symbols, Greek, bracket pieces - mapped onto the Computer Modern and AMS font files |
-| `ast.lua` | the tuple AST: namespaces, copy, (de)serialization, LaTeX export |
-| `mexpr.lua` | the older `ast -> mexpr` path; **not on any live code path** and carrying a known dead bracket signature |
+| `ast.lua` | the tuple AST: namespaces, copy, (de)serialization. Nothing in the running app builds one yet - it is phase 2's model |
 | `transforms.lua` | where the term-dragging algebra will live - design notes plus unfinished code, deliberately |
 | `input_recorder.lua` | the flight recorder: one line per distinct input event, written by the async log thread |
 | `prof.lua` | Lua front end for `perf_composer.h`; `prof.wrap()` instruments a function without touching its call sites |
@@ -276,7 +275,10 @@ means "what I asserted still holds", never "it works".
   the three editors and the one-way promotion door, immutable cells forming a proof DAG, why
   `mexpr -> ast` must be direct rather than routed through LaTeX, how equality is decided by
   normalization, what is trusted and what is not, and what it would take to talk to Lean. **Read it
-  before touching `ast.lua`, `mexpr.lua` or `transforms.lua`.** All of it is provisional.
+  before touching `ast.lua` or `transforms.lua`.** All of it is provisional, and section 12 in
+  particular now costs more than it says: `mexpr.lua`, the `ast -> mexpr` writer it plans to
+  regenerate subtrees through, was deleted on 2026-09-09 as unreachable - recover it with
+  `git show c109aaf:scripts/mexpr.lua` if it is wanted as a starting point.
 - **`CLAUDE.md`** - how to work in this repo: editing rules, build gotchas, and the hard rules about
   running the app headlessly.
 - **`tests/README.md`** - the harness and how to add a test.

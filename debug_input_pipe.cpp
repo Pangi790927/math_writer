@@ -188,7 +188,15 @@ ImGuiKey key_from_name(const std::string& name) {
 }
 
 /*! Commands (one per line, plaintext, space-separated):
- *    key_down <ImGuiKeyName>  / key_up <ImGuiKeyName>  / key_press <ImGuiKeyName>
+ *    key_down <ImGuiKeyName> [mod...]  / key_up <same>  / key_press <same>
+ *                            - mod is ctrl|control, shift, alt, super|win, in any order and any
+ *                              number: "key_press ImGuiKey_M ctrl" is Ctrl+M. key_press holds
+ *                              them around the press and releases them after; key_down presses
+ *                              them and leaves everything down; key_up releases the key and then
+ *                              them, so a held chord opened with key_down closes symmetrically.
+ *                              An unrecognised mod word drops the WHOLE line rather than the word
+ *                              - see dispatch_line()'s own note on why that is worth the
+ *                              strictness in an otherwise lax protocol.
  *    char <single-char>       / char <codepoint-int>
  *    text <rest of the line, inserted char by char>
  *    mouse_pos <x> <y>
@@ -228,16 +236,51 @@ void dispatch_line(const std::string& line) {
             DBG("debug_input_pipe: unknown key '%s'", key_name.c_str());
             return;
         }
-        auto apply = [&](bool down) {
-            io.AddKeyEvent(key, down);
-            if (bool *flag = modifier_flag(key)) {
+
+        /*! Modifier words after the key name, so a chord is one line instead of three.
+         *
+         * A TYPO HERE DROPS THE WHOLE LINE, which is stricter than the rest of this protocol on
+         * purpose. Before modifiers existed at all, trailing words were simply ignored, so
+         * "key_press ImGuiKey_M ctrl" - the spelling anyone would guess - quietly sent a bare M.
+         * Ctrl+M inserts a formula and M types a letter, and the difference between them is a
+         * whole afternoon of screenshots that look almost right. A line that does nothing at all
+         * is found in one run; a line that does the wrong thing convincingly is not. */
+        std::vector<ImGuiKey> mods;
+        std::string word;
+        while (iss >> word) {
+            ImGuiKey mk = ImGuiKey_None;
+            if      (word == "ctrl" || word == "control") mk = ImGuiKey_LeftCtrl;
+            else if (word == "shift")                     mk = ImGuiKey_LeftShift;
+            else if (word == "alt")                       mk = ImGuiKey_LeftAlt;
+            else if (word == "super" || word == "win")    mk = ImGuiKey_LeftSuper;
+            else {
+                DBG("debug_input_pipe: unknown modifier '%s' in '%s' - whole line ignored",
+                        word.c_str(), line.c_str());
+                return;
+            }
+            mods.push_back(mk);
+        }
+
+        auto apply = [&](ImGuiKey k, bool down) {
+            io.AddKeyEvent(k, down);
+            if (bool *flag = modifier_flag(k)) {
                 *flag = down;
                 update_modifier_state(io);
             }
         };
-        if (cmd == "key_down")      apply(true);
-        else if (cmd == "key_up")   apply(false);
-        else                        { apply(true); apply(false); }
+        /* Modifiers go down BEFORE the key and come up AFTER it, which is the order a real
+         * keyboard produces and the order ImGui's own io.KeyCtrl et al. are sampled in. key_down
+         * leaves the whole chord held so a caller can build one up by hand; key_up takes it apart
+         * in the mirror order. */
+        if (cmd != "key_up")
+            for (ImGuiKey mk : mods) apply(mk, true);
+
+        if (cmd == "key_down")      apply(key, true);
+        else if (cmd == "key_up")   apply(key, false);
+        else                        { apply(key, true); apply(key, false); }
+
+        if (cmd != "key_down")
+            for (auto it = mods.rbegin(); it != mods.rend(); ++it) apply(*it, false);
     }
     else if (cmd == "char") {
         std::string rest;

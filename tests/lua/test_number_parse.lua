@@ -53,6 +53,12 @@ function run_test()
         {"-3",     3,   1,  -1},
         {"-0.25",  25,  100, -1},
         {"007",    7,   1,  1},    -- leading zeros are spelling, not value
+        --[[ An explicit "+" is spelling too, added 2026-09-10 so a name argument may be written
+        `F_{+1}` as readily as `F_{-1}`. It must produce sign = 1, i.e. be indistinguishable from
+        the unsigned form - a "+" that produced anything else would make `+3` and `3` two different
+        constants in a pattern. ]]
+        {"+3",     3,   1,  1},
+        {"+0.5",   5,   10, 1},
     }
     for _, c in ipairs(ok_cases) do
         local text, m, n, sign = c[1], c[2], c[3], c[4]
@@ -71,7 +77,10 @@ function run_test()
     end
 
     -- ---- refused ---------------------------------------------------------------------------
-    local bad_cases = {"", ".", "-", "1.2.3", "1,5", "1e3", "abc", "1a", "--1", "-"}
+    --[[ "+" and its doubles sit beside "-" and "--1": ONE sign is stripped, never two, so a
+    stacked or mixed pair still has to fail the digit match rather than quietly cancelling out. ]]
+    local bad_cases = {"", ".", "-", "1.2.3", "1,5", "1e3", "abc", "1a", "--1", "-",
+                       "+", "++1", "+-1", "-+1"}
     for _, text in ipairs(bad_cases) do
         check("refuses [" .. text .. "]", mexpr_ast.parse_number(text) == nil,
                 shows(mexpr_ast.parse_number(text)))

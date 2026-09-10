@@ -42,8 +42,15 @@ local SCRIPTS = {
     "scripts/mformula_new.lua",
 }
 
--- The keymap entry points that take an action id as their first argument.
-local ID_TAKING = {"pressed", "label", "describe", "binds_of"}
+--[[ The keymap entry points that take an action id as their first argument.
+
+"describe" and "binds_of" were listed here until 2026-09-09 and matched nothing: both had been
+dead since the customiser started reading action.desc/action.binds straight off the table
+keymap.each() hands it, and both were deleted. Scanning for a call site that cannot exist is not a
+weaker alarm, it is no alarm - it reads as coverage while checking nothing. Any NEW id-taking
+entry point does belong here.
+@date 2026-09-09 21:20 ]]
+local ID_TAKING = {"pressed", "label"}
 
 function run_test()
     local ok = true

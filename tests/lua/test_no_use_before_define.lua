@@ -67,7 +67,11 @@ local function strip(src)
     return table.concat(out)
 end
 
-local FILES = {"char", "mexpru", "mexpr", "mformula_new", "mformula_latex", "editor",
+--[[ Scanned as TEXT, so a file that is not listed here is simply not checked. A name that no
+longer exists is skipped silently by the io.open below, which is why "mexpr" came off the list when
+scripts/mexpr.lua was deleted (2026-09-09) rather than being left to sit here reading as coverage.
+@date 2026-09-09 21:20 ]]
+local FILES = {"char", "mexpru", "mformula_new", "mformula_latex", "editor",
                "content", "transforms", "ast", "prof", "input_recorder"}
 
 function run_test()

@@ -197,5 +197,69 @@ function run_test()
     ok = check(#hits >= 1, "Ctrl+M on box.new must be reported as conflicting with formula.new") and ok
     keymap.reset()
 
+    --[[ THE THREE KEYS C++ OWNS (app.quit, app.reload, app.debug_pipe) are listed in this registry
+    but polled by main.cpp with glfwGetKey(), so they can keep working when the Lua side has thrown.
+
+    THE ASSUMPTION: they are FINDABLE but not REBINDABLE. Both halves matter and both are easy to
+    lose. Drop them from DEFAULTS and Ctrl+R stops appearing in the help, in the table and in the
+    F2 search box - which is the complaint that put them here (2026-09-09: "ctrl+r is not found").
+    Let set_bind accept them and the customiser writes a binding into keymap.save that main.cpp
+    never reads, so the panel shows Ctrl+K while the app still answers Ctrl+R - a shortcut lying
+    about itself, which is worse than one that cannot be changed.
+
+    The refusal is asserted at keymap level rather than in the panel deliberately: keymap.save is a
+    text file somebody can edit by hand, and that route has to be refused too. ]]
+    for _, id in ipairs({"app.quit", "app.reload", "app.debug_pipe"}) do
+        ok = check(keymap.owner_of(id) == "cpp", id .. " must be marked as owned by C++") and ok
+        local before = keymap.label(id)
+        local accepted, why = keymap.set_bind(id, 1, "Ctrl+Shift+Alt+U")
+        ok = check(accepted == false and why ~= nil,
+                id .. " must refuse a rebind, with a reason") and ok
+        ok = check(keymap.label(id) == before,
+                id .. " must still read as " .. tostring(before) .. " after a refused rebind") and ok
+        ok = check(keymap.remove_bind(id, 1) == false,
+                id .. " must refuse having its bind removed") and ok
+    end
+
+    --[[ And they answer the search box, which is the whole point of listing them. Ctrl+R is the
+    one that was reported missing, so it is the one spelled out. ]]
+    ok = check(keymap.filter_ids(keymap.parse_filter("Ctrl+R"))["app.reload"] == true,
+            "a Ctrl+R search must find app.reload") and ok
+    ok = check(keymap.filter_ids(keymap.parse_filter("Ctrl+Q"))["app.quit"] == true,
+            "a Ctrl+Q search must find app.quit") and ok
+    ok = check(keymap.filter_ids(keymap.parse_filter("Ctrl+Shift+D"))["app.debug_pipe"] == true,
+            "a Ctrl+Shift+D search must find app.debug_pipe") and ok
+
+    --[[ THE HAND-KEPT HALF, and the reason this reads a .cpp file from a Lua test.
+
+    For those three, DEFAULTS does not DRIVE anything - main.cpp hardcodes the keys and this
+    registry only describes them, so the two are kept in step by hand and nothing in either
+    language complains when they drift. The drift is silent in the worst direction: the table and
+    the help would go on confidently displaying a shortcut that has moved, and searching for the
+    real one would come up empty - which is the exact complaint that put these entries here.
+
+    Read as TEXT, the same trick test_keymap_ids.lua uses, and asserted loosely on purpose: it
+    checks that main.cpp still polls each key, not how the surrounding C++ is written. A rename or
+    a deletion fires it; a refactor around it does not. If it ever does fire, the fix is to decide
+    which side moved and correct the other - not to relax the check. ]]
+    do
+        local f = io.open("main.cpp", "r")
+        if not f then
+            ok = check(false, "main.cpp must be readable - this check guards the C++-owned keys")
+        else
+            local src = f:read("*a")
+            f:close()
+            for _, case in ipairs({{"GLFW_KEY_Q", "app.quit",       "Ctrl+Q"},
+                                   {"GLFW_KEY_R", "app.reload",     "Ctrl+R"},
+                                   {"GLFW_KEY_D", "app.debug_pipe", "Ctrl+Shift+D"}}) do
+                ok = check(src:find(case[1], 1, true) ~= nil,
+                        "main.cpp must still poll " .. case[1] .. " for " .. case[2]) and ok
+                ok = check(keymap.label(case[2]) == case[3],
+                        case[2] .. " must still read as " .. case[3]
+                                .. " (got " .. tostring(keymap.label(case[2])) .. ")") and ok
+            end
+        end
+    end
+
     return ok
 end

@@ -10,6 +10,15 @@ otherwise be lost — none of it is derivable from the code, because there is no
 Phase 1 = `editor.lua` + `mformula_new.lua`: free typing, mexpr trees, LaTeX in and out.
 Phase 2 = giving those formulas *meaning*.
 
+> **THE GROUND MOVED, 2026-09-09.** `scripts/mexpr.lua` and `ast.to_latex()` were deleted as
+> unreachable code. This document names both repeatedly — sections 8b, 11, 12 and 16 assume
+> `mexpr.lua` exists and can be repaired. It does not exist any more. Nothing in the reasoning
+> below is retracted by that: `ast -> mexpr` is still the direction section 12 wants, and it is
+> still the inverse of the bridge. What changed is the cost line — it is a file to be WRITTEN, not
+> a file to be fixed. The old one is in git (`git show c109aaf:scripts/mexpr.lua`) and is worth
+> reading before starting, if only for the tuple-type dispatch. The prose is left as it was
+> written, because the reasoning it records is what this document is for.
+
 **The document has two halves, written the same day.** Sections 1-8 cover getting a formula INTO
 the checked domain. Sections 9-17 ("Part two") cover what happens once it is there. Part two
 **revises** part one in several places; every superseded statement is marked inline with a quoted
@@ -195,7 +204,9 @@ built.
 **mexpr -> ast: direct, never via LaTeX.** The brute-force route (mexpr -> latex -> ast) was
 considered and rejected:
 
-- `ast.to_latex` exists but **there is no `ast.from_latex`**. The AST's round-trip pair is
+- `ast.to_latex` existed but **there was no `ast.from_latex`** (and as of 2026-09-09 there is no
+  `ast.to_latex` either — it was deleted unused; the asymmetry the argument rests on is unchanged,
+  and in fact wider). The AST's round-trip pair is
   `to_string`/`from_string`, its own tuple format. So "via LaTeX" means writing a SECOND LaTeX
   parser — the expensive half — which would inherit none of `mformula_latex.lua`'s fixes and
   rediscover its own bugs.
@@ -379,6 +390,401 @@ decides, and one rule resolves the awkward case:
 
 So `a_n^2` reads as `(a_n)^2`: once `a` has taken its index, `a_n : R`, and `^2` can only be a
 power. Matches convention, needs no new notation.
+
+> **NARROWED, 2026-09-10: a NAME never carries a superscript at all.** Author's own words: "I
+> changed my mind, names don't have sups, only subs or function arguments (themselves)".
+> `mexpr_ast.lua`'s name parser now refuses one outright, at every level - `a^{'abcd'}` and
+> `a_{n^{m}}` were both accepted before and are errors now.
+>
+> This does not retract the rule above, it shrinks what the rule has to cover. The ambiguity was
+> only ever about a superscript attached to a *name*; with those gone, a superscript is always an
+> operation on an expression, and "is this an application or a power?" is a question the expression
+> parser asks, never the name parser. The `a^2(x)` case that `decorations()` used to hedge about -
+> is the `()` the power's or the name's? - stops existing rather than being decided.
+
+#### Where the powers go instead
+
+Refusing them in names is only half an answer: outside a definition block, `a^2` and `f^{-1}(x)`
+are ordinary things to write, and something has to read them. The seam is already in the parser,
+inert, waiting for the half that does not exist yet.
+
+**Why the name parser has to be the one to report them.** The obvious split - let the expression
+parser take the superscript off and hand the rest to the name parser - does not work, and the
+reason is structural rather than a matter of taste. `mexpr_ast.lua`'s `unit()` builds one entry per
+row slot, and a supsub node carries `sup` **and** `sub` together. In `a_n^2` the sub belongs to the
+name and the sup belongs to the expression, on one node. No node surgery separates them. The only
+thing that can split that node is the name parser reading the sub, declining the sup, and saying
+which sup it declined.
+
+**So it does.** `Parser.sups` collects every superscript met, at any depth, as `{node, row}` in
+traversal order. `Parser.no_sups` decides what happens next, and defaults to TRUE, so every caller
+that exists today - `parse_name`, `parse_domain` - refuses a power exactly as before. An expression
+parser clears it and reads the list instead.
+
+**What that parser then owes.** Each entry is a power applied to whatever the name parser had built
+when it hit that node, so the expression is `pow(<name so far>, <row>)`. That is also where the
+"superscript rule" above finally applies - `f^{-1}` as an inverse rather than a reciprocal is a
+question about the head's declared type, which is expression-level knowledge the name parser
+deliberately does not have. It only ever answers "here is a name, and here are the powers I did not
+consume".
+
+Nothing reads `sups` yet. The refused-power cases in `test_name_pattern.lua` are what guard the
+default: flip `no_sups` and they fire, which is the intended alarm rather than a nuisance.
+
+#### The expression parser: four cases to start
+
+Settled 2026-09-10 as the dispatch to build first, before any operator handling. Everything else -
+multiplication, addition, precedence - is deliberately deferred; these four are the skeleton that
+the rest hangs off.
+
+| at this node | what happens |
+|---|---|
+| **1. a name** | read it, resolve it against the declarations above this box. If it is not a name, the whole formula is INVALID - that is a hard error, not a fallback. |
+| **2. `+` / `-`** | a sign, which always ends up on a NUM - see below. |
+| **3. `(`** | with no name in front it cannot be a call, so it opens a CELL - `ast.new_cell`. |
+| **4. `=` and the inequalities** | the only splitter. Builds the relation - `ast.new_eq` or one of the five `new_ineq_*`. |
+
+Case 1 is where everything already written comes together: build the candidate keys, look them up
+in `content.declarations_before()`, and generate the reference plus whatever the declined
+superscript said to do. Case 1 failing is what makes a formula invalid rather than partially
+understood - there is no "unknown name" node.
+
+**Case 1 in full: the parser's output is the TREE, not the key.** Clarified 2026-09-10 - a name
+pass at a DECLARATION produces a key; the same pass at a USE produces a key *and* a tree, and the
+tree is the answer. The key is consumed on the way, not returned.
+
+| written | produces |
+|---|---|
+| `f(34)` | `CALL("f(),(1)", NUM(34))` - or an ERROR if `f(),(1)` is not in the database |
+| `f(x)` | `CALL("f(),(1)", REF(x))` |
+| `a_{n+1}` | `CALL("a,sub,(1)", ADD(REF(n), NUM(1)))` |
+| `f^2(x)` | `POW(CALL("f(),(1)", REF(x)), NUM(2))` |
+
+Four things that fall out of those rows, all of which the AST already supports:
+
+- **The callee is the KEY STRING**, not a node. `ast.new_call(ns, fn, ...)` stores `fn` untyped, so
+  `"f(),(1)"` goes straight in. That is the right shape rather than a convenient one: the
+  declaration lives in another box's namespace, and the exact-equality rule makes the string the
+  identity. Nothing needs resolving across namespaces at build time.
+- **Occurrences are REFS, never the variable.** Author: "with ref not the var itself because the
+  same x may appear above it in an equal, a multiplication, etc. (ex `xf(x)`)". So one `ast.new_var`
+  per distinct name per expression, and every mention is an `ast.new_vref` to it. `new_vref` takes
+  an id rather than a name, which forces exactly that structure - a name cannot become a reference
+  without a variable to point at.
+- **The superscript wraps the call, it does not join it.** `POW(CALL(...), NUM(2))` - the reference
+  is built first and the declined `sups` are applied around it, which is what `Parser.sups` was
+  collected for.
+- **A missing definition is a hard error.** `f(34)` where `f(),(1)` was never declared does not
+  degrade into an unknown-name node; the formula is invalid.
+
+**Undefined variables, deferred.** "if a variable is not defined, it shall be treated as the freest
+variable in the expression's domain, but that is a side efect we will look into later". So a `REF`
+to something with no declaration is not an error the way a missing CALLEE is - it becomes a free
+variable of the enclosing domain. The asymmetry is deliberate: a call names a definition that must
+exist, a bare variable names something the expression itself may be quantifying over.
+
+**Named operators - `sin`, `cos`, `log`, `ln` - are a 1-tall vertical.** Ruled 2026-09-10: they
+"will stay as the first row in a 1 tall vertical, containing the letters of the exact name, this
+sort of vector will be what latex sees as those functions".
+
+WHY A CONTAINER AND NOT THREE GLYPHS: `s`, `i`, `n` sitting loose in a row is juxtaposition, which
+this grammar already reads as multiplication - `sin` would be `s*i*n` and there is no way to tell it
+apart after the fact. Wrapping the letters in something makes the name ONE unit, which is the same
+move `'quoted'` makes for a multi-character name. The 1-tall vert is a container that already
+exists (`mexpru.vert`, `kind = "vert"`), already draws as plain letters at one row, and already
+survives save/load.
+
+**What it touches, none of it done:**
+
+- `unit()` needs a `vert` case beside its `supsub`/`bigop` ones, so a vert reaches the parser as an
+  atom rather than falling through to "not a name".
+- Resolution goes to a BUILT-IN table, not `declarations_before()`. `sin` needs no definition box;
+  that is the difference between a named operator and a declared name, and it is why they are worth
+  telling apart at all.
+- A superscript still wraps it, so `sin^2(x)` is `POW(CALL("sin", REF(x)), NUM(2))` with no new
+  rule - which is a good sign the representation is the right one.
+
+**LaTeX, and a bonus.** `\sin` has no entry in `char.lua` today, so it is one of the ~18 macros
+CLAUDE.md records as silently dropped on paste. Making `\sin` mean this vert closes that hole for
+the whole family rather than adding glyphs one at a time.
+
+**This closes an old question rather than opening a new one.** Section 10 already found that
+`sin`, `arcsin`, `log`, `det` are the SAME problem as a multi-letter subscript - "one problem, one
+fix" - and named the cure as TeX's own: make them single atoms. The 1-tall vert IS that atom, now
+with a representation. Section 16's table lists this as question 6(b), "how is a multi-letter
+subscript written at all?", narrowed to the general multi-letter-name problem; it can be answered
+the same way.
+
+**Which raises the one thing to settle: there would then be TWO ways to write a multi-letter name.**
+A quoted literal (`'maxlim'`, already implemented, arity 0, part of the name grammar) and a 1-tall
+vert. They overlap exactly on "several letters that must read as one thing". Plausible split: the
+quoted form names a VALUE and the vert names an OPERATOR, which is why one lives in the name pattern
+and the other is applied to arguments. But if that is the split it should be written down, because
+otherwise the two will be used interchangeably and `a_{'maxlim'}` and `a_{<vert maxlim>}` will end
+up as different keys for the same intent - and the exact-equality rule means they would never
+resolve to each other.
+
+**Open:** a 1-tall vert whose letters spell nothing known. It is the natural way to write a
+user-named operator, but `to_latex` then has to choose between `\operatorname{foo}` and the
+existing `\stack{foo}` - and `\stack` is this codebase's own invented macro for verts generally,
+so the two readings collide on exactly the 1-row case. Worth settling before the writer is touched,
+because a wrong choice round-trips silently into the save file.
+
+**Case 2 in full: a sign is a property of a NUM, never a node of its own.** Author, 2026-09-10:
+
+> so `-x` transforms into `(MUL, NUM(-1), REF(x))`, the idea is that we will fix references
+> afterwards, link the ref to the scoped-var and that `+/-` is a property of the next NUM or NUM in
+> MUL, this I think should fix the sign
+
+So the sign is never an operator and never a wrapper. It lands on a number - an existing one where
+there is one, a synthesized `NUM(-1)` where there is not:
+
+| written | becomes | why |
+|---|---|---|
+| `-5` | `NUM(-5)` | the literal carries its own sign, as `parse_number` already reads it |
+| `-x` | `MUL(NUM(-1), REF(x))` | nothing to fold into, so the sign becomes a factor |
+| `-2x` | `MUL(NUM(-2), REF(x))` | folds into the number that is already there, NOT `MUL(NUM(-1), NUM(2), ...)` |
+
+The last row is the point of the rule: there is only ever ONE signed number, so two spellings of the
+same product cannot produce two different trees. It also means no unary-minus node exists to reason
+about later - negation is multiplication by a negative literal, and nothing else in the AST has to
+know the difference.
+
+**References are unresolved when built.** `REF(x)` is created as a name, and linking it to the
+scoped variable is a later pass - the same shape as the specialisation links above. The parser's job
+is to say WHAT was referred to, not to have found it.
+
+**This is what makes `ast.lua` live again.** Its constructors - `new_eq`, the five `new_ineq_*`,
+`new_cell`, `new_num`, `new_var`, `new_vref`, `new_call` - have had no reachable caller since
+`mexpr.lua` was deleted (2026-09-09). The four cases above are their first real consumer, and the
+tuple shapes at the top of that file are the contract to build against.
+
+#### Operations inside a subscript
+
+`a_{n+1}` is an ordinary thing to write and is not a name: the subscript holds an expression. The
+detection rule is the author's, 2026-09-10, and it is a good one because it needs no new
+machinery - *"when reaching a point where a free var should be and we find something else, well
+that is an expression"*.
+
+**Where that point is, measured rather than assumed.** The name grammar gives up in exactly two
+places, both inside `parse_argument`:
+
+| input | where it stops |
+|---|---|
+| `a_{n+1}`, `a_{2n}`, `a_{f(n)}` | *"juxtaposition inside a name"* - the trailing `last_i < #units` check |
+| `a_{-n}` | *"an argument must be a name, a quoted literal or a number"* - the `else` branch |
+
+Those two sites are the whole boundary. An expression-enabled pass turns them from failures into
+handoffs, gated by a flag in the parser the same way `no_sups` gates powers.
+
+**Why it is not built yet, and this is the part worth knowing.** The superscript seam could be
+added for free because a name parser never consumes a superscript - collecting one costs nothing.
+This seam is not free: `free_var()` and `emit()` run **before** the juxtaposition check, so by the
+time `a_{n+1}` is known to be an expression, `n` has already been registered as a parameter and
+emitted as `(1)`. Catching the failure at that point leaves that behind, and the pattern would
+report an arity that came from inside an expression.
+
+Two ways out, neither free:
+
+- **Classify, then parse.** Decide "is this group one simple argument?" before parsing it. The
+  catch is that classification is not cheap - a quoted name spans several units, so the classifier
+  has to walk the group the same way the parser does, and now there are two definitions of what an
+  argument looks like.
+- **Parse transactionally.** Let `parse_argument` note where the accumulators stood on entry and
+  truncate back to it if the group turns out not to be simple, then hand the whole group over.
+
+The second is right, and cheaper than it first looks: **all four accumulators are append-only**.
+`vars`, `tokens`, `marks` and `sups` are only ever written as `list[#list + 1] = x`, with no
+removal anywhere in the file - so a savepoint is four integers and a rollback is four truncations,
+and it is an EXACT undo rather than an approximation. The parser can go on emitting as it goes; it
+just rewinds when the group turns out to have been an expression. No buffering, no second
+definition of what an argument looks like.
+
+That property is worth protecting: the moment anything starts rewriting or reordering those lists
+in place, rollback silently stops being exact, and an argument that failed halfway would leave
+debris in the pattern.
+
+**Two questions to answer before writing either.** Both decide identification, so they cannot be
+left to the implementation:
+
+1. **What does an expression argument contribute to the pattern text?** `a_{n}` is `a,sub,(1)`.
+   What is `a_{n+1}`? If it is anything structural, two spellings of the same index have to produce
+   the same text or they will not identify.
+2. **Is `n` in `a_{n+1}` a parameter of `a`?** If yes, arity counts free variables through
+   expressions and `a_{n+1}` has arity one. If no, `a_{n+1}` is a name of arity zero that happens
+   to mention `n`, and the `n` binds to the surrounding scope instead. This is the same question
+   section 6 asked about `v_'max'`, one level deeper.
+
+#### Answered: a use is a REF, and both questions dissolve
+
+Author, 2026-09-10, on what `f(34)` means when `f(x)` has been declared:
+
+> the name `f(),(1)` is a name of a variable, like all variables, this variable is referenced and
+> used in a call, as such `CALL(REF('f(),(1)'), NUM(34))` [...] we still need the `function`
+> signature
+
+That settles both questions above, and it does so by moving them:
+
+- **Question 1 dissolves.** An expression argument contributes nothing to a pattern text, because at
+  a use site no pattern is being *built*. A pattern is only ever produced by a DECLARATION. A use
+  site produces a key and looks it up.
+- **Question 2 answers "no".** Parameters exist only in declarations. `n` in `a_{n+1}` is not a
+  parameter of `a`; it is a free variable of the surrounding scope, inside an expression that
+  happens to sit in a subscript. The use is `INDEX(REF("a,sub,(1)"), <expr n+1>)` - arity comes from
+  the declaration, and the use site only supplies subtrees.
+
+**The same walk builds the key.** To resolve `f(34)`, the parser walks it exactly as it walks a
+declaration and emits `(k)` for each argument position regardless of what is in it, keeping the
+argument subtrees aside. `f(34)` -> key `f(),(1)`, arguments `[NUM(34)]`. `a_{n+1}` -> key
+`a,sub,(1)`, arguments `[<n+1>]`. The declaration's own text is the same string, which is what makes
+the lookup a string compare rather than a tree match.
+
+> **SUPERSEDED, 2026-09-10, and the candidate-key idea goes with it.** The paragraphs from here to
+> the end of this subsection argued that a use site cannot tell `f(),34` from `f(),(1)` and so must
+> offer both. It does not have to: **an argument never contributes to identity.** Author: "the name
+> of `f(34)`, evaluated in expr context is still `f(),(1)`, that is the signature of the function,
+> it gives it it's identity, 34 is only the argument".
+>
+> A use site therefore produces exactly ONE key - the signature - whatever is written in the
+> argument positions. `f(34)`, `f(x)` and `f(n+1)` are all `f(),(1)`. `F(0)` in an expression is
+> `CALL("F(),(1)", NUM(0))` even where a specialisation `F(),0` has been declared; the two are
+> related by expression matching later, not by a reference picking a different name now. No
+> specificity ordering, no candidate list, nothing for the declaration table to disambiguate - it
+> answers "does this signature exist", and a miss is a hard error.
+>
+> The argument below is kept rather than deleted because its other conclusion still holds and still
+> matters: `F(0)` and `F(n)` really are both legal DECLARATIONS. Only the use-site half was wrong.
+
+**Where the signature is genuinely needed** - and this is the part that cannot be removed. Literals
+stay in the key while parameters become placeholders (`a_'maxlim'` is arity zero, text
+`a,sub,'maxlim'`). So a use site reading `f(34)` cannot tell on its own whether it means:
+
+- a call on the declared `f(),(1)` with the argument 34, or
+- a reference to a variable whose *name* is literally `f(),34`.
+
+Both are well-formed keys for the same input. Only the declarations in scope decide, so a use site
+produces CANDIDATE keys - placeholder-form and literal-form - and resolution picks between them.
+That is the concrete content of "we still need the function signature": not type-checking, but
+disambiguating what was even referred to.
+
+**And both keys are ordinary, not one real and one theoretical.** `F(0)` is a legal declaration
+today - measured 2026-09-10, it produces text `F(),0` with arity 0, exactly as `F(n)` produces
+`F(),(1)` with arity 1. Which is to say the two forms are how a RECURSION is written:
+
+```
+F(0) = 1
+F(n) = n * F(n-1)
+```
+
+Two declarations, both in scope, differing only in whether the argument position holds a literal or
+a parameter. So candidate keys are not a defence against a contrived input - without them the base
+case of a recursion cannot be referred to at all.
+
+**Which forces a specificity rule.** With both declared, a use site reading `F(0)` produces the
+candidates `F(),0` and `F(),(1)`, and both exist:
+
+> **The literal form wins when it is declared.** `F(0)` means the base case; `F(3)` falls through to
+> `F(),(1)` because `F(),3` was never declared.
+
+That is the only reading that makes the recursion above mean what it looks like.
+
+**IDENTITY IS EXACT STRING EQUALITY. There is no unification, ever.** Author, 2026-09-10: "it is
+important to state `f(),(1)` is not the same string as `f(),34`, those two are exact deduced
+names+shape, so if they don't match they don't match".
+
+This is the rule the whole scheme rests on, and it is worth being blunt about because "specificity"
+invites the opposite reading. `F(),0` and `F(),(1)` are two different names. Nothing matches a
+literal against a placeholder, nothing treats `(1)` as a wildcard, and no lookup ever asks "is
+there a declaration this could unify with". A pattern text is a name plus its shape, deduced
+exactly, and two texts are the same name only when they are the same string.
+
+So resolution is a dictionary lookup and nothing more. What the use site does is produce SEVERAL
+exact keys - one reading of the row per candidate - and try each against the table by equality. The
+"literal form wins" rule above is about the ORDER the use site offers its own candidates in, not
+about one key matching another. Two things follow that are worth having:
+
+- Lookup stays a hash hit. No search, no backtracking, no cost that grows with the number of
+  declarations in scope.
+- A near miss is a miss, loudly. `F(),3` simply is not there, and the answer is "no such name"
+  rather than a silent fall-through to something that looked close enough.
+
+The specialisation link below is therefore an EXPLICIT relation between two distinct names,
+established deliberately, never a similarity noticed at lookup time.
+
+Only the single-argument case has been thought through. Two literal positions, or a mixture
+(`G(0,n)` beside `G(m,n)`), multiply the candidate keys a use site has to offer, and the ORDER it
+offers them in needs stating properly before anything relies on it - it is an ordering over exact
+keys, not a matching problem.
+
+**A specialisation is not a rival declaration - it LINKS to the one it specialises.** Author,
+2026-09-10:
+
+> definitions will be later checked by expression matching first, case in which that definition
+> will require to link to the more encompasing one, practically specializations of sort. Not sure
+> I would ever use that, but if needed I have it as an option, else I don't see why people would
+> define f(x) and afterwards f(34)
+
+So `F(),0` is not a separate variable that happens to look like `F(),(1)`; it is `F(),(1)` at a
+particular argument, and it should carry a reference saying so. That link is what later makes the
+pair checkable rather than merely resolvable - the specialisation can be matched against the
+general form's own expression, which is the difference between "these two names both exist" and
+"this one is the n = 0 case of that one".
+
+It also explains why the standalone case looks strange: `f(34)` declared with no `f(x)` above it is
+a legal name and always was, but nobody writes one on purpose. The literal form earns its keep as
+a specialisation, not on its own.
+
+**Open, and it is a scheduling problem rather than a semantic one.** Scope is "boxes above", so a
+specialisation can only link to a general form written EARLIER in the document. But a base case is
+usually written first:
+
+```
+F(0) = 1            <- wants to link upward to something not declared yet
+F(n) = n * F(n-1)
+```
+
+Three ways out, none chosen: require the general form first (fights how people write); let
+specialisations look downward, which is a hole in the scope rule and would need its own
+justification; or resolve links in a second whole-document pass, leaving the first pass to collect
+declarations and the second to relate them. The third keeps the scope rule intact and matches how
+the passes are already split, but it means a specialisation's link is not available at the moment
+its box is parsed.
+
+This costs nothing, because it is the order the passes already run in. Author, same day: *"this is
+happening when parsing expressions not names, so the expression parser can reuse exactly all the
+information it has learned from the previous pass"*. Declarations are read first and produce the
+patterns; the expression pass runs after them with that table in hand. So the lookup is not a new
+dependency to be arranged - it is the previous pass's output being used for the thing it was built
+for, and the name parser stays a pure function of one row.
+
+**And it makes the superscript seam consistent.** A power at a use site is an operation on the
+reference, not part of the key, which is why `Parser.sups` hands back the rows it declined rather
+than folding them into the name. Both seams say the same thing from different sides - a name is
+what a declaration produced; everything else around it at a use site is expression.
+
+**But "power" is only one reading of a superscript, and the parser must not assume it.** Author,
+2026-09-10:
+
+> if `^(n)`, then it is differentiation, `^'`, `^''`, are all derivatives, `^n` is the result of
+> the function to the n'th power so pow as you've said, or whatever the user decides
+
+So a superscript on a reference is NOTATION SELECTING AN OPERATION, not a fixed one:
+
+| written | means |
+|---|---|
+| `f^{(n)}` | the nth derivative |
+| `f^{'}`, `f^{''}` | first, second derivative |
+| `f^{n}` | `POW(...)` - the result raised to n |
+| ...whatever else is declared | ...whatever it was declared to mean |
+
+`POW` was the example, never the rule. What the parser owes is the row it declined plus enough
+context to say WHICH notation it was, and the decision of what that notation does belongs with the
+user's own declarations - the same way the name pattern itself is user-declared rather than
+built in. A parser that hardcoded `POW` would make derivative notation unwritable, which is the
+same mistake as hardcoding what a name may look like.
+
+Either way the result is a subterm: the function with its superscript applied becomes one operand
+of whatever expression encloses it.
 
 ### Identification is four checks
 
@@ -692,6 +1098,10 @@ Every row walk in the codebase now goes through it. **Any new walk must too** - 
 in the bridge. This is the single most reliable source of defects in this code.
 
 ## 8b. Known trap in the existing code
+
+> **SETTLED, 2026-09-09, by deletion.** `mexpr.lua` is gone — see the note in the introduction.
+> The trap below no longer sits in the tree; it becomes a requirement on whatever replaces the
+> file, which is why the reasoning is kept rather than struck out.
 
 `mexpr.lua`'s header records that its four `vc.mexpr_bracket()` calls still use a signature that
 no longer exists (the C++ split it into `mexpr_bracket_left`/`_right`), reachable only through
@@ -1393,6 +1803,29 @@ anything more specific before relying on it.)*
 
 ## 15. Defects found in `ast.lua` while designing the above
 
+**`ast.from_string` could not read any tree of more than one node** - found and FIXED 2026-09-10,
+while adding SUM/PROD/INT; older than them and unrelated to them.
+
+`ast.new()` allocated AND registered an id before the serialized id was applied, so reading a node
+with id *n* pushed `last_id` to *n+1*, the next node allocated *n+1*, and applying its own serialized
+id *n+1* found it already taken - `"ID n+1 is already taken in namespace"`. Since `to_string` writes
+consecutive ids for a real tree, every tree it produced failed to read back.
+`(+, (N, 1, 1, 1:1), (N, 2, 1, 1:2):3)` was the shortest reproduction.
+
+The fix was not the collision check but the shape behind it: **`ast.new(ns, type, id)` takes the id
+as a parameter**, so it is decided before anything is registered. The old correction-afterwards also
+left a phantom entry - the node stayed in `by_id` under the id it was allocated first, so a
+successfully-read node was registered twice, under two ids, one of which nothing would ever look up.
+Both faults had the same cause and both are gone.
+
+**What this says about the rest of the file:** the serializer and the deserializer had evidently
+never been round-tripped against each other, in a file whose stated job is to be the base that
+"serialization, deserialization and the transforms are all written against". `test_bigop_nodes.lua`
+now carries the first round-trip assertion ast.lua has ever had. It exercises one node type; the
+others are still unguarded.
+
+
+
 Not fixed — the user's position, verbatim, 2026-09-06: *"we will fix them problems as they arise,
 ast is kinda a stub for now"*. Recorded so they are found rather than rediscovered.
 
@@ -1590,6 +2023,406 @@ The dependencies above are not symmetric, and they suggest one order:
 exploratory design work, not a gap to fill.
 
 ---
+
+## 18c. The expression cascade, as built (2026-09-10)
+
+Cases 1 to 4 of section 7's table are implemented in `scripts/mexpr_ast.lua`, plus multiplication,
+which that table never listed because juxtaposition has no glyph to hang a case on. Four layers,
+one per precedence level, each handed a **unit list** rather than a container:
+
+```
+build_relation   splits on  =  <  >  \le  \ge      case 4
+  build_sum      splits on top-level  +  -         case 2
+    build_product  segments into factors           multiplication
+      read_factor    one name-use, numeral, or bracket group    cases 1 and 3
+```
+
+The unit list is what makes it one parser rather than four. A relation's side, a call's argument
+and a superscript's row are all unit lists, so all three go through the same layers. Before this
+an argument had a separate miniature parser that knew only "numeral" and "single letter", which is
+why `a_{1}=1` failed on its right-hand side while `f(1)` had worked for days: two parsers for one
+grammar, drifting.
+
+### How far a factor reaches is the declarations' answer
+
+`a_{1}(x)` is the call `a_{1}(x)` when something is declared with that shape, and the product
+`a_{1} \cdot (x)` when `a_{1}` is declared alone. The glyphs are identical; only the declaration
+separates them. So `read_factor` offers **every extent** from its start to the end of the row to
+the name parser, and the extents that RESOLVE are the readings the row admits.
+
+That makes it the same rule as `resolve_use`'s, one level up: **exactly one or it is an error**. Two
+extents that both resolve are a genuine ambiguity in the formula, not a preference to settle by
+taking the longer one.
+
+One consequence had to be built deliberately rather than falling out: an extent that resolves to
+*several* declarations is an ambiguity, while an extent that resolves to *none* means "the name
+ends somewhere else, read on". Both are "resolution failed" to a caller that only sees nil, so
+`resolve_use` returns the match COUNT as a third value and `read_factor` reports the ambiguity
+instead of walking past it into "no declaration matches" - which is the opposite of what happened.
+
+### Why juxtaposition can mean multiplication at all
+
+Because a multi-character name has two other spellings, and both were built first: quoted
+(`'max lim'`, section 6) and the 1-tall vert for `sin` (section 10). With those in place `bb` has no
+reading as one name, so a run of single letters is a product with nothing to decide. Without them
+this layer would be guessing, and no amount of care in it would help.
+
+### An unresolved letter is a free variable, wherever it is written
+
+This was contextual for one day - ordinary in an argument, an error at the top of a row - on the
+reasoning that `f(x)` says nothing about `x` while a row consisting of `x` names something that
+does not exist. Author, 2026-09-10: *"yes, allow free variables at the top of a row too"*. The flag
+that carried the distinction (`ctx.free_ok`) is gone rather than pinned, since a flag with one value
+reads as a live rule and is not one.
+
+**What the old rule was standing in for is the binders**, and it did it badly: it refused a bound
+variable and a mistyped one alike, because nothing here can yet tell them apart. See "Free variables
+are contextual, and binders are what will bind them" below for what has to exist first.
+
+**The cost, jointly with the juxtaposition rule above:** a call to a function nobody declared is no
+longer an error. `F(0)` with nothing declared reads as `MUL(REF(F), NUM(0))` - flat, since a group
+around a leaf carries no grouping, so it is the same tree as `F 0`. Nothing downstream can tell the
+difference; only the declarations can.
+
+Accepted rather than open, author 2026-09-10: *"I agree with the implication that F becomes
+multiplication, it is what it is, maybe we should deny such a syntax, but not for now"*. If it is
+denied later, the narrowest form is "a letter immediately followed by an open bracket, with no
+declaration of that letter at all" - which is distinct from `a` being declared as a plain variable,
+where the product is genuinely what was written. `test_ast_view.lua` asserts the fork so it stays
+visible either way.
+
+**A free letter in front of a bracket is multiplication, once resolution has failed.** Author,
+2026-09-10: *"a free letter in front of a bracket should mean multiplication after the resolution
+failed, so say a was not found or found to be an independent variable then a( is a.( a
+multiplication begining"*. So `g(x)` with `g` undeclared is `MUL(REF(g), CELL(REF(x)))`.
+
+The safety is in the ordering, not in the rule: every extent has already been offered to the name
+parser by the time this is reached, so a declared `g(x)` is still a CALL and only an unresolved one
+becomes a product. And the product is the reading that says something true - a letter with no
+declaration is an independent variable, and an independent variable is not applicable to anything.
+
+This reversed the opposite call made a few hours earlier the same day, which made an unresolved
+`a(...)` an error on the grounds that a missing declaration was likelier than a product. Recorded
+because the reversed version was plausible, and `test_ast_view.lua` carries the same note where its
+assertion flipped.
+
+### The sign is a property of the product
+
+Author, 2026-09-10: *"so -x transforms into (MUL, NUM(-1), REF(x))... +/- is a property of the next
+NUM or NUM in MUL"*. A negative term folds into its leading numeral when it has one and grows a
+`NUM(-1)` factor when it does not, so `-2x` is `MUL(NUM(-2), REF(x))` and `-x` is
+`MUL(NUM(-1), REF(x))`. A sign is a separator only with a term behind it; leading, it belongs to
+the term in front of it, and a run of them folds.
+
+### CELL — the rule of 2026-09-06, restored
+
+The bridge emitted a CELL for every bracket group for one day. That contradicted a rule written four
+days before this parser existed ("CELL — when parentheses survive", section 11), and the author
+caught it on the tree: *"the cell should be implied here, it is a jump from mul to add, it doesn't
+need a cell"*.
+
+The rule, unchanged: **a CELL is emitted exactly when the parentheses are NOT implied by
+precedence.** What implementing it turned out to need:
+
+- **"Required" has one meaning here**, because a bracket group is only ever read in factor position
+  (`read_factor` is the only reader of brackets). So required = an ADD inside a product of several
+  factors. Everything else this parser builds binds at least as tightly as a product.
+- **The decision is made last, in `build_product`**, not where the brackets are read - because
+  "required" is a question about the product the factor ended up in, and that is not known until
+  the factors are all collected. The sign counts as a factor for this: `-(a+b)` is
+  `MUL(NUM(-1), ADD(...))` and those brackets are load-bearing exactly as in `c(a+b)`.
+- **A power consumes them.** `(a+b)^2` needs its brackets to mean what it says, so they are absorbed
+  into `POW(ADD(...), NUM(2))` and never become a CELL.
+- **A group around a leaf promotes.** `(a)+b` is `ADD(a, b)` - the section-11 note calls this "lossy
+  in the letter, not in the spirit", and it is: there is nothing inside to arrange.
+
+Worked, matching section 11's own example: `(a+b)c` is `MUL(ADD(a,b), c)`, `(a+b)+c` is
+`ADD(CELL(ADD(a,b)), c)`, `(ab)c` is `MUL(CELL(MUL(a,b)), c)`.
+
+### SUM, PROD, INT — the first nodes that declare a name
+
+Added to `ast.lua` 2026-09-10. One shape for all three:
+
+```
+(S, var, from, to, body)      \sum_{var=from}^{to} body
+(P, var, from, to, body)      \prod_{var=from}^{to} body
+(I, var, from, to, body)      \int_{from}^{to} body d(var)
+```
+
+**They declare rather than consume.** Author: *"int declares a variable name, it offers the insides
+a new reference, itself, the idea is that we will have our free variables that buble up outside of
+the root, while some vars get catched by bigops"*; and *"bigop ops need to create a var, probably
+reuse new_var, the idea is that in this way we will achieve our binding"*. So the constructor takes
+a NAME, not a variable: it calls `ast.new_var` itself, and there is no way to build one whose slot 1
+belongs to somebody else.
+
+**The body is built first, and the binding is a CATCH.** `new_sum(ns, "i", from, to, body)` walks
+the body once and repoints every free mention of `i` at the variable it just made. After that the
+binding is ordinary structure - a VREF carrying slot 1's id - so nothing walking the body needs to
+know it is inside a binder, and there is no second scope mechanism to keep in step.
+
+**The integral is what forces that order.** `\int_0^1 x dx` names its variable AFTER the body: the
+`dx` at the end is the declaration. Any design that handed the variable down to a body-builder could
+not read an integral at all, because the name is not known yet when the body starts. Catching
+afterwards serves all three operators and asks the caller for nothing - build the body with `x`
+free, then say who binds it.
+
+**Free means not already claimed by a nearer binder.** A nested operator declaring the same name
+shadows the outer one, so its body is skipped - but not its BOUNDS, which are written outside its
+own scope. In `\sum_{i=1}^{n}` the `1` and the `n` are not in `i`'s scope. That is the one part of
+catching that can be got wrong silently (the tree stays well formed and means something else), so
+`test_bigop_nodes.lua` guards it directly.
+
+**Free variables are then one walk.** The free variables of an expression are what its children
+returned, minus each binder's own `var`. A name no binder claims keeps travelling outward past the
+root, where it is a free variable of the whole formula - which is what the "Free variables are
+contextual" note above was waiting for.
+
+**One shape including the integral**, whose variable is written as `dx` after the body rather than
+under the sign. Where the name is WRITTEN is the input method's problem; what it MEANS is identical
+for all three, and a separate tuple for the integral would make every consumer handle it twice.
+
+**Not parsed yet.** `mexpr_ast` has no bigop case. The open question is how far a big operator's
+body reaches along a row - `\sum_{i=1}^{n} i + 1` is either `SUM(...) + 1` or `SUM(..., i+1)`, and
+that is a notation decision, not something the grammar can settle on its own.
+
+One thing the parser will have to watch when it lands: `mexpr_ast`'s `var_ref` keeps ONE `ast.new_var`
+per name per formula, so `x` inside a binder and `x` outside it are currently the same node. Catching
+only walks the body, so the outer mention is untouched and the two end up correctly distinct - but
+that is a property of where the walk goes, not of the cache, and a future change to either could
+break it without a word.
+
+### `\ne` — the parser was the last place still reading it as two things
+
+No font in this project draws `\ne`, because TeX has none either: it sets the zero-advance negation
+slash and prints `=` on top, and `mformula_latex`'s `MACRO_EXPANSIONS` expands the macro that way on
+the way in. So the row holds TWO atoms where the reader sees one symbol.
+
+**The editor settled this in 2026-09-06 and the parser had not caught up.** `delete_overprint_unit`
+(`mformula_new.lua`) makes the pair delete as ONE symbol, added after the live report *"you can
+write != to get negation, but deleting it leaves the / behind"* - and `test_digraphs.lua` had
+asserted the old two-atom behaviour as a feature, which is this repo's standing example of a test
+defending a defect. Author, restating it here 2026-09-10: *"ne is not independently deletable and
+neither should it be"*. So the pair is one symbol everywhere the app touches atoms one at a time,
+and `mexpr_ast` was simply the last such place.
+
+**Why it mattered more than an ordinary parse failure.** Read one at a time, `\not` falls out as an
+unparsable factor and `=` stays behind as an ordinary equals - so `a \ne b` builds `a = b`, the
+exact opposite of what was written, in a tree that looks entirely well formed.
+
+**No new glyph.** Author, 2026-09-10: *"I don't really want a new glyph"*. `char.lua` gains no row
+and the document model is untouched; `relation_at()` reports that the relation at this position is
+two units wide, and reuses the same zero-advance test (`char.adv_by_desc[desc] == 0`) that
+`is_overprint` uses, so the two cannot drift as the catalog changes.
+
+**Keyed on both halves, not on "an overprint followed by a relation".** `\!` is zero-advance too -
+it is TeX's negative thin space - and negates nothing, so `a \! = b` must not become a NEQ. Only a
+listed pair builds; an unlisted one is refused with its reason.
+
+**Only `=` is paired.** Author: *"if I remember corectly only = has that stupid problem"*. `\notin`
+and friends are refused rather than mapped, because `ast.lua` has `INEQ_NEQ` and no other negated
+node - inventing a shape here would put something in the tree that no later pass can read.
+
+### Free variables are contextual, and binders are what will bind them
+
+Recorded 2026-09-10, author: *"free variables are yes contextual first, as in those only need to fit
+the function domain and two will be posibly linked, sum, integral, product, lim, those all will
+declare variables that will bind to those names inside of them (the outer scopes of course)"*.
+
+Two things follow, neither implemented:
+
+1. **A free variable in an argument is constrained by the DOMAIN, not by a declaration.** `f(x)`
+   requires `x` to fit `f`'s domain and nothing more, which is why an undeclared letter is ordinary
+   there. The domain check is section 6's `<name> \in <set>` machinery, not this parser's.
+2. **Big operators are binders.** `sum`, `integral`, `product`, `lim` each declare a variable that
+   binds inside their body, shadowing the outer scope. The editor already builds them (`mexpru`'s
+   bigop), so the units are there; what is missing is a scope stack in the builder, and the rule
+   that a name resolves against the innermost binder first and only then against
+   `content.declarations_before()`. Until that exists, a bound variable is indistinguishable from a
+   free one, which is why the top of a row still refuses an undeclared letter.
+
+### What this settles from earlier sections
+
+- **"Operations inside a subscript" (above) is answered by the cascade, not by the rollback it
+  designed.** `a_{n+1}` is `CALL("a,sub,(1)", ADD(REF(n), NUM(1)))` today, exactly as the Case 1
+  table predicted. The transactional-rollback machinery that section works out in detail was for
+  making the DECLARATION parser accept an expression argument; a use site never needed it, because
+  `parse_argument`'s use-site mode sets the group aside unparsed and emits `(k)`. The rollback
+  design still stands for the declaration side, and is still unbuilt.
+- **`ast.lua` has a real consumer again.** `new_add`, `new_mul`, `new_cell`, `new_exp`, `new_num`,
+  `new_var`, `new_vref`, `new_call` and the relations are all reachable from a typed formula.
+
+### Still not parsed
+
+Division (`\div` and the fraction node), the `\ne` pseudo-glyph (section 7's note - it arrives as a
+dress over `=` and is refused rather than read as `=`), a subscript on anything that is not a
+declared name, and relation chains (`a = b = c`, which needs a shape nobody has chosen). Each fails
+with its reason rather than approximating, and F4 shows the reason.
+
+## 18d. The definition trie, and the one serialization that serves both modes
+
+Written by the author 2026-09-10 and reviewed the same day; this section is that document with the
+corrections agreed in review folded in, and it supersedes the ad-hoc description of key building in
+section 10.
+
+**For what the parser DOES, read `docs/ast_parsing.md`** - that file is the reference and is kept
+current with the code. This section is the decision record: the arguments, the author's own words,
+and the readings that were tried and dropped. Where the two disagree, the reference is right.
+
+### The shape of the idea
+
+Definitions live in a **trie**, keyed by the token walk of their name pattern. The walk order is the
+same whether a name is being DEFINED or USED — base, then function-like arguments, then the sub —
+so one serialization inserts and looks up, and the two cannot drift.
+
+```
+f(x, y, z, 'abc')     ->  f(),(1),(2),(3),'abc'
+a_{m, n}              ->  a,sub,(1),(2),end
+```
+
+Free variables are numbered by position; literals keep their spelling. `sub` is a COMMAND, not a
+character: it says the children of the base follow.
+
+**What the trie buys, and it is more than lookup speed.** Today `read_factor` finds how far a name
+reaches by offering every extent of the row to the name parser and keeping the ones that resolve -
+O(n) re-parses per factor. A trie is fed the units once, and "this node carries a definition" IS the
+set of legal stopping points. Extent-finding and resolution become the same walk.
+
+### `end`, and why a sub needs a terminator
+
+Sub-lists nest, so without a terminator sibling boundaries are lost:
+
+```
+a_{b_{c}, d}   ->  a,sub,b,sub,c,d        -- is `d` a child of b, or of a?
+```
+
+So a sub emits `end` when its child list closes. Author's own worked example, corrected:
+
+```
+1_{2_{3_{4_a}}, 5_{6_{b}}}
+->  1,sub,2,sub,3,sub,4,sub,(1),end,end,end,5,sub,6,sub,(2),end,end,end
+```
+
+(`a` is `(1)`, `b` is `(2)`; the six `end`s close the lists of 4, 3, 2, then 6, 5, 1.)
+
+**A call needs no terminator**, and this is worth writing down so nobody adds one for symmetry.
+Only the ROOT base may take function-like arguments (author, 2026-09-10: *"only the root base of a
+definition is allowed to have function like parameters"*), so an argument list can never contain
+another one, and it ends at the root's `sub` or at the end of the name - both decidable from the
+next token alone. Without that restriction `f(),g(),(1),(2)` is genuinely ambiguous between
+`f(g(x), y)` and `f(g(x, y))`.
+
+**A comma never reaches the serialization.** It delimits children in a sub list and parameters in a
+call, and the token structure records what it separated: every child is self-delimiting, being
+either a leaf token or a `sub`…`end` pair.
+
+### What is a parameter and what is part of the name
+
+The rule every example obeys, stated because it is the crux and was previously only implied:
+
+> **A BARE letter is a free variable. A letter carrying a sub or a call is a literal base.**
+
+So `m` in `a_{m}` is `(1)`, while `b` in `a_{b_{2}}` is the literal token `b`. Numbers and quoted
+names are always literal.
+
+**Numbers may be a base again**, reversing the 2026-09-10 morning ruling that restricted bases to
+letters. The objection then was that `2(x)` collides with multiplication; the trie answers it,
+author's words: *"if you define 2(),(1) it will steal the whole 2(x) as the name, not leaving
+multiplication a chance to break"*. It is deterministic because a NUMERAL is not a trie definition -
+either `2(),(1)` is defined and takes the row, or nothing is and it falls back to `NUM(2) · (x)`.
+There is no third reading.
+
+One condition rides along: the base token for a numeral is the WHOLE digit run, or `1` and `12`
+branch against each other in the trie.
+
+### Inserting a definition
+
+Following the serialized tokens as a path:
+
+1. **A new node** — the happy case; the node is marked as a definition.
+2. **A marked ancestor exists** — refused. Overlapping definitions are not allowed.
+3. **Several marked ancestors** — cannot happen if (2) is enforced, since a node's ancestors are a
+   chain and two marked ones would already have violated it. Keep it as a consistency check on the
+   invariant rather than as a case of its own.
+
+**Why (2) is a flat refusal rather than the narrower rule review proposed.** Review argued that a
+prefix is only DANGEROUS when the continuation begins with `()`, because only a bracket group can be
+re-read as multiplication - a trailing sub is welded to its atom and can never be left over. True
+for parsing, and beside the point: author, 2026-09-10, *"if you have a_{n} defined, why would a be
+allowed? it is already a name of something, what would a_n being a sequence and a+1 mean at the same
+time?"*. The rule is about meaning, not about ambiguity. Two things named `a` are two things named
+`a` whether or not a parser can tell them apart.
+
+Consequence to know: this also forbids arity overloading, since `f(),(1)` is a prefix of
+`f(),(1),(2)` - no `\log(x)` alongside `\log(b,x)`.
+
+**No definition inside a definition.** If `b_n` is defined, `a_{1,b_m,2}` is refused, because
+`b_m` would then be readable both as part of `a`'s name and as an application of `b`. Checked by
+walking the trie from each argument.
+
+This check is NOT stable at insertion time, and the fix is a separate pass. Definitions resolve by
+document POSITION (`content.declarations_before`), so a definition added ABOVE an existing one can
+break it retroactively. So the check belongs in a step that runs after a definition parses cleanly
+and asks "does accepting this at position k break anything on either side of k" - both directions,
+not only upward. Author, on wanting it: *"can we maybe do a check and research all the definition
+from above when finalizing a definition? the idea is that accepting a new definition should not
+break any of the old ones?"*. TODO; not built.
+
+### Walking a use
+
+A literal branch and a parameter branch can sit at the same trie position, and neither is an
+ancestor of the other, so non-overlap does not separate them:
+
+```
+a_{1,m}   ->  a,sub,1,(1),end          trie after `a,sub`:  { "1", "(1)" }
+a_{n,m}   ->  a,sub,(1),(2),end
+```
+
+The use `a_{1,5}` walks both: `1` matches the literal, and `1` is also a valid expression for `(1)`.
+Two live paths, two definitions found.
+
+**The most restrictive match wins.** Author, 2026-09-10: *"let's try the most restrictive one"*. A
+literal beats a parameter at the same position, so `a_{1,m}` takes `a_{1,5}`.
+
+**THE STRUCTURAL BRANCH IS NOT A BRANCH AT ALL**, and review had this wrong. Whether a decorated
+group like `n_{5}` is an argument or part of the enclosing name looked like a second place the walk
+had to fork - it is not, because the no-definition-inside-a-definition rule makes the two readings
+mutually exclusive. Author, 2026-09-10: *"on expression walking, n_{5} would mismatch as a definition
+which will make n a base literal of the sub n_{m} and help match the whole expression"*. So it is one
+local test per group: does anything answer to this group on its own? No candidate set, no
+backtracking, and the rule that makes it sound is the same one that was already there for a
+different reason.
+
+**Ties are broken leftmost-first, and logged.** Specificity is a partial order - `a_{1,m}` and
+`a_{n,2}` both match `a_{1,2}` and neither dominates - so the comparison runs position by position
+and the first difference decides. Author: *"that ambiguity in a_{1,m} a_{n,2} should be again rather
+logged and the first matching will be considered more exact than the second parameter matching"*.
+The log is what a type pass will later re-examine; types are what should really be choosing here,
+and they do not exist yet.
+
+**This replaces "exactly one candidate or error"** for name resolution (section "Every declaration
+this use could mean"). With a trie, two definitions with the SAME serialization collide at
+insertion, so the only multi-match left is specificity, and specificity now ranks rather than
+refuses. "Exactly one or error" survives for identical keys alone.
+
+### Everything that is not a name
+
+Unchanged from what is already built, and restated here because the author's document ends with it:
+a row that does not resolve to a name falls back to numerals and expressions - NUM, ADD, MUL, and
+the big operators. Parentheses that precedence already requires are absorbed into the shape;
+redundant ones are kept as an explicit CELL (see "CELL — the rule of 2026-09-06, restored"). The
+author's phrasing, "MUL holding an ADD implies a parenthesis", is the common case of that rule
+rather than the whole of it: a power absorbs them too, and a group around a leaf promotes.
+
+### Order of work
+
+1. **The serialization**: `end` terminators, and the bare-letter-vs-decorated-letter rule. Changes
+   every key, and is safe to do now only because keys are not persisted - they are rebuilt from the
+   document each frame. That stops being true the moment an AST is saved, since a CALL's callee IS
+   the key string.
+2. **The trie**, with the frontier walk and specificity ranking, replacing `resolve_use`'s linear
+   scan and `read_factor`'s extent loop together.
+3. **The position-aware "does this break the others" pass.**
 
 ## 19. Conclusion
 

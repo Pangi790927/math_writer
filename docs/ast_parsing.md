@@ -1,0 +1,345 @@
+# AST parsing — how a typed formula becomes an `ast.lua` tree
+
+Reference for `scripts/mexpr_ast.lua`: what it reads, what it produces, and which rules decide the
+cases where a row could mean two things. Written 2026-09-10.
+
+`docs/phase2_design.md` is the *design record* — why these decisions were made, in the author's own
+words, including the ones that were reversed. This file is the *current state*: what the parser
+does today. Where the two disagree, this one is wrong and should be fixed.
+
+**Status legend** — 🟢 implemented and tested · 🟡 partly · 🔴 designed, not built.
+
+---
+
+## 1. The two modes
+
+One parser, two questions.
+
+| mode | asks | entry point |
+|---|---|---|
+| **definition** | what does this name pattern *identify*? | `mexpr_ast.parse_name` |
+| **expression** | what does this row *mean*, given what is declared above it? | `mexpr_ast.build` |
+
+Both walk the same `mexpr` row through the same code, and both produce the same kind of token
+walk for a name — which is the point: a definition and a use of it have to serialize identically or
+they cannot be matched.
+
+The declarations in scope come from `content.declarations_before(state, i)` — the definition boxes
+**above** box `i`, in document order, after the rules of §4 have refused the ones that cannot
+coexist.
+
+**A definition is the only mechanism.** 🟡 Author, 2026-09-10: *"the whole idea is that definition
+rule what can and can't be seen as a named structure"*. Anything the system knows without being
+told — `sin`, or the derivative `f'` once something decides `f` may be differentiated — arrives as
+an **injected definition** in that same set, not as a second table the parser consults. So the
+parser has no notion of built-ins, of derivatives, or of specialisation: it reads a name, and
+resolution answers or does not.
+
+Nothing injects yet. Two things the mechanism needs that do not exist:
+
+- **A position.** Scope is positional and §4 resolves conflicts by "the earlier one wins", so an
+  injected definition has to sit somewhere in document order — at the top for a built-in, presumably
+  next to the box that licensed it for a derivative.
+- **A provenance.** A refusal currently points at the box that wrote the definition. An injected one
+  has no box, so a conflict with it has to be able to say where it came from, or the user is told
+  their name is taken by something they cannot find.
+
+## 2. Reading a row
+
+A row is a list of **units** (`units_of`). One unit is one slot of the row plus whatever is
+decorating it: `a_b` is a single unit whose atom is `a` and whose `sub` is `b`. Every walk goes
+through `mexpru.slot_atom` to find the atom under a supsub or a dress — skipping that is the blind
+spot that has produced seven live bugs (`phase2_design.md` §8).
+
+**Quotes bind first, then spaces are dropped.** A quoted name is packed into ONE unit the moment
+its opening quote is seen, so the atoms between the quotes never reach the space filter — a space
+inside a quoted name is content, and there is nothing to put back. 🟢
+
+The pack is **row-local**: a quoted name cannot span a subscript boundary, since in `'a_{b'}` the
+two quotes are in different rows. The unit that survives is the **closing** quote's, because that is
+the one a subscript typed afterwards wraps — `'abc'_n` is `[', a, b, c, supsub(base=', sub=n)]`. It
+carries the inner atoms as `quoted_nodes`, so the definition box still paints per character.
+
+Outside a quoted name a space is layout, and goes. `f (x)` and `f(x)` are the same name. This
+mattered more than it sounds: a space broke the name parse in four different ways depending on where
+it landed, which is why the filter is at the single place units are built.
+
+*(Until 2026-09-10 the order was reversed — every space was dropped and the quoted ones restored
+from a per-unit count. It worked, and it was two mechanisms where one does.)*
+
+## 3. The name serialization
+
+A name pattern becomes a comma-joined token walk. Walk order is always **base → call arguments →
+subscript**, and it is identical in both modes.
+
+```
+f(x, y, z, 'abc')     ->  f(),(1),(2),(3),'abc'
+a_{m, n}              ->  a,sub,(1),(2),end
+F_{1,'ab',n,m}(t,v)   ->  F(),(1),(2),sub,1,'ab',(3),(4),end
+a_{n_{m}}             ->  a,sub,n,sub,(1),end,end
+```
+
+- **Free variables are numbered by position**, `(1)`, `(2)`, … Their spelling is not part of the
+  name: `f(x)` and `f(z)` are the same name.
+- **Literals keep their spelling** — numbers as written, quoted names with their quotes.
+- **`()` rides on the base token**, so a call and a subscript can never be confused: `f(),(1)` is
+  not `f,sub,(1),end`.
+- **`sub` is a command**, not a character: the children of the base follow.
+
+### `end` closes a subscript's child list 🟢
+
+Sub-lists nest, so without a terminator sibling boundaries are lost — `a_{b_{c}, d}` and
+`a_{b_{c, d}}` would both read as `a,sub,b,sub,c,d`.
+
+**A call list needs no terminator.** Only the root base may take function-like arguments, so an
+argument list can never contain another one, and it ends at the root's `sub` or at the end of the
+name — both decidable from the next token. Drop that restriction and `f(),g(),(1),(2)` becomes
+ambiguous between `f(g(x), y)` and `f(g(x, y))`.
+
+### Decorations are part of the base token 🟢
+
+An accent or a prime on a name's base belongs to its identity, and rides **inside** the base token:
+
+```
+\hat{a}       ->  a\hat
+a''           ->  a''
+\hat{a}''     ->  a\hat''
+\hat{a}_{m}   ->  a\hat,sub,(1),end
+a'_{m}        ->  a',sub,(1),end
+```
+
+**Inside the token, not beside it**, and that is forced rather than chosen: as a separate token, `a`
+would be a *prefix* of `a,\hat`, and §4 refuses a name that extends one already defined — so `a` and
+`\hat{a}` could not both exist. Inside, they are siblings.
+
+**Canonical order**: accents innermost-first, then primes. Without a fixed order one name serializes
+two ways and stops identifying.
+
+**A lone quote is a prime.** `'` and `''` have no closing quote and nothing after them that could be
+string content, so they are primes rather than a name being typed; `'ab` has content following and
+stays an unterminated name, keeping its error and its red mark.
+
+*(Every accent was silently dropped until 2026-09-10 — `\hat{a}`, `\vec{a}` and `a` all serialized
+as `a`, so a formula using `\hat{p}` resolved to a declaration of `p`. `slot_atom` looks through a
+dress, which is right for the cursor and wrong for identity.)*
+
+### Bare versus decorated 🟢
+
+> **A bare letter is a free variable. A letter carrying a subscript is a literal base.**
+
+So `m` in `a_{m}` is `(1)`, while `n` in `a_{n_{m}}` is the token `n` and that pattern has **one**
+parameter, not two. Numbers and quoted names are always literal.
+
+**A decorated parameter is still a parameter.** `a_{\hat{m}}` is `a,sub,(1),end`, the same as
+`a_{m}` — a parameter's spelling was never identity, and an accent is part of that spelling. A
+decoration becomes identity only where what it sits on is literal, so `a_{\hat{m}_{p}}` is
+`a,sub,m\hat,sub,(1),end,end`.
+
+The rule is what makes a nested subscript readable at all: a parameter swallows whatever is written
+at its position, so if `n` were one, `n_{m}` would be a parameter carrying a subscript, and nothing
+in a pattern says what that identifies.
+
+### Bases 🟢
+
+A letter, a quoted name, a named operator, or a number. A named operator (`sin`, `log`) is a 1-tall
+vertical whose single row holds the letters, and it becomes **one token** — that is what the
+construct is for, since `s`, `i`, `n` loose in a row is a product.
+
+**A number may be a base**, and the base token is the **whole** digit run — `12` is one base,
+not `1` applied to `2`, or `12(x)` could resolve against a declaration of `1`.
+
+`2(x)` is deterministic despite looking like the ambiguity that once banned digit bases: a numeral is
+not a trie definition, so either `2(),(1)` is declared and takes the row, or nothing is and it falls
+back to `NUM(2) · (x)`. There is no third reading. *(Legal, then banned, then legal again, all on
+2026-09-10 — `test_name_pattern.lua` carries the round trip.)*
+
+## 4. Which definitions may coexist 🟢
+
+`mexpr_ast.check_declarations` indexes the definitions of a document in a trie and refuses the ones
+that break either rule. **What was written is not what is in scope** — a refused definition is
+dropped, and the earlier one wins, the same way a name means what was said above it.
+
+This is not tidiness. The rules are what make §5's local decision correct.
+
+### No overlapping definitions
+
+Neither a prefix of an existing name, nor the start of one:
+
+```
+a        then  a_{n}       -- refused: extends a name already defined
+a_{n}    then  a           -- refused: is the start of a name already defined
+f(x)     then  f(x,y)      -- refused: same shape, so arity overloading is out
+a_{1,m}  then  a_{n,m}     -- accepted: different branches, neither a prefix
+```
+
+This is about *meaning*, not parseability — two things named `a` are two things named `a` whether
+or not a parser could tell them apart. The price is arity overloading; `\log(x)` alongside
+`\log(b,x)` is the case that will eventually argue for narrowing it.
+
+### No definition inside a definition
+
+If `n_{m}` is a name, `a_{n_{m}}` may not be one — `n_{m}` inside it would be readable both as part
+of `a`'s name and as an application of `n`. Checked **both directions**, so with `a_{n_{m}}` already
+in place it is `n_{m}` that gets refused.
+
+Only **decorated** groups ask the question. A bare letter is a parameter by rule and has no
+competing reading, so `a_{m}` is fine with `m` declared elsewhere.
+
+🟡 The check runs over the definitions above a box, re-derived every frame, so a box inserted above
+others re-decides the whole set. What is missing is telling the user *which* box became invalid
+rather than silently dropping it.
+
+## 5. Resolving a use 🟢
+
+A use site emits `(k)` for each argument group — an argument never contributes to a name's
+identity, whatever is written in it, so `f(34)` keys as `f(),(1)` exactly as `f(x)` did.
+
+**Except for a decorated group that is part of the name.** `a_{n_{5}}` has to read `n` as literal
+structure to match `a_{n_{m}}`. The decision is **local, one test per group**, with no candidate set
+and no backtracking:
+
+> a decorated group either resolves on its own — and is an argument — or it does not, and is part of
+> the name.
+
+§4's rules are exactly what guarantee those are never both true. A **bare leaf never asks**: without
+that guard `a_{5}` would call `5` literal structure and stop matching `a,sub,(1),end`.
+
+```
+a_{n_{5}}   with a_{n_{m}} declared    ->  CALL "a,sub,n,sub,(1),end,end" (NUM 5)
+a_{n_{5}}   with a_{x}, n_{m} declared ->  CALL "a,sub,(1),end" (CALL "n,sub,(1),end" (NUM 5))
+```
+
+### Matching, and the most restrictive winner
+
+`match_use` walks the use's tokens against a declaration's, position by position. A `(k)` in the
+declaration swallows whatever the use put there; anything else is a literal the use must have
+written exactly. Markers — base, `sub`, `()`, `end` — must agree outright.
+
+When several declarations match, **the most restrictive wins**: one that pinned a position to a
+literal said more than one that left it open.
+
+```
+F(0)     with F(x), F(0)      ->  F(),0          (F(),(1) shadowed)
+F(9)     with F(x), F(0)      ->  F(),(1)
+a_{1,2}  with a_{1,m}, a_{n,2} ->  a,sub,1,(1),end
+```
+
+Specificity is only a *partial* order — neither `a_{1,m}` nor `a_{n,2}` dominates for `a_{1,2}` — so
+the comparison runs position by position and the **leftmost difference decides**. The losers come
+back on the hit as `shadowed`, because what should really be choosing here is types, and there are
+none yet.
+
+**Exactly one or it is an error** survives only for a genuine tie: two declarations that pinned the
+same positions are the same shape, and no order separates them.
+
+## 6. The expression cascade 🟢
+
+Four layers, one per precedence level. Each is handed a **unit list**, never a container, which is
+what lets a relation's side, a call's argument and a superscript's row go through the same parser.
+
+```
+build_relation   splits on  =  <  >  \le  \ge  and the \ne pseudo-glyph
+  build_sum      splits on top-level  +  -
+    build_product  segments into factors
+      read_factor    one name-use, numeral, or bracket group
+```
+
+**Extent** — how far a name reaches along a row — is decided by offering every extent from the
+current position to the end of the row to the name parser and keeping the ones that resolve.
+Exactly one, or it is an ambiguity. 🟡 *This is O(n) re-parses per factor; walking the §4 trie
+incrementally would give the same answer in one pass, and hasn't been done.*
+
+**Signs** are a property of the product: `-2x` is `MUL(NUM(-2), REF(x))` (folded into the leading
+numeral) and `-x` is `MUL(NUM(-1), REF(x))`. A sign is a separator only with a term behind it.
+
+**Juxtaposition is multiplication**, which is possible only because a multi-character name has two
+other spellings — quoted, and the operator vertical. `bb` has no reading as one name.
+
+**A free letter before a bracket is multiplication once resolution has failed.** `g(x)` with `g`
+undeclared is `MUL(REF(g), REF(x))`. The safety is in the ordering: a declared `g(x)` is still a
+CALL, and only an unresolved one becomes a product.
+
+**An unresolved letter is a free variable**, wherever it is written. 🔴 What should eventually
+constrain it is the binders (§8) and the domain machinery; neither exists, so an undeclared name and
+a typo are currently indistinguishable.
+
+### `\ne` 🟢
+
+No font here draws one — TeX has none either, and builds the symbol by overprinting the zero-advance
+negation slash with `=`. So the row holds **two atoms**, and reading them separately would leave `=`
+behind as an ordinary equals: `a \ne b` would build `a = b`.
+
+The pair is read as one relation, using the same zero-advance test (`char.adv_by_desc[d] == 0`) that
+`mformula_new`'s `delete_overprint_unit` has used since 2026-09-06 to make it *delete* as one. Keyed
+on **both** halves, so `\! =` — also zero-advance, and negating nothing — does not become a `NEQ`.
+Only `=` is paired; `\notin` is refused, because `ast.lua` has `INEQ_NEQ` and no other negated node.
+
+## 7. CELL — when parentheses survive 🟢
+
+> A `CELL` is emitted exactly when the parentheses are **not** implied by precedence.
+
+Required ones are absorbed into the tree shape; redundant ones are kept, because they are the only
+carrier of the user's own grouping, and grouping is what `transforms.lua` drags around.
+
+```
+(a+b)c      ->  MUL(ADD(a,b), c)              required by the product
+-(a+b)      ->  MUL(NUM(-1), ADD(a,b))        the sign counts as a factor
+(a+b)^{2}   ->  POW(ADD(a,b), NUM(2))         a power absorbs them
+(a+b)+c     ->  ADD(CELL(ADD(a,b)), c)        redundant, kept
+(ab)c       ->  MUL(CELL(MUL(a,b)), c)        redundant, kept
+(a)+b       ->  ADD(a, b)                     nothing inside to group
+```
+
+The decision is made **last**, in `build_product`, because "required" is a question about the
+product the factor ended up in, and that is not known until the factors are collected.
+
+## 8. Big operators 🔴
+
+`ast.lua` has `SUM`, `PROD` and `INT`, one shape for all three:
+
+```
+(S, var, from, to, body)
+```
+
+They are the first nodes that **declare** a name. The constructor takes a name, makes the variable
+itself, and **catches** the body's free mentions of it — repointing them at slot 1. Afterwards the
+binding is ordinary structure, so nothing walking the body needs to know it is inside a binder.
+
+The body is built first and caught afterwards because `\int_0^1 x dx` names its variable *after* the
+body. A nearer binder of the same name shadows, but its **bounds** are outside its own scope.
+
+**Nothing builds these from a typed formula.** The open question is how far a body reaches along a
+row: `\sum_{i=1}^{n} i + 1` is either `SUM(...) + 1` or `SUM(..., i+1)`, and that is a notation
+decision the grammar cannot settle.
+
+## 9. Also not built
+
+- 🔴 Division — neither `\div` nor the fraction node reaches the AST.
+- 🔴 Relation chains: `a = b = c` needs a shape nobody has chosen; `ast.new_eq` takes two operands.
+- 🔴 A subscript on anything that is not a declared name.
+- 🔴 Expression arguments in a *declaration* (`phase2_design.md`, "Operations inside a subscript").
+  A use site handles them; a declaration would need the transactional rollback described there.
+- 🔴 Types. They are what should decide between two matching declarations (§5) and what should
+  constrain a free variable (§6).
+- 🔴 Injected definitions (§1) — built-ins, derivatives, specialisation links. The parser is already
+  written as though they exist; nothing produces them.
+
+Everything above fails with a reason rather than approximating, and **F4** shows that reason next to
+whatever tree was built.
+
+## 10. Where the tests are
+
+| file | guards |
+|---|---|
+| `test_name_pattern.lua` | the serialization, per pattern |
+| `test_name_use.lua` | reading a row as a use rather than a declaration |
+| `test_resolve_use.lua` | matching a use against declarations |
+| `test_declaration_rules.lua` | §4 and §5 — which definitions coexist, and ranking |
+| `test_ast_view.lua` | the built tree, end to end, as F4 renders it |
+| `test_bigop_nodes.lua` | §8's node shape and binding |
+| `test_decorated_names.lua` | accents and primes as identity; quoted names packed whole |
+| `test_operator_name.lua` | the `sin` vertical |
+| `test_declarations_scope.lua` | which declarations a box can see |
+
+Per `CLAUDE.md`, these are **tripwires over assumptions**, not proof. Several carry a record of the
+day their assumption stopped holding; read those before making one pass again.

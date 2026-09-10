@@ -3,8 +3,6 @@ package.path = package.path .. ";./scripts/?.lua"
 local vc = require("virt_composer")
 local char = require("char")
 local ast = require("ast")
-local mexpr = require("mexpr")
-local editor = require("editor_text")
 local content = require("content")
 local input_recorder = require("input_recorder")
 local keymap = require("keymap")
@@ -219,23 +217,24 @@ end
 --[[ TODO: Add the ast into this and make functions that will let us draw the ast ]]
 --[[ TODO: Figure out where this drawing will stay in conjunction with the drawing spaces ]]
 
--- Kept as a reference for the mexpr_* API, not called by default anymore - see editor.lua for
--- the live, typeable canvas.
---
--- TODO (2026-09-04): vc.mexpr_bracket() is GONE - math_expr_composer.h split it into
--- vc.mexpr_bracket_left(fs, expr, opts)/vc.mexpr_bracket_right(fs, expr, opts), each just its own
--- glyph-like leaf sized to fit `expr` (no more single call gluing brackets+expr into one container -
--- see the header's own comment on why: entangled-bracket editing in mformula_new.lua needs the two
--- sides as independent, separately-placeable siblings). Every brack1..brack15 call below (and the
--- vc.mexpr_bracket calls in mexpr.lua's to_mexpr()) still uses the OLD signature and will fail if
--- this function - or anything reaching mexpr.lua's bracket-touching branches - is ever actually
--- called again; left as-is for now (dead code, not on any currently-reachable path - confirmed
--- 2026-09-04) rather than patched, since the real work right now is mformula_new.lua's own
--- entangled-bracket support, not this reference demo. Fix this (or just delete it, if by then
--- nothing still wants it as an mexpr_* API reference) whenever this file's own bracket calls
--- actually need to run again.
-local increment = 1
-local i = 0
+--[[ WORKED EXAMPLES, KEPT AS TEXT. Nothing calls this and nothing can: it is here to show how an
+ast is built with ast.new_* and what the raw vc.mexpr_* calls look like beside each other. The live,
+typeable canvas is editor.lua and the editors above it.
+
+IT NO LONGER COMPILES AS BEHAVIOUR, on purpose, and the reader has to expect that:
+
+  - vc.mexpr_bracket() is GONE (2026-09-04). math_expr_composer.h split it into
+    vc.mexpr_bracket_left(fs, expr, opts)/vc.mexpr_bracket_right(fs, expr, opts), each its own
+    glyph-like leaf sized to fit `expr`, because entangled-bracket editing in mformula_new.lua
+    needs the two sides as independent, separately-placeable siblings. Every brack1..brack15 call
+    below still passes the old shape.
+  - char.plus/minus/bigsum/integral were deleted 2026-09-09 as unused; this was their last caller.
+  - mexpr.lua (ast -> mexpr) was deleted the same day, so the drawing step this used to end with
+    is gone too - what survives builds the ast and stops there.
+
+Read it for the SHAPE of the calls, never as something to run. Anyone reviving it is writing new
+code against today's API, not repairing this.
+@date 2026-09-09 21:20 ]]
 local function demo_draw()
     local ns = ast.new_ns()
     local a = ast.new_var(ns, "a")
@@ -246,7 +245,6 @@ local function demo_draw()
             ast.new_num(ns, -10, 1, 1)
         )
     )
-    -- print(ast.to_latex(ns, node))
 
     
     local b = ast.new_var(ns, "b")
@@ -261,14 +259,7 @@ local function demo_draw()
         )
     )
 
-    local mexpr_root = mexpr.to_mexpr(fontset, ns, aIab_ac_bcI, nil, 10)
-    if mexpr_root then
-        vc.mexpr_draw(fontset, {x=100, y=500}, mexpr_root, false, math.huge)
-    else
-        print("FAIL")
-    end
-    -- print(ast.to_latex(ns, aIab_ac_bcI))
-    -- print(ast.to_string(ns, aIab_ac_bcI), ast.to_latex(ns, aIab_ac_bcI))
+    -- print(ast.to_string(ns, aIab_ac_bcI))
 
     -- transforms.initial_traverse(aIab_ac_bcI)
     -- local found_bc = transforms.find(aIab_ac_bcI, bc.id)

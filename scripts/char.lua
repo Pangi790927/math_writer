@@ -122,24 +122,16 @@ function capi.load_font_set()
     return ret
 end
 
---[[ Some character definitions @date 2026-09-08 08:50 ]]
-function capi.hash(fontsz)        return {size=fontsz, code=2} end
-function capi.comma(fontsz)       return {size=fontsz, code=11} end
-function capi.plus(fontsz)        return {size=fontsz, code=10} end
-function capi.minus(fontsz)       return {size=fontsz, code=181} end
-function capi.equal(fontsz)       return {size=fontsz, code=27} end
-function capi.integral(fontsz)    return {size=fontsz, code=191} end
-function capi.bigsum(fontsz)      return {size=fontsz, code=192} end
+--[[ The rule glyph every horizontal line in a formula is built from: the fraction bar
+(mexpru.mexpr_frac) and the stroke in each accent recipe below. It is a real sized glyph rather
+than a drawn primitive, so a line thickens and lengthens with the expression around it.
+
+Sixteen more one-line constructors sat beside it - plus, minus, integral, bigsum, the six
+relations, two more rules - until 2026-09-09, when every one of them turned out to be reachable
+only from main.lua's dead demo and from the deleted mexpr.lua. A glyph wanted by name goes through
+find_by_desc()/find_by_ncod() below, which is where the editors have always got theirs.
+@date 2026-09-09 21:20 ]]
 function capi.hline_basic(fontsz) return {size=fontsz, code=221} end
-function capi.hline_long(fontsz)  return {size=fontsz, code=222} end
-function capi.hline_above(fontsz) return {size=fontsz, code=223} end
-function capi.less(fontsz)        return {size=fontsz, code=245} end  -- <
-function capi.greater(fontsz)     return {size=fontsz, code=246} end  -- >
-function capi.leq(fontsz)         return {size=fontsz, code=186} end  -- \le
-function capi.geq(fontsz)         return {size=fontsz, code=187} end  -- \ge
-function capi.neq(fontsz)         return {size=fontsz, code=27} end   -- = (fallback for !=)
-function capi.times(fontsz)       return {size=fontsz, code=182} end  -- \times
-function capi.divide(fontsz)      return {size=fontsz, code=183} end  -- \div
 
 function capi.round_bracket(fontsz)
     return {
@@ -747,7 +739,7 @@ capi.greek_alt_shift = {
 mformula_new.lua's own SUB_SIZE_DELTA comment) a glyph should render at than whatever size it's typed
 into, keyed by desc. Only "\\int" uses this so far - a big operator inserted at plain text size
 reads as a thin, undersized squiggle instead of the display-style integral sign it's supposed to
-be (compare main.lua's demo, which draws it via char.integral(sz-5) for exactly this reason) -
+be (main.lua's dead demo does the same thing by hand, at sz-5, for exactly this reason) -
 not a general per-glyph size feature, just this one shortcut's own fix.
 
 -7, not -5: recalibrated after inserting two new levels (60/50, between the old 72/42)
