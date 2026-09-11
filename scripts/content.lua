@@ -25,11 +25,26 @@ local mexpru = require("mexpru")
 new/draw/handle_input/rescale/to_text/from_text - and never what any of them does inside. ]]
 local editor_definition = require("editor_definition")
 local mexpr_ast = require("mexpr_ast")
+--[[ What a gesture can DO where it landed, and what running one produces. The transformations
+themselves are NOT required here: ast_gestures owns the dispatch from an option to the function that
+performs it, so this file never names one. ]]
+local ast_gestures = require("ast_gestures")
+--[[ The way back: a transformed tree, as the glyphs that draw it. A result is not delivered until
+it is a formula again - the mexpr is the artifact and the ast is scratch. ]]
+local ast_mexpr = require("ast_mexpr")
+local mformula_latex = require("mformula_latex")
 local ast = require("ast")
 local keymap = require("keymap")
 local panel_help = require("panel_help")
 local panel_keymap = require("panel_keymap")
 local editor_formula = require("editor_formula")
+--[[ The shared formula host the three box editors sit on - `editor` above is editor_text, which is
+a historic name, so this one cannot have it. Only its READING half is used here: which node a screen
+point is over, without moving anybody's caret. ]]
+local editor_common = require("editor")
+--[[ The flight recorder. A gesture that declines is invisible on screen by design, so it says why
+HERE - which is the log that gets read when "it does nothing" is reported. ]]
+local input_recorder = require("input_recorder")
 
 local content = {}
 
@@ -895,6 +910,259 @@ above, which is what lets those panels use real widgets and read the arrow keys 
   pos      the same draw origin draw() takes, needed here only to size and clamp the scroll range
            against the current viewport
 @date 2026-09-08 08:30 ]]
+-- #################################################################################################
+-- Transformation gestures
+-- #################################################################################################
+
+--[[ A right-click asks what can be done where the pointer is; the answer is a menu; choosing from
+it names a transformation and its parameters. Three small steps, and the reason they are three is
+that only the middle one is about menus at all - `ast_gestures` decides what applies and `transforms`
+does it, neither of them knowing a pointer exists.
+
+WHY A MENU RATHER THAN A DIRECT ACTION. Distribute is the only option today, so a right-click could
+just do it - and that shape would have to be unbuilt the moment the second transformation applies in
+the same place.
+
+AN EMPTY LIST IS STILL DRAWN, and this is the one rule here that was learned rather than designed.
+It was built the other way first - no options, no menu - on the reasoning that a menu with nothing in
+it says nothing. What it actually says is "the gesture was understood and there is nothing here",
+and the alternative says nothing at all: the report was "right click does not open a menu" on a
+document whose every sum was a bare one. Silence is indistinguishable from a broken feature, and the
+user cannot tell which they are looking at. Author, 2026-09-11, deciding it: "YES, AND IF NONE
+AVAILABLE, DRAW THE LIST EMPTY".
+
+So: over a formula cell, always a menu. Anywhere else, nothing.
+@date 2026-09-11 23:10 ]]
+local MENU_ROW_H   = 18
+local MENU_PAD     = 6
+--[[ Half the alpha it opened with (0xee -> 0x77), on request, 2026-09-11: "make that menu a bit
+more translucid, make twice as so". The edge and the text keep theirs - what is wanted is to see the
+formula through the box, not to make the box itself hard to read. ]]
+local MENU_BG      = 0x771c1c1c
+local MENU_EDGE    = 0xff606060
+local MENU_TEXT    = 0xffe8e8e8
+local MENU_HOVER   = 0xff4a3a2a
+local MENU_MIN_W   = 96
+
+--[[ The FORMULA CELL under a screen point, as {container, hb, index}, or nil.
+
+FORMULA CELLS ONLY, which is a rule about what a transformation is for rather than about what can be
+hit-tested. A cell is a step in a derivation - immutable, with a parent link, the thing the proof DAG
+is made of - and a transformation produces the next one. Prose with formulas in it is not a step, and
+a definition is not derived from anything: it is configured, the way its slots and domains already
+are. Author, 2026-09-11: "formula only, definitions don't get transformations, those are simply
+configurable like we did".
+
+The same question could be asked of a text box's embeds or a definition's slots - both editors can
+answer it - and deliberately is not. Right-clicking those is silent, and the recorder says so.
+
+ANY CELL, not just the focused one: a question does not need focus to be answerable, and requiring it
+killed the gesture on a cell the caret had left, which looks exactly like a dead feature. `index`
+travels with the answer because the declarations in scope are the ones BEFORE that cell.
+@date 2026-09-11 23:40 ]]
+local function formula_under(state, pos)
+    if not pos then
+        return nil
+    end
+    for i, box in ipairs(state.boxes or {}) do
+        local found = box.fml and editor_formula.formula_at(box.fml, pos)
+        if found then
+            found.index = i
+            return found
+        end
+    end
+    return nil
+end
+
+--[[ Opens the gesture menu at the pointer. Empty, when nothing applies there.
+
+NOTHING IS MUTATED on the way: the node is resolved with editor_common.formula_node_at, the half of
+the click path that does not move the caret. Asking "what is here" must not answer by moving the
+cursor out from under whatever the user was doing.
+
+THE TWO WAYS OUT WITHOUT A MENU are the pointer not being over a formula CELL - text, prose with
+formulas in it, and definitions are all refused rather than answered emptily - and the pointer not
+being over a GLYPH inside one. Every other outcome - a glyph that names no node, a row that does not
+parse, a node nothing applies to - opens the menu with the list it has, which is usually empty. See
+the section comment above for why that is not the same as opening nothing.
+
+WHY IT REPORTS ITSELF. Each of those outcomes looks identical on screen, so the reason goes to the
+flight recorder, where a "it does nothing" report gets read.
+@date 2026-09-11 23:10 ]]
+local function open_transform_menu(state, fontset)
+    state.transform_menu = nil
+    local mpos = vc.ImGui_GetMousePos()
+    local target = formula_under(state, mpos)
+    if not target then
+        -- Names the RULE, not just the miss: a formula inside a text row is under the pointer and
+        -- still refused, so "no formula here" would read as a bug from where the user is sitting.
+        input_recorder.log_event("gesture: not over a formula cell")
+        return
+    end
+
+    --[[ ON A GLYPH, OR NOWHERE. A point inside the cell but not on any glyph - the space past the
+    end of the row, the gap beside a fraction bar - opens nothing at all, because the gesture has
+    nothing to be about. That is a different silence from "nothing applies", which still draws its
+    empty list: there the user pointed at something and the answer is empty. ]]
+    local at = editor_common.formula_node_at(target.container, fontset, state.font_size, mpos,
+            target.hb.draw_x, target.hb.draw_y, target.hb.wrap_edge)
+    if not at then
+        input_recorder.log_event("gesture: no glyph under the pointer")
+        return
+    end
+
+    local decls = content.declarations_before(state, target.index)
+    local options = ast_gestures.options(fontset, target.container, decls.order, at)
+    if #options == 0 then
+        input_recorder.log_event("gesture: nothing applies at that glyph")
+    end
+
+    --[[ WIDE ENOUGH TO BE A MENU even with nothing in it: an empty list still has to read as a list
+    that is empty rather than as a smear on the screen, so the box keeps a minimum size instead of
+    collapsing to the width of its widest entry, which is zero. ]]
+    local width = MENU_MIN_W
+    for _, o in ipairs(options) do
+        width = math.max(width, vc.ImGui_CalcTextSize(o.label).x + 2 * MENU_PAD + 12)
+    end
+    state.transform_menu = {x = mpos.x, y = mpos.y, w = width,
+            options = options, container = target.container, index = target.index,
+            version = target.container.version or 0}
+end
+
+--[[ Which row of an open menu a point is on, or nil for none. ]]
+local function menu_row_at(menu, pos)
+    if not pos or pos.x < menu.x or pos.x > menu.x + menu.w then
+        return nil
+    end
+    local row = math.floor((pos.y - menu.y) / MENU_ROW_H) + 1
+    if row < 1 or row > #menu.options then
+        return nil
+    end
+    return row
+end
+
+--[[ Runs the chosen transformation and lands its result as a NEW CELL below the one it came from.
+
+A NEW CELL, NEVER AN EDIT. A formula cell is a step in a derivation, immutable, with a link to what
+it came from (docs/phase2_design.md section 1) - so a transformation adds a step rather than changing
+one. The source stays exactly as it was, on screen, above its own consequence.
+
+THE CELL CARRIES BOTH ITS TREE AND ITS TEXT. `latex` is a cell's committed truth - editor_formula
+rebuilds from it whenever an edit has to be discarded - but the freshly BUILT formula is handed over
+too, because that one copied its names' glyphs from the source and a rebuild from text would
+re-render them. Both agree at this instant; the built one is simply the better of the two.
+
+FOCUS MOVES WITH IT. The interaction ends where its result is, which is also what stops the menu's
+own click reaching the cell it was opened over.
+
+Returns true when a cell was made. A refusal - the tree cannot be written back yet - leaves the
+document alone, keeps the pick so F6 can still show what WOULD have come out, and says why in the
+recorder. That combination is deliberate: the transformation succeeded and only the drawing did not,
+and those are worth telling apart.
+@date 2026-09-12 03:00 ]]
+local function commit_transform(state, fontset, menu, option)
+    local container = menu.container
+    local decls = content.declarations_before(state, menu.index)
+    local new_root, ns, err = ast_gestures.preview(fontset, container, decls.order, option)
+    if not new_root then
+        input_recorder.log_event("transform: " .. option.id .. " refused: " .. tostring(err))
+        return false
+    end
+
+    local sz = mexpru.u(container.root).sz or mexpru.DEFAULT_SIZE
+    local built, werr = ast_mexpr.container(fontset, container.root, ns, new_root, sz)
+    if not built then
+        input_recorder.log_event("transform: " .. option.id
+                .. " cannot be drawn yet: " .. tostring(werr))
+        return false
+    end
+
+    local index = content.insert_box(state, menu.index + 1, KIND_FORMULA)
+    local box = state.boxes[index]
+    box.fml.formula = built
+    box.fml.latex = mformula_latex.to_latex(built)
+    --[[ THE DERIVATION LINK, and the reason the gesture is confined to formula cells: a cell knows
+    which cell it came from, and prune_descendants follows that relation when the source is replaced.
+    A source without an id would make an orphan, which is a root - something derived from nothing. ]]
+    local source = state.boxes[menu.index]
+    box.fml.parent = source and source.fml and source.fml.id
+    state.active_index = index
+    return true
+end
+
+--[[ One frame of input while the menu is open - it owns the frame, exactly as the radial does.
+
+A CHOICE ENDS THE INTERACTION, which is the point of the menu owning the frame: the click that picks
+a row must not also reach the formula underneath and move the caret there. Author, 2026-09-11: "a
+click persists until a choice is made, after the choice is made the tree transform is executed".
+
+WHAT A CHOICE DOES TODAY is record the pick and open F6 on it. The step after - building the new cell
+out of the transformed tree and moving focus into it - needs `ast -> mexpr`, which does not exist yet
+and was explicitly left until this half was finished. So the pick is carried as far as it can
+currently go, and the panel is where it shows.
+@date 2026-09-11 21:45 ]]
+local function transform_menu_input(state, fontset)
+    local menu = state.transform_menu
+    menu.hover = menu_row_at(menu, vc.ImGui_GetMousePos())
+
+    --[[ RE-AIM. The same button again does not close the menu, it asks again where the pointer is
+    NOW - open_transform_menu drops the old one first, so a second click on nothing closes it and a
+    second click on another glyph moves it there. Asked for that way, 2026-09-11: "re-right clocking
+    should imediately reatempt to intersect a glyph/visual".
+
+    It matters because the aim is exact: glyph boxes have real gaps between them (a subscript row
+    sits below its line, a tall bracket's column is mostly empty), and a miss must cost one more
+    click rather than two. ]]
+    if keymap.pressed("math.transform_menu") then
+        open_transform_menu(state, fontset)
+        return
+    end
+
+    -- Escape closes it, and so does a click that lands on no row.
+    if keymap.pressed("panel.close") then
+        state.transform_menu = nil
+        return
+    end
+    if vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false) then
+        local pick = menu.hover and menu.options[menu.hover]
+        state.transform_menu = nil
+        if pick then
+            --[[ The container AND its version travel with the pick: the option holds ast IDS, and
+            those name nodes in the tree parsed from this container at this version. An edit moves
+            the version, the ast is reparsed, and the ids no longer mean anything - so the pick is
+            dropped rather than applied to a tree it was not chosen from. ]]
+            state.transform_pick = {container = menu.container, index = menu.index,
+                    option = pick, version = menu.container.version or 0}
+            --[[ The result arrives as a cell. F6 is opened only when it could NOT - there the pick
+            is all there is to show, and a panel saying what would have come out beats nothing
+            happening at all. ]]
+            if not commit_transform(state, fontset, menu, pick) then
+                state.show_ast_result = true
+                state.show_ast = false
+            end
+        end
+    end
+end
+
+--[[ The open menu: one box, one row per option, the row under the pointer lit.
+@date 2026-09-11 21:45 ]]
+local function draw_transform_menu(menu)
+    -- An empty list is one row tall and holds nothing - see the section comment on why it is drawn.
+    local h = math.max(#menu.options, 1) * MENU_ROW_H + 2 * MENU_PAD
+    vc.ImGui_AddRectFilled({x = menu.x, y = menu.y - MENU_PAD},
+            {x = menu.x + menu.w, y = menu.y + h - MENU_PAD}, MENU_BG, 3)
+    vc.ImGui_AddRect({x = menu.x, y = menu.y - MENU_PAD},
+            {x = menu.x + menu.w, y = menu.y + h - MENU_PAD}, MENU_EDGE, 3, 1)
+    for i, o in ipairs(menu.options) do
+        local ry = menu.y + (i - 1) * MENU_ROW_H
+        if menu.hover == i then
+            vc.ImGui_AddRectFilled({x = menu.x + 2, y = ry - 2},
+                    {x = menu.x + menu.w - 2, y = ry + MENU_ROW_H - 2}, MENU_HOVER, 2)
+        end
+        vc.ImGui_AddText({x = menu.x + MENU_PAD + 6, y = ry}, MENU_TEXT, o.label)
+    end
+end
+
 function content.handle_input(state, fontset, pos)
     -- F1/F2 each toggle their own full-screen panel on/off; while either is showing, every other
     -- input this frame is swallowed here (nothing forwarded to any box) so it can't be typed into
@@ -928,8 +1196,20 @@ function content.handle_input(state, fontset, pos)
     is unchanged from when Ctrl and Shift were read off F3 directly: record first, then reset, then
     the plain toggle. With exact matching they can no longer overlap anyway, but the order is kept
     so behaviour does not depend on that. ]]
+    --[[ F4 and F6 are one slot: turning either on turns the other off. Not a general panel
+    manager - just these two, because they are the pair that share a corner. ]]
+    if keymap.pressed("app.ast_result") then
+        state.show_ast_result = not state.show_ast_result
+        if state.show_ast_result then
+            state.show_ast = false
+        end
+        return
+    end
     if keymap.pressed("app.ast") then
         state.show_ast = not state.show_ast
+        if state.show_ast then
+            state.show_ast_result = false
+        end
         return
     end
     if keymap.pressed("app.ast_string") then
@@ -982,6 +1262,19 @@ function content.handle_input(state, fontset, pos)
     so nothing types into or clicks the box sitting behind it. ]]
     if state.radial then
         radial_handle_input(state)
+        return
+    end
+
+    --[[ The gesture menu owns the frame the same way, and for the same reason: the click that
+    chooses from it must not also reach the formula it is sitting over. Checked after the radial
+    (two menus are never open at once - the radial is modal too) and ahead of every box-facing
+    shortcut. ]]
+    if state.transform_menu then
+        transform_menu_input(state, fontset)
+        return
+    end
+    if keymap.pressed("math.transform_menu") then
+        open_transform_menu(state, fontset)
         return
     end
 
@@ -1380,6 +1673,31 @@ local function draw_ast_line(l, lx, ly)
     end
 end
 
+--[[ One debug panel: a backing rectangle, a title, and the lines under it, anchored to the
+BOTTOM of the screen so it grows upward as it gets longer.
+
+THE THREE OF THEM WERE THE SAME CODE - F4, F5 and F6 each computed the same rectangle, drew the same
+title and ran the same loop, differing only in where they sit and what they list. Author,
+2026-09-11: "more small functions not repeated the better". Three copies of a layout is three places
+to fix a spacing change, and the third copy was added the same afternoon as the note.
+
+WHAT STAYS WITH THE CALLER: its own `x` and `width`. F5 measures its widest line because its tuples
+have no fixed column, while F4 and F6 sit in a fixed one - that is a real difference between them
+and folding it in here would need a flag, which is the thing this is trying not to grow.
+@date 2026-09-11 20:40 ]]
+local function draw_ast_panel(x, width, title, lines)
+    local size = vc.ImGui_GetDisplaySize()
+    local h = (size and size.y or 720)
+    local y = h - (#lines + 2) * AST_LINE_H - 12
+
+    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
+            {x = x + width, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
+    vc.ImGui_AddText({x = x, y = y}, AST_TEXT_COLOR, title)
+    for i, l in ipairs(lines) do
+        draw_ast_line(l, x + l.depth * AST_INDENT, y + i * AST_LINE_H)
+    end
+end
+
 local function draw_ast_overlay(state, fontset)
     local container = active_expression(state)
     local lines
@@ -1393,16 +1711,88 @@ local function draw_ast_overlay(state, fontset)
     end
 
     local size = vc.ImGui_GetDisplaySize()
-    local w, h = (size and size.x or 1280), (size and size.y or 720)
-    local x = w - AST_WIDTH - 12
-    local y = h - (#lines + 2) * AST_LINE_H - 12
+    local w = (size and size.x or 1280)
+    draw_ast_panel(w - AST_WIDTH - 12, AST_WIDTH, "F4  parse of the current expression", lines)
+end
 
-    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
-            {x = x + AST_WIDTH, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
-    vc.ImGui_AddText({x = x, y = y}, AST_TEXT_COLOR, "F4  parse of the current expression")
-    for i, l in ipairs(lines) do
-        draw_ast_line(l, x + l.depth * 16, y + i * AST_LINE_H)
+--[[ WHAT F6 IS LOOKING AT: the expression, the box it sits in, and the transformation chosen for
+it - or the caret's expression and no transformation when no choice stands.
+
+THE CHOICE CARRIES ITS OWN EXPRESSION, and that is the whole point of returning all three together.
+A gesture does not need the caret: it can be made on a formula the caret left, or in another box
+entirely. Reading the subject off the caret instead is what made a successful pick display "no
+expression here - put the caret in a formula", which reads exactly like the gesture having failed.
+
+A PICK EXPIRES when the expression it was chosen from changes: its ast ids name nodes in the tree as
+it was parsed then, and an edit reparses it into different ones. Clearing rather than merely ignoring
+it means a stale choice cannot come back to life later - it was made about a tree that no longer
+exists.
+@date 2026-09-11 22:30 ]]
+local function result_subject(state)
+    local pick = state.transform_pick
+    if pick then
+        if pick.container and pick.version == (pick.container.version or 0) then
+            return pick.container, pick.index, pick.option
+        end
+        state.transform_pick = nil
     end
+    return active_expression(state), state.active_index, nil
+end
+
+--[[ F6: the tree a transformation would produce HERE, drawn like F5's.
+
+WHY A PREVIEW RATHER THAN A HISTORY. There is nowhere yet to apply a transformation from - the
+right-click menu is not wired - so this answers the same question one step earlier: given where the
+caret is, what WOULD come out. That makes it useful while transforms are being written, which is
+what it is for, and it becomes the result panel unchanged once a menu can set one.
+
+SHARES F5's RENDERER, deliberately: the same one-node-per-line split, the same colours, so the two
+trees are compared by reading rather than by translating between two formats. Only the source of the
+tree differs.
+
+WHICH transformation: the one a right-click CHOSE, while that choice still names the expression on
+screen; otherwise the first one `ast_gestures` offers at the caret. The fallback is what makes the
+panel useful with no gesture at all - it previews what a click where the caret is would do - and the
+choice takes precedence because it is the more specific answer to the same question.
+@date 2026-09-11 21:45 ]]
+local function draw_ast_result_overlay(state, fontset)
+    local lines
+    local container, index, option = result_subject(state)
+    if not container then
+        lines = {{depth = 0, text = "no expression here - put the caret in a formula"}}
+    else
+        local decls = content.declarations_before(state, index)
+        local root, _, err = ast_gestures.ast_for(fontset, container, decls.order)
+        if not root then
+            lines = {{depth = 0, text = "no tree: " .. tostring(err)}}
+        else
+            if not option then
+                --[[ THE CARET, not the mouse: with no choice made this is a keyboard panel, so the
+                place it asks about is where the cursor is. The same resolution a click uses, just
+                given a different node. ]]
+                local at = container.cursor_pos and container.cursor_pos:get_obj()
+                local opts = at and ast_gestures.options(fontset, container, decls.order, at) or {}
+                option = opts[1]
+            end
+            if not option then
+                lines = {{depth = 0, text = "no transformation applies where the caret is"}}
+            else
+                local new_root, ns, terr = ast_gestures.preview(fontset, container, decls.order,
+                        option)
+                if not new_root then
+                    lines = {{depth = 0, text = option.id .. " refused: " .. tostring(terr)}}
+                else
+                    lines = ast.to_string_lines(ns, new_root)
+                    table.insert(lines, 1, {depth = 0, text = "-- " .. option.label})
+                end
+            end
+        end
+    end
+
+    local size = vc.ImGui_GetDisplaySize()
+    local w = (size and size.x or 1280)
+    draw_ast_panel(w - AST_WIDTH - 12, AST_WIDTH,
+            "F6  what a transformation would produce", lines)
 end
 
 --[[ F5: the RAW ast.lua serialization of the same expression F4 parses - ast.to_string's own
@@ -1448,19 +1838,8 @@ local function draw_ast_string_overlay(state, fontset)
         end
     end
 
-    local size = vc.ImGui_GetDisplaySize()
-    local h = (size and size.y or 720)
-    local x = 12
-    local y = h - (#lines + 2) * AST_LINE_H - 12
-
-    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
-            {x = x + width, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
-    vc.ImGui_AddText({x = x, y = y}, AST_TEXT_COLOR, "F5  ast.lua serialization")
-    for i, l in ipairs(lines) do
-        local lx = x + l.depth * AST_INDENT
-        local ly = y + i * AST_LINE_H
-        draw_ast_line(l, lx, ly)
-    end
+    -- Bottom-LEFT, the one corner F3 (top-right) and F4/F6 (bottom-right) leave free.
+    draw_ast_panel(12, width, "F5  ast.lua serialization", lines)
 end
 
 local function draw_prof_overlay()
@@ -1635,6 +2014,14 @@ function content.draw(state, fontset, pos, opts)
             local ok, err = pcall(draw_ast_overlay, state, fontset)
             if not ok then
                 vc.ImGui_AddText({x = 24, y = 4}, 0xaa3c3cff, "F4: " .. tostring(err))
+            end
+        end
+        if state.show_ast_result then
+            -- Same pcall reasoning as F4/F5: this builds a tree AND runs a transform on it, either
+            -- of which may be mid-edit and incomplete.
+            local ok, err = pcall(draw_ast_result_overlay, state, fontset)
+            if not ok then
+                vc.ImGui_AddText({x = 24, y = 36}, 0xaa3c3cff, "F6: " .. tostring(err))
             end
         end
         if state.show_ast_string then
@@ -1882,6 +2269,9 @@ function content.draw(state, fontset, pos, opts)
     last_layout is stored so opening it never disturbs hit testing for the frame after. ]]
     if state.radial then
         draw_radial_at(state.radial)
+    end
+    if state.transform_menu then
+        draw_transform_menu(state.transform_menu)
     end
 
     overlay()

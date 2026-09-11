@@ -2235,6 +2235,22 @@ function mformula_new.clone(container, fontset)
     }
 end
 
+--[[ A deep copy of one node and everything under it - rescale_node with no cursor to map.
+
+Exported rather than reimplemented because a 1:1 structural mirror is exactly what a copy is, and
+this one already handles every node kind, keeps each logical size, and hands bracket pairs back to
+resolve_bracket_pairs to be re-tiered. A second copier would be a second opinion about all three.
+Its consumer is ast_mexpr, which copies the glyphs of a name rather than re-rendering it.
+@date 2026-09-12 02:00 ]]
+function mformula_new.clone_node(fontset, node)
+    return (rescale_node(fontset, node, nil))
+end
+
+--[[ How many size steps SMALLER a sup or a sub is drawn than its base. Exported for the same reason
+clone_node is: a writer building a power has to match what typing one produces, and the number is
+the whole of that rule. @date 2026-09-12 02:00 ]]
+mformula_new.SUB_SIZE_DELTA = SUB_SIZE_DELTA
+
 --[[ Where the cursor is, as a PATH of anchor indices from the root, instead of a node reference.
 
 A node reference only means anything inside its own tree. An undo baseline holds a CLONE - a 1:1
@@ -3384,6 +3400,34 @@ local function extend_selection(container, dir)
     container.cursor_pos = vc.wref_mexpr(next_idx == 0 and horiz or children[next_idx])
 end
 
+--[[ `edit.select_all` inside a formula: everything in the TOP-LEVEL row, selected.
+
+THE ROOT ROW, not the row the caret happens to be in. A selection may never leave its horiz (see the
+SELECTION comment above), so with the caret inside a sup there are two readings of "all" - that sup's
+row, or the formula - and only one of them is what the words say. The caret moves out to the root
+row, the same way select-all in any text editor leaves it at the end of what it selected.
+
+Nothing happens when the row is empty (there is no slot to put the far end on) or when a pending
+bracket confines the cursor, which is the one state cursor_pos_forbidden exists to protect: a
+select-all that teleported out of an unclosed bracket would be a way around it.
+@date 2026-09-12 00:40 ]]
+local function select_all(container)
+    local root = container.root
+    if not is_horiz(root) then
+        return false
+    end
+    local children = mexpru.u(root).children
+    local last = children[#children]
+    if not last or cursor_pos_forbidden(container, last) then
+        return false
+    end
+    --[[ Anchor ON the horiz itself: slot 0 is "before everything" in the same numbering the cursor
+    uses, so anchor 0 with the cursor at #children makes the range 1..#children - the whole row. ]]
+    container.sel_anchor = vc.wref_mexpr(root)
+    container.cursor_pos = vc.wref_mexpr(last)
+    return true
+end
+
 --[[ Removes the selected run, if there is one. Returns true when the keypress was CONSUMED - which
 includes the refusal below, since silently falling through to an ordinary backspace after declining
 to delete a selection would delete something the user never pointed at.
@@ -3396,6 +3440,10 @@ The emptied-span check mirrors the ordinary backspace path's: removing everythin
 leaves resolve_bracket_pairs() with a span it errors loudly on, so a fresh empty atom fills the gap
 the same way it does there.
 @date 2026-09-08 09:00 ]]
+--[[ Exported for tests, the convention make_supsub()/make_frac() already use: the real entry point
+is the keypress above, which needs a live ImGui for keymap.pressed(). @date 2026-09-12 00:40 ]]
+mformula_new.select_all = select_all
+
 local function delete_selection(container, fontset)
     local horiz, lo, hi = mformula_new.selection_range(container)
     if not horiz then
@@ -3717,6 +3765,15 @@ function mformula_new.handle_input(container, fontset, sz)
             end
             return
         end
+    end
+
+    --[[ `edit.select_all`. Ahead of copy/cut so the two compose the way they do in a text box:
+    Ctrl+A then Ctrl+C is the whole formula on the clipboard. The binding is the text editor's own
+    `edit.select_all` rather than a new one - it is the same idea, and a formula that answered a
+    different key for it would be a second thing to learn. ]]
+    if keymap.pressed("edit.select_all") then
+        select_all(container)
+        return
     end
 
     --[[ `edit.copy` / `edit.cut` on a selection, written out as "$$...$$" - the same wrapper a text
@@ -4576,6 +4633,11 @@ local function node_bbox(fontset, node)
     return {left = pos.x + bb.tl.x, right = pos.x + bb.br.x, top = pos.y + bb.tl.y, bottom = pos.y + bb.br.y}
 end
 
+--[[ Exported for tests, which have to probe points in the SAME frame this measures in - a node's
+own `pos` plus its local box. Re-deriving that in a test would be a second opinion about the frame,
+and a wrong one is invisible: every probe simply misses. @date 2026-09-12 01:30 ]]
+mformula_new.node_bbox = node_bbox
+
 -- Plain containment test, in whatever frame both were measured in. @date 2026-09-08 09:30
 local function point_in_bbox(pt, box)
     return pt.x >= box.left and pt.x <= box.right and pt.y >= box.top and pt.y <= box.bottom
@@ -4749,14 +4811,110 @@ wrap_width is RELATIVE, and is unwrap_point()'s reverse of vc.mexpr_draw's wrap:
 visually landed on a wrapped row has to be mapped back into formula space before the descent, which
 only knows unwrapped positions. nil means "never wraps".
 @date 2026-09-08 09:00 ]]
-function mformula_new.hit_test(container, fontset, sz, click, wrap_width, extend)
+--[[ A click in the formula's own drawn frame, moved into the raw tree's frame.
+
+The only thing the caret's hit test and a gesture's glyph test share: draw() shifts pos by
++baseline_correction() before handing it to mexpr_draw, so that shift is undone here, and a click
+that landed on a WRAPPED row is mapped back into unwrapped formula space, which is the only space
+node_bbox() knows. nil wrap_width means "never wraps".
+
+What they do NOT share is what happens next - see glyph_at() versus hit_test_node().
+@date 2026-09-12 01:10 ]]
+local function raw_point(container, fontset, sz, click, wrap_width)
     local raw_click = {x = click.x, y = click.y - baseline_correction(fontset, sz)}
     if wrap_width then
         local raw_bb = vc.mexpr_get_bb(container.root)
         local skipy = raw_bb.br.y - raw_bb.tl.y
         raw_click.x, raw_click.y = unwrap_point(raw_click.x, raw_click.y, wrap_width, skipy, raw_bb.tl.y)
     end
-    local hit = hit_test_node(fontset, container.root, raw_click)
+    return raw_click
+end
+
+--[[ The LEAF GLYPH whose own box contains this point, or nil. Nothing is snapped to.
+
+NOT hit_test_node's question, and that is the whole point of it existing. A caret click must always
+land somewhere, so that descent falls back at every level - a gap between glyphs resolves to the
+nearest edge, a point past the last glyph resolves to "after it", a click in the empty space beside
+a fraction bar resolves to the fraction. Every one of those fallbacks is right for a caret and wrong
+for a gesture: a right-click three lines above the formula would answer for a glyph the user cannot
+see themselves pointing at. Author, 2026-09-11: "we want the exact matching glyph's box and check it
+against the mouse and if no box intersects (none of the leaf ones), then simply ignore it: right
+click only works on things that you can roughly see".
+
+So: containment only, all the way down, and nil the moment nothing contains the point. Compound
+nodes are pure structure here - a horiz, a supsub, a stack and a fraction are asked about their
+children and never answer for themselves, which is what makes the fraction bar, the gap between a
+sup and a sub, and the space between two glyphs all read as "nothing there".
+
+A DRESS IS THE EXCEPTION, and only for its own ink: the arrow of a `\vec{F}` is drawn by the dress
+but belongs to the F under it, so a point on the decoration answers with the dress itself. The tag
+lookup already unwraps that (ast_gestures.node_at goes through slot_atom), and the alternative -
+nil - would make the visible half of an accented glyph dead.
+@date 2026-09-12 01:10 ]]
+local function glyph_at(fontset, node, click)
+    if not point_in_bbox(click, node_bbox(fontset, node)) then
+        return nil
+    end
+
+    if is_horiz(node) then
+        for _, child in ipairs(mexpru.u(node).children) do
+            local hit = glyph_at(fontset, child, click)
+            if hit then
+                return hit
+            end
+        end
+        return nil
+    end
+
+    if is_supsub(node) then
+        local u = mexpru.u(node)
+        return glyph_at(fontset, u.base, click)
+                or (u.sup and glyph_at(fontset, u.sup, click))
+                or (u.sub and glyph_at(fontset, u.sub, click))
+                or nil
+    end
+
+    if is_vert(node) then
+        for _, slot in ipairs(mexpru.u(node).slots) do
+            local hit = glyph_at(fontset, slot, click)
+            if hit then
+                return hit
+            end
+        end
+        return nil
+    end
+
+    if is_dress(node) then
+        return glyph_at(fontset, mexpru.u(node).target, click) or node
+    end
+
+    if is_frac(node) then
+        local u = mexpru.u(node)
+        return glyph_at(fontset, u.num, click) or glyph_at(fontset, u.den, click) or nil
+    end
+
+    -- SYMBOL or EMPTY_BOX, and its own box holds the point - tested at the top.
+    return node
+end
+
+--[[ Exported for tests, in the RAW frame: the conversion above needs a drawn container, and what is
+worth asserting is the descent - that it finds the glyph it is over, and nothing when it is over
+none. @date 2026-09-12 01:10 ]]
+mformula_new.glyph_at = glyph_at
+
+--[[ WHICH GLYPH IS UNDER THIS POINT, or nil. Reads; changes nothing.
+
+The gesture's question. Never moves the caret, and never answers for a glyph the point is not
+actually on - see glyph_at above for why that differs from where a click would put the cursor.
+@date 2026-09-12 01:10 ]]
+function mformula_new.node_at(container, fontset, sz, click, wrap_width)
+    return glyph_at(fontset, container.root,
+            raw_point(container, fontset, sz, click, wrap_width))
+end
+
+function mformula_new.hit_test(container, fontset, sz, click, wrap_width, extend)
+    local hit = hit_test_node(fontset, container.root,
+            raw_point(container, fontset, sz, click, wrap_width))
 
     --[[ `extend` is a drag in progress (editor.lua holds the button state): keep the anchor and move
     only the far end, so sweeping the mouse grows a selection. Clamped to the anchor's OWN horiz -

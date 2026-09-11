@@ -113,6 +113,18 @@ local ALIASES = {
     ["`"]         = "ImGuiKey_GraveAccent",
     ["["]         = "ImGuiKey_LeftBracket",
     ["]"]         = "ImGuiKey_RightBracket",
+    --[[ ImGui puts the mouse buttons in the SAME key enum (ImGuiKey_MouseLeft and friends), so a
+    bind can name one and IsKeyPressed answers for it - which is how a gesture gets into the table
+    like any other shortcut, asked for that way 2026-09-11: "I want it on right click as default
+    (don't forget the key table)".
+
+    They need an alias even though their typed form is just the suffix: the suffix route reads
+    `lower_to_name`, which is EMPTY under the test harness (ImGui is not registered there), and the
+    structural fallback only covers single characters and F-keys. Without these three, a default
+    binding naming a mouse button would parse in the app and fail in every test. ]]
+    ["mouseleft"]   = "ImGuiKey_MouseLeft",
+    ["mouseright"]  = "ImGuiKey_MouseRight",
+    ["mousemiddle"] = "ImGuiKey_MouseMiddle",
     ["space"]     = "ImGuiKey_Space",
     ["tab"]       = "ImGuiKey_Tab",
     ["backspace"] = "ImGuiKey_Backspace",
@@ -402,6 +414,12 @@ local DEFAULTS = {
     {id = "panel.close",          desc = "Close the open panel",                     binds = {"Escape+All"}},
     {id = "app.profiler",         desc = "Toggle the profiler overlay",              binds = {"F3"}},
     {id = "app.ast",             desc = "Show the parse of the expression you are on", binds = {"F4"}},
+    --[[ F6 and F4 share one corner and one panel, so each REPLACES the other rather than stacking -
+    asked for that way, 2026-09-11: "replaces f4 (reciprocal f4 replaces f6 when pressed)". They
+    answer the same question about two different trees, the one that is there and the one a
+    transformation would make of it, and showing both at once would say less than either. ]]
+    {id = "app.ast_result",      desc = "Show what the transformation here would produce",
+            binds = {"F6"}},
     {id = "app.ast_string",      desc = "Show the ast.lua serialization of the expression you are on",
             binds = {"F5"}},
     {id = "app.profiler_reset",   desc = "Clear the profiler's worst frame",         binds = {"Shift+F3"}},
@@ -535,6 +553,11 @@ local DEFAULTS = {
     {id = "math.dot_remove",     desc = "Remove a dot",                              binds = {"Ctrl+,"}},
     {id = "math.vec",            desc = "Vector arrow, pointing right",              binds = {"Ctrl+Shift+."}},
     {id = "math.vec_left",       desc = "Vector arrow, pointing left",               binds = {"Ctrl+Shift+,"}},
+    --[[ THE GESTURE. Right-click asks what can be done where the pointer is, and gets a menu -
+    empty, when the answer is nothing, so that "understood, and there is nothing here" cannot be
+    mistaken for a dead binding. It reads the formula without moving the caret
+    (editor.formula_node_at), so asking costs nothing. ]]
+    {id = "math.transform_menu", desc = "Transformations available where you point", binds = {"MouseRight"}},
     --[[ SHIFT SELECTS, CTRL+SHIFT JUMPS - swapped 2026-09-10 on the author's instruction,
     "holding shift selects, ctrl+shift jumps on left,right arrows".
 

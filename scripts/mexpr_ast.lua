@@ -154,13 +154,86 @@ accent. `atom` still comes from slot_atom, which looks through both wrappers to 
 `node` stays the OUTERMOST node so dress_suffix still finds the decoration - the accent remains part
 of the name's identity exactly as before.
 @date 2026-09-11 16:30 ]]
+--[[ THE MEXPR REMEMBERS WHICH AST NODE IT PRODUCED - `u(_).ast_id`.
+
+WHY THIS DIRECTION. The AST is scratch: it is built from a row, transformed, turned back into mexpr
+and dropped. The mexpr is the artifact that persists. Author, 2026-09-11: "the mexpr needs to
+remember the ast", and "the ast will not survive either way... the resulting mexpr must be proper".
+So the tag lives on the side that lasts, and a stale one is impossible - `build` writes it as it
+goes, so the tag always names the ast currently in hand.
+
+WRITTEN DURING THE PARSE, not by a pass afterwards. A second walk would have to re-derive the
+correspondence from the row, which is a parallel traversal free to drift from the real one - the
+failure mexpr_ast.describe's own comment already records. Here the construction site has the unit
+and the node it just built, both in hand, and there is nothing to keep in step.
+
+WHAT IT IS FOR: resolving a gesture. A click lands on a glyph; this says which ast node that glyph
+belongs to, which is how a transformation gets its parameters.
+
+MANY-TO-ONE, and deliberately so: both `+` glyphs of `a+b+c` name the one ADD. Some nodes have no
+glyph at all - an implicit MUL in `2ab` is written with nothing - and those simply go untagged; a
+gesture reaches them by walking UP from a child, never by clicking them.
+@date 2026-09-11 18:30 ]]
+local function tag_ast(u_or_node, ast_node)
+    if not u_or_node or not ast_node or not ast_node.id then
+        return ast_node
+    end
+    local node = u_or_node.node or u_or_node
+    local u = node and mexpru.u(node)
+    if u then
+        u.ast_id = ast_node.id
+    end
+    return ast_node
+end
+
+--[[ WHICH MEXPR NODE DRAWS THIS AST NODE - its ink, exactly, and nothing more of it.
+
+DIFFERENT FROM tag_ast ABOVE, which answers "what did the user click on". A `+` NAMES its sum, and
+every digit of `123` names the one number, because a gesture must work wherever you point. Neither
+of those DRAWS the node it names: the `+` draws a third of the sum. This is the other direction, and
+it has exactly one consumer - ast_mexpr, rebuilding a tree into glyphs, which for anything with an
+IDENTITY must copy what was written rather than re-render it from the name.
+
+WHY RE-RENDERING IS NOT AN OPTION: a variable's name is an assembled STRING (`p.name` = base text +
+dress suffix + primes + sub). That is an identity key, not a drawing. Building glyphs back from it is
+the same mistake the definition row already made once - `pattern_latex` fed token text to from_latex
+and drew the arrow beside the `F` instead of over it.
+
+A PLAIN ID, no node reference, so nothing here has to be weak or invalidated: the writer walks the
+mexpr once and builds id -> node fresh each time it needs one.
+@date 2026-09-12 02:00 ]]
+local function tag_draws(node, ast_node)
+    if not node or not ast_node or not ast_node.id then
+        return ast_node
+    end
+    local u = mexpru.u(node)
+    if u then
+        u.ast_draws = ast_node.id
+    end
+    return ast_node
+end
+
+--[[ The node whose ink is the LEAF written at `u0`, which is not always the row slot it sits in: a
+power wraps the leaf in a supsub, and that supsub draws the leaf AND its exponent. The base alone is
+the leaf. A subscript cannot arrive here - apply_power refuses one on anything that is not a declared
+name - so the two cases below are all there are.
+@date 2026-09-12 02:00 ]]
+local function leaf_drawn_by(u0)
+    if u0.sup then
+        return u0.base
+    end
+    return u0.node
+end
+
 local function unit(child)
     --[[ THROUGH ANY DRESS FIRST, so both spellings of one thing arrive here as the same shape -
     see mexpru.undressed. A supsub reached this way is the same supsub whether the accent sat over
     the limits or under them. ]]
     local u = mexpru.u(mexpru.undressed(child))
     if u and u.kind == "supsub" then
-        return {atom = mexpru.slot_atom(child), sup = u.sup, sub = u.sub, node = child}
+        --[[ `base` is carried for leaf_drawn_by alone: the leaf's own ink is the base when a power
+        rides on the slot. Nothing else reads it. ]]
+        return {atom = mexpru.slot_atom(child), sup = u.sup, sub = u.sub, base = u.base, node = child}
     end
     --[[ `node` is the OUTERMOST node, never the undressed one: dress_suffix reads the decoration
     off it, and the decoration is part of a name's identity. ]]
@@ -2118,7 +2191,13 @@ local function read_factor(ctx, units, i)
         if not v then
             return nil, nil, "`" .. text .. "` is not a number"
         end
-        local node, err = apply_power(ctx, ast.new_num(ctx.ns, v.m, v.n, v.sign), units[j - 1])
+        local num = tag_ast(u0, ast.new_num(ctx.ns, v.m, v.n, v.sign))
+        --[[ EVERY DIGIT OF THE RUN names it, not only the first: `123` is one number and clicking
+        any of its three glyphs is the same gesture. ]]
+        for k = i, j - 1 do
+            tag_ast(units[k], num)
+        end
+        local node, err = apply_power(ctx, num, units[j - 1])
         if not node then
             return nil, nil, err
         end
@@ -2170,7 +2249,11 @@ local function read_factor(ctx, units, i)
         two different things, and a free variable is no more exempt from that than a declared one -
         dropping the accent here made them the same VREF, which is the same silent collision that
         made `\hat{a}` and `a` one name before decorations reached the pattern at all. ]]
-        local node, err = apply_power(ctx, var_ref(ctx, d .. dress_suffix(u0.node)), u0)
+        local ref = tag_ast(u0, var_ref(ctx, d .. dress_suffix(u0.node)))
+        --[[ Recorded BEFORE the power wraps it: the reference is drawn by the letter, the power by
+        the whole slot, and afterwards there is no way to tell those apart. ]]
+        tag_draws(leaf_drawn_by(u0), ref)
+        local node, err = apply_power(ctx, ref, u0)
         if not node then
             return nil, nil, err
         end
@@ -2230,7 +2313,7 @@ quoted, and a named operator is written as a 1-tall vert (operator_name), so `bb
 a single name. That is what those two constructs are FOR - without them this layer would be
 guessing.
 @date 2026-09-10 04:30 ]]
-function build_product(ctx, units, negative)
+function build_product(ctx, units, negative, neg_unit)
     local factors, bracketed, i = {}, {}, 1
     while i <= #units do
         local d = atom_desc(units[i].atom)
@@ -2258,12 +2341,12 @@ function build_product(ctx, units, negative)
     if negative then
         local f = factors[1]
         if f.type == ast.NUM then
-            factors[1] = ast.new_num(ctx.ns, f[1], f[2], -f[3])
+            factors[1] = tag_ast(neg_unit, ast.new_num(ctx.ns, f[1], f[2], -f[3]))
         else
             --[[ The sign becomes a factor, so the product it makes is what decides whether the
             other factors' brackets were required: `-(a+b)` is MUL(NUM(-1), ADD(...)) and those
             brackets are load-bearing, exactly as in `c(a+b)`. Hence the shift below. ]]
-            table.insert(factors, 1, ast.new_num(ctx.ns, 1, 1, -1))
+            table.insert(factors, 1, tag_ast(neg_unit, ast.new_num(ctx.ns, 1, 1, -1)))
             table.insert(bracketed, 1, false)
         end
     end
@@ -2296,7 +2379,17 @@ local function build_sum(ctx, units)
         return nil, "empty"
     end
 
-    local terms, cur, cur_neg, depth = {}, {}, false, 0
+    --[[ THE SIGN GLYPHS ARE KEPT, not just consumed, so each can be tagged with the node it
+    belongs to - and the two signs belong to DIFFERENT nodes:
+
+        `+`   belongs to the ADD           it is the operator
+        `-`   belongs to the NUM           it is that term's sign, and the sign lives on the number
+
+    Author, 2026-09-11: the minus is reached "by referencing the number that holds it". That is
+    already how the tree is shaped - `a-b` is ADD(a, MUL(NUM(1,1,-1), b)) - so the tag follows the
+    structure rather than inventing a place for it. ]]
+    local terms, cur, cur_neg, cur_neg_unit, depth = {}, {}, false, nil, 0
+    local plus_units = {}
     for _, u in ipairs(units) do
         local b = bracket_of(u)
         local d = atom_desc(u.atom)
@@ -2304,24 +2397,29 @@ local function build_sum(ctx, units)
             depth = depth + (b.is_open and 1 or -1)
             cur[#cur + 1] = u
         elseif depth == 0 and is_sign(d) then
+            if d == "+" then
+                plus_units[#plus_units + 1] = u
+            end
             if #cur > 0 then
-                terms[#terms + 1] = {units = cur, negative = cur_neg}
+                terms[#terms + 1] = {units = cur, negative = cur_neg, neg_unit = cur_neg_unit}
                 cur, cur_neg = {}, (d == "-")
+                cur_neg_unit = (d == "-") and u or nil
             elseif d == "-" then
                 cur_neg = not cur_neg
+                cur_neg_unit = u
             end
         else
             cur[#cur + 1] = u
         end
     end
-    terms[#terms + 1] = {units = cur, negative = cur_neg}
+    terms[#terms + 1] = {units = cur, negative = cur_neg, neg_unit = cur_neg_unit}
 
     local nodes = {}
     for _, t in ipairs(terms) do
         if #t.units == 0 then
             return nil, "a sign with nothing after it"
         end
-        local node, err = build_product(ctx, t.units, t.negative)
+        local node, err = build_product(ctx, t.units, t.negative, t.neg_unit)
         if not node then
             return nil, err
         end
@@ -2330,7 +2428,13 @@ local function build_sum(ctx, units)
     if #nodes == 1 then
         return nodes[1]
     end
-    return ast.new_add(ctx.ns, table.unpack(nodes))
+    --[[ EVERY `+` NAMES THE ONE ADD. A right-click on any of them reaches the same node, which is
+    what makes "distribute this sum" a gesture on the operator rather than on a span. ]]
+    local add = ast.new_add(ctx.ns, table.unpack(nodes))
+    for _, pu in ipairs(plus_units) do
+        tag_ast(pu, add)
+    end
+    return add
 end
 
 build_expr = build_sum
@@ -2387,7 +2491,7 @@ function build_connective(ctx, units)
                 if not r then
                     return nil, rerr
                 end
-                return make(ctx.ns, l, r)
+                return tag_ast(units[i], make(ctx.ns, l, r))
             end
         end
     end
@@ -2444,7 +2548,9 @@ function build_relation(ctx, units)
     if not r then
         return nil, rerr
     end
-    return at.rel.op(ctx.ns, l, r)
+    --[[ The relation's own glyph names the node it makes - clicking the `=` selects the equality,
+    which is the gesture every relation-level transform will want. ]]
+    return tag_ast(units[at.i], at.rel.op(ctx.ns, l, r))
 end
 
 --[[ THE PARSER'S ACTUAL OUTPUT: a real ast.lua node for `container`, or nil plus the reason.

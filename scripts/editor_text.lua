@@ -536,6 +536,24 @@ editor_text.push_undo = push_undo
 function editor_text.undo(state) undo_or_redo(state, false) end
 function editor_text.redo(state) undo_or_redo(state, true) end
 
+--[[ The formula embed under a screen point, as {container, hb}, or nil.
+
+WHAT A POINTER CAN LAND ON in this box, asked once. The boxes come from the last draw
+(`last_formula_boxes`), which is what every click here has always hit-tested against.
+
+`only` restricts the search to ONE formula - the caret-owning one, when the question is "did this
+click land inside the formula that currently has input" rather than "which formula is here". Both
+questions are asked in this file and they used to be two copies of the same loop.
+@date 2026-09-11 21:40 ]]
+function editor_text.formula_at(state, pos, only)
+    for _, fb in ipairs(state.last_formula_boxes or {}) do
+        if (not only or fb.formula == only) and editor.point_in_box(pos, fb) then
+            return {container = fb.formula, hb = fb}
+        end
+    end
+    return nil
+end
+
 -- #################################################################################################
 -- Input handling
 -- #################################################################################################
@@ -588,15 +606,9 @@ function editor_text.handle_input(state, fontset, sz)
         local ctrl_arrow_exit = ctrl_left or ctrl_right
         local clicked_outside, clicked_inside_fb = false, nil
         if vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false) then
-            local mpos = vc.ImGui_GetMousePos()
-            for _, fb in ipairs(state.last_formula_boxes or {}) do
-                if fb.formula == state.active_formula
-                        and mpos.x >= fb.x and mpos.x <= fb.x + fb.w
-                        and mpos.y >= fb.y and mpos.y <= fb.y + fb.h then
-                    clicked_inside_fb = fb
-                    break
-                end
-            end
+            local target = editor_text.formula_at(state, vc.ImGui_GetMousePos(),
+                    state.active_formula)
+            clicked_inside_fb = target and target.hb
             clicked_outside = not clicked_inside_fb
         end
         if escaped or ctrl_arrow_exit or clicked_outside then
@@ -1064,14 +1076,12 @@ function editor_text.handle_input(state, fontset, sz)
     local clicked = vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false)
     local down = vc.ImGui_IsMouseDown("ImGuiMouseButton_Left")
     if clicked then
-        local mpos = vc.ImGui_GetMousePos()
-        for _, fb in ipairs(state.last_formula_boxes or {}) do
-            if mpos.x >= fb.x and mpos.x <= fb.x + fb.w and mpos.y >= fb.y and mpos.y <= fb.y + fb.h then
-                -- Entering a formula, like re-activating a content.lua box, shouldn't also do
-                -- the normal click-places-cursor thing - it just brings it into edit mode.
-                state.active_formula = fb.formula
-                return
-            end
+        local target = editor_text.formula_at(state, vc.ImGui_GetMousePos())
+        if target then
+            -- Entering a formula, like re-activating a content.lua box, shouldn't also do
+            -- the normal click-places-cursor thing - it just brings it into edit mode.
+            state.active_formula = target.container
+            return
         end
     end
     if clicked then

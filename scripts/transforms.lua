@@ -308,4 +308,143 @@ function transforms.extract_term(ns, node, mode)
     end
 end
 
+
+-- #################################################################################################
+-- THE FIRST REAL TRANSFORMATION
+-- #################################################################################################
+
+--[[ Is this the number 1 - the factor a product may drop without changing? ]]
+local function is_one(node)
+    return type(node) == "table" and node.type == ast.NUM
+            and node[1] == 1 and node[2] == 1 and node[3] == 1
+end
+
+--[[ A product of `factors`, tidied.
+
+THE CLEAN-UP HAPPENS IN THE SAME STEP, on request - author, 2026-09-11: "and yes, we clean back
+up". Distribution routinely leaves a product of one thing, or a stray 1 where a term was just the
+unit, and carrying those forward would make every later step read around debris the transform itself
+created.
+
+ORDER IS PRESERVED, and that is not incidental: multiplication here is not assumed commutative -
+vectors have products, and a cross product does not commute. Distribution is valid without
+commutativity; REORDERING is a different transformation and has to be asked for separately.
+@date 2026-09-11 20:00 ]]
+local function product_of(ns, factors)
+    local kept = {}
+    for _, f in ipairs(factors) do
+        if not is_one(f) then
+            kept[#kept + 1] = f
+        end
+    end
+    if #kept == 0 then
+        return ast.new_num(ns, 1, 1, 1)
+    end
+    if #kept == 1 then
+        return kept[1]
+    end
+    return ast.new_mul(ns, table.unpack(kept))
+end
+
+--[[ Rebuilds the path from `root` down to `old`, with `new` in its place.
+
+SHARES EVERY UNTOUCHED SUBTREE - the same node objects, with their own ids - and makes a new node
+only for the ancestors on the path. Author, 2026-09-11: "we want the transformation to reuse parts
+of the graph in the mexpr, changing litle let's us cut the graph in just the right parts to repair
+it with minimal stitches". Identity is then what says which regions of the old mexpr can be reused
+verbatim, which is how the user's own spacing survives a step.
+
+Nothing is mutated: the source tree is left exactly as it was, so the cell it belongs to stays
+valid - section 1's immutable cells.
+@date 2026-09-11 20:00 ]]
+local function replace_in(ns, root, parents, old, new)
+    while old ~= root do
+        local parent = parents[old.id]
+        if not parent then
+            return nil, "the node is not in this tree"
+        end
+        local rebuilt = ast.new(ns, parent.type)
+        for i = 1, #parent do
+            rebuilt[i] = (parent[i] == old) and new or parent[i]
+        end
+        old, new = parent, rebuilt
+    end
+    return new
+end
+
+--[[ DISTRIBUTE a product over the sum inside it.
+
+    x(b + c)y   ->   xby + xcy
+
+`add_id` names the ADD; its parent must be the MUL. That is the whole parameter - the gesture
+resolves it (ast_gestures) and this needs to know nothing about how the click arrived.
+
+WHAT IS SHARED AND WHAT IS COPIED, which is decided by one question only: does this subtree end up
+in the output MORE THAN ONCE? Only the factors surrounding the sum do - `a` in `a(b+c)` becomes the
+`a` of two terms - so those are copied from the second term on, because one node cannot sit in two
+places under one id.
+
+THE SUM'S OWN TERMS ARE NEVER COPIED. Each of them appears exactly once in the result: `b` lands in
+the first term and `c` in the second, and nothing needs a second `c`. Copying them anyway was the
+original shape here and it was wrong twice over - author, 2026-09-12: "there is no point in creating
+a new reference". It minted nodes nothing was ever drawn for, so the writer that rebuilds the mexpr
+had to re-render glyphs it could have carried across verbatim, losing whatever decoration and spacing
+they had. Cheap for a bare letter; a whole subtree for `2x` or a fraction.
+
+What is left is the smallest diff the algebra allows, which is the point: the untouched parts of the
+old drawing stay usable.
+
+REFUSES rather than widening, the way selection does everywhere: not an ADD, no parent, parent not
+a MUL. A transformation offered where it does not apply is how one ends up running on the wrong
+nodes.
+
+Returns the new root, or nil plus a reason. The source tree is untouched, and the result lives in
+the SAME namespace - untouched nodes keep their ids, which is what lets "has this subtree changed?"
+be answered by identity rather than by comparing shapes.
+@date 2026-09-11 20:00 ]]
+function transforms.distribute(ns, root, add_id)
+    local add = ns.by_id[add_id]
+    if not add or add.type ~= ast.ADD then
+        return nil, "distribute needs a sum"
+    end
+
+    local parents = ast.parent_map(root)
+    local mul = parents[add.id]
+    if not mul or mul.type ~= ast.MUL then
+        return nil, "distribute needs a product around the sum"
+    end
+
+    -- Where the sum sits among the product's factors: everything before it stays before, and
+    -- everything after stays after, in every term.
+    local at
+    for i = 1, #mul do
+        if mul[i] == add then
+            at = i
+            break
+        end
+    end
+    if not at then
+        return nil, "the sum is not a factor of that product"
+    end
+
+    local terms = {}
+    for t = 1, #add do
+        local factors = {}
+        for i = 1, #mul do
+            if i == at then
+                -- Used once, so it travels as itself - see the header.
+                factors[#factors + 1] = add[t]
+            else
+                --[[ The first term keeps the original factor nodes; the rest take copies. See the
+                header on why the asymmetry is the point rather than an oversight. ]]
+                factors[#factors + 1] = (t == 1) and mul[i] or ast.copy_fresh(ns, mul[i])
+            end
+        end
+        terms[#terms + 1] = product_of(ns, factors)
+    end
+
+    local expanded = ast.new_add(ns, table.unpack(terms))
+    return replace_in(ns, root, parents, mul, expanded)
+end
+
 return transforms

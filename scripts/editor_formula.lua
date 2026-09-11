@@ -151,6 +151,19 @@ function editor_formula.draw(state, fontset, pos, sz, width_limit, show_cursor, 
     return (m.bottom - m.top) + 2 * pad
 end
 
+--[[ This box's formula, as {container, hb}, when a screen point is over it. Nil otherwise.
+
+The same answer editor_text.formula_at gives for a box that can hold many formulas - this one holds
+exactly one, so the search is the containment test alone. Both exist so a gesture asking "what is
+under the pointer" does not have to know which kind of box it is pointing at.
+@date 2026-09-11 21:40 ]]
+function editor_formula.formula_at(state, pos)
+    if state.formula and editor.point_in_box(pos, state.hit) then
+        return {container = state.formula, hb = state.hit}
+    end
+    return nil
+end
+
 --[[ One frame of input. Returns true when the box's CONTENT changed, which only a paste can do -
 in either state, and nothing else may change it at all.
 @date 2026-09-08 08:06 ]]
@@ -188,8 +201,7 @@ function editor_formula.handle_input(state, fontset, sz)
     if state.hit and (clicked or (down and state.dragging)) then
         local mp = vc.ImGui_GetMousePos()
         local hb = state.hit
-        if state.dragging or (mp.x >= hb.x and mp.x <= hb.x + hb.w
-                and mp.y >= hb.y and mp.y <= hb.y + hb.h) then
+        if state.dragging or editor.point_in_box(mp, hb) then
             editor.formula_hit_test(state.formula, fontset, sz, mp, hb.draw_x, hb.draw_y,
                     hb.wrap_edge, state.dragging and not clicked)
             state.dragging = true

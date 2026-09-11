@@ -237,6 +237,58 @@ function ast.copy(ns, node, new_ns, keep_vars)
     return ret
 end
 
+--[[ A deep copy of `node` with FRESH ids, in the SAME namespace.
+
+THE OTHER HALF OF ast.copy ABOVE, and here rather than in whichever file happened to need it first:
+one is "the same tree somewhere else", the other is "a second tree that looks the same". Keeping
+them apart is what stops a caller reaching for the wrong one, and keeping them adjacent is what
+makes the difference visible.
+
+WHEN YOU NEED THIS ONE: whenever a transformation puts a subtree in two places. `a(b+c)` distributed
+leaves `a` twice, and two nodes cannot answer to one id - the id is the real name (phase2 section
+10). ast.copy preserves ids, so using it here would produce exactly that collision.
+
+VREFs ARE COPIED AS REFERENCES, never followed: a reference names a variable by id, and a second
+reference to the same variable is a new node pointing at the same VAR - not a second variable. Which
+is why duplicating a factor costs nothing to reason about.
+@date 2026-09-11 21:00 ]]
+function ast.copy_fresh(ns, node)
+    if type(node) ~= "table" or not node.type then
+        return node
+    end
+    local ret = ast.new(ns, node.type)
+    for i = 1, #node do
+        ret[i] = ast.copy_fresh(ns, node[i])
+    end
+    return ret
+end
+
+--[[ child id -> parent node, for one tree.
+
+COMPUTED PER CALL AND THROWN AWAY, never stored on the nodes. A tree is shared - a transformation's
+result keeps most of its source's nodes, which is what makes the mexpr repair small - so hanging a
+`.parent` on a node would write into something somebody else is holding, and the two trees would
+disagree about who the parent is.
+
+Here rather than in either caller because both the gesture resolver (climbing to the enclosing sum)
+and the transformations (rebuilding the path to the root) need exactly this, and had written it
+twice.
+@date 2026-09-11 21:00 ]]
+function ast.parent_map(root)
+    local parents = {}
+    local function walk(node)
+        for i = 1, #node do
+            local child = node[i]
+            if type(child) == "table" and child.type then
+                parents[child.id] = node
+                walk(child)
+            end
+        end
+    end
+    walk(root)
+    return parents
+end
+
 --[[ TODO: figure out if this makes sens, if this is not copy with extra rules, etc. @date 2026-09-08 08:55 ]]
 function ast.ns_import_ast(dst_ns, src_ns, node)
 
@@ -956,6 +1008,43 @@ end
 
 function ast.type_name(node_type)
     return type_name[node_type]
+end
+
+--[[ A canonical, ID-FREE rendering of a tree, for comparing one against another.
+
+WHY IDS CANNOT BE IN IT. The comparison anybody actually wants is between a tree and a tree BUILT
+FROM IT - a transformation's output against what its rebuilt mexpr parses back to. Those live in
+different namespaces and their ids cannot match by construction, so ast.to_string, which carries
+them, answers "different" for two trees that are the same expression. This answers the question that
+was meant.
+
+A VREF RENDERS AS ITS VARIABLE'S NAME, which is the whole reason `ns` is a parameter. A name is the
+identity of a variable (docs/phase2_design.md section 9); two namespaces agree about names exactly
+where they cannot agree about ids.
+
+NOT A SERIALIZATION: nothing reads this back. It is a comparison key, so it may be as verbose as it
+likes and must only be INJECTIVE enough that two different expressions never collide.
+@date 2026-09-12 02:00 ]]
+function ast.shape(ns, node)
+    if type(node) ~= "table" or not node.type then
+        return tostring(node)
+    end
+    if node.type == ast.VREF then
+        local var = ns and ns.by_id and ns.by_id[node[1]]
+        return "ref:" .. tostring(var and var[1] or node[1])
+    end
+    if node.type == ast.VAR then
+        return "var:" .. tostring(node[1])
+    end
+    if node.type == ast.NUM then
+        return "num:" .. ast.num_text(node)
+    end
+    local parts = {}
+    for i = 1, #node do
+        parts[i] = ast.shape(ns, node[i])
+    end
+    return (ast.type_name(node.type) or ("type" .. tostring(node.type)))
+            .. "(" .. table.concat(parts, ",") .. ")"
 end
 
 --[[ The exact inverse of type_to_symbol, DERIVED rather than written.

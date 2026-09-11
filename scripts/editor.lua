@@ -160,6 +160,34 @@ function editor.formula_click_rect(box, markers)
     return l, r, t, b
 end
 
+--[[ Is a screen point inside a formula's click box?
+
+THE SAME FOUR COMPARISONS were written out in every editor that hosts a formula - the text box, the
+formula box, the definition's slots - and each of them keeps its boxes in the same shape already
+(`{x, y, w, h, draw_x, draw_y, wrap_edge}`, built from editor.formula_click_rect above). So the shape
+was shared and only the test was copied. Author, 2026-09-11: "more small functions not repeated the
+better".
+
+INCLUSIVE ON BOTH EDGES, which is what those copies did: a click exactly on the right edge of a
+formula belongs to it. Nil-tolerant because a box that has not been drawn yet has no rectangle, and
+every caller would otherwise guard for that itself.
+@date 2026-09-11 21:40 ]]
+function editor.point_in_box(pos, hb)
+    return (hb and pos) ~= nil
+            and pos.x >= hb.x and pos.x <= hb.x + hb.w
+            and pos.y >= hb.y and pos.y <= hb.y + hb.h
+end
+
+--[[ A screen point in the formula's OWN frame, plus the wrap width in that frame.
+
+ABSOLUTE -> RELATIVE, the same conversion draw_formula does: mformula never receives draw_x, because
+the point is already relative to it by the time it gets there. Written once because both things a
+pointer can do to a formula - place the caret, ask what is there - need exactly this and nothing
+else. @date 2026-09-11 21:20 ]]
+local function in_formula_frame(click, draw_x, draw_y, wrap_edge)
+    return {x = click.x - draw_x, y = click.y - draw_y}, wrap_edge and (wrap_edge - draw_x)
+end
+
 --[[ Places the formula's cursor from a click (or extends a selection from a drag), given the
 click in SCREEN coordinates and the origin the formula was drawn at.
 
@@ -168,11 +196,19 @@ cursor directly - the same convention mformula's own move_*() uses - rather than
 position for the caller to assign.
 @date 2026-09-08 08:01 ]]
 function editor.formula_hit_test(container, fontset, sz, click, draw_x, draw_y, wrap_edge, extend)
-    local local_click = {x = click.x - draw_x, y = click.y - draw_y}
-    -- ABSOLUTE -> RELATIVE, the same conversion draw_formula does. hit_test() never receives
-    -- draw_x itself, because local_click is already relative to it by the time it gets there.
-    local wrap_width = wrap_edge and (wrap_edge - draw_x)
+    local local_click, wrap_width = in_formula_frame(click, draw_x, draw_y, wrap_edge)
     mformula.hit_test(container, fontset, sz, local_click, wrap_width, extend)
+end
+
+--[[ WHICH GLYPH a screen point is over, or nil. Touches neither the cursor nor the selection.
+
+What a right-click asks, and a DIFFERENT question from the one above rather than half of it: a caret
+click snaps to the nearest position and always lands, while this answers only for a glyph the point
+is really on. Same frame conversion, different finder - mformula's glyph_at() carries the reasoning.
+@date 2026-09-12 01:10 ]]
+function editor.formula_node_at(container, fontset, sz, click, draw_x, draw_y, wrap_edge)
+    local local_click, wrap_width = in_formula_frame(click, draw_x, draw_y, wrap_edge)
+    return mformula.node_at(container, fontset, sz, local_click, wrap_width)
 end
 
 --[[ Runs one frame of input against a formula and reports whether the tree actually CHANGED, as

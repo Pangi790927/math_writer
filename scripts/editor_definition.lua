@@ -839,6 +839,29 @@ function editor_definition.draw(state, fontset, pos, sz, width_limit, show_curso
     return total_h
 end
 
+--[[ Every clickable formula in the definition, in one list, as {idx, hb, container}.
+
+ONE LIST so the shorthand is routed exactly like a slot: click to place the caret, drag to select
+PART of it. It is only special at DISPATCH, where an edit to it is discarded. A derived row's index
+is NEGATIVE, which is why its container comes from the entry rather than from slots[idx].
+
+Reads the hit boxes the last draw left behind, so a slot that has never been drawn is simply not in
+the list. At file scope rather than inside handle_input because a right-click asks this same question
+without wanting anything routed anywhere.
+@date 2026-09-11 21:40 ]]
+local function click_targets(state)
+    local t = {}
+    for i, hb in ipairs(state.hitboxes or {}) do
+        t[#t + 1] = {idx = i, hb = hb, container = (state.slots or {})[i]}
+    end
+    for i, row in ipairs(state.derived or {}) do
+        if row.c and row.hit then
+            t[#t + 1] = {idx = -i, hb = row.hit, container = row.c}
+        end
+    end
+    return t
+end
+
 --[[ One frame of input for the definition: route a click or drag to whichever slot it landed in,
 then hand the frame to the slot that has the caret.
 
@@ -878,36 +901,14 @@ function editor_definition.handle_input(state, fontset, sz)
     was in the shorthand every later click was swallowed before the slots were ever considered -
     nothing could take focus back off it. Routing decides WHERE input goes; dispatch then sends it
     there. Nothing between the two may return. ]]
-    local function inside(mp, hb)
-        return hb and mp.x >= hb.x and mp.x <= hb.x + hb.w
-                and mp.y >= hb.y and mp.y <= hb.y + hb.h
-    end
-
-    --[[ Every clickable box, in one list, so the shorthand is routed exactly like a slot: click to
-    place the caret, drag to select PART of it. It is only special at dispatch, where an edit to it
-    is discarded. A derived row's index is NEGATIVE, which is why the container comes from the entry
-    rather than from slots[idx]. ]]
-    local function click_targets()
-        local t = {}
-        for i, hb in ipairs(state.hitboxes or {}) do
-            t[#t + 1] = {idx = i, hb = hb, container = slots[i]}
-        end
-        for i, row in ipairs(state.derived or {}) do
-            if row.c and row.hit then
-                t[#t + 1] = {idx = -i, hb = row.hit, container = row.c}
-            end
-        end
-        return t
-    end
-
     local clicked = vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false)
     if clicked or (down and state.dragging) then
         local mp = vc.ImGui_GetMousePos()
-        local targets = click_targets()
+        local targets = click_targets(state)
         local hit
         if clicked then
             for _, t in ipairs(targets) do
-                if inside(mp, t.hb) then
+                if editor.point_in_box(mp, t.hb) then
                     hit = t
                     break
                 end
