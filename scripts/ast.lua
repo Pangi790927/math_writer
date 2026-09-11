@@ -34,10 +34,13 @@ the mexpr tree, not on these nodes.
 -- (V, a1, a2, a3, ...)         -- vector
 -- (M, m, n, a1, ... a[m+n])    -- matrix
 -- (_, a1)                      -- paranthesis
--- (I, var, from, to, body)     -- integral  \int_{from}^{to} body d(var) - still this shape,
---                                 unchanged; \int is excluded from the constraint-list redesign
---                                 below (its variable comes from the trailing differential, not a
---                                 relation - docs/phase2_design.md "Bigop scoping")
+-- (~, )                        -- see ast.NULL: an operand that is deliberately absent
+-- (I, var, sup, sub, body)     -- integral  \int_{sub}^{sup} body d(var). \int keeps this fixed
+--                                 four-slot shape rather than the constraint lists below - its
+--                                 variable comes from the trailing differential, not from a
+--                                 relation (docs/phase2_design.md "Bigop scoping"). SUP FIRST
+--                                 since 2026-09-11, like the groups - see new_bigop. An absent
+--                                 bound is a NULL node, never a nil
 -- (in, a1, a2)                 -- membership: a1 \in a2
 -- (ni, a1, a2)                  -- backward membership: a1 \ni a2  (== a2 \in a1)
 -- (subset, a1, a2)              -- proper subset: a1 \subset a2
@@ -49,13 +52,15 @@ the mexpr tree, not on these nodes.
 -- INTERSECT share one shape, N variables and a constraint list per side rather than one var and a
 -- bare from/to - see new_bigop_group. Three plain counts up front (same idiom MAT's own m/n
 -- already use for metadata that isn't itself a node), then that many children in order:
--- (S,    n_vars, n_sub, n_sup, var1..varN, sub1..subK, sup1..supM, body)   -- \sum
--- (P,    n_vars, n_sub, n_sup, var1..varN, sub1..subK, sup1..supM, body)   -- \prod
--- (U,    n_vars, n_sub, n_sup, var1..varN, sub1..subK, sup1..supM, body)   -- \bigcup
--- (X,    n_vars, n_sub, n_sup, var1..varN, sub1..subK, sup1..supM, body)   -- \bigcap
--- each sub/sup constraint is itself a real relation node (=, <, in, subeq, ...) built the same way
+-- (S,    n_vars, n_sup, n_sub, var1..varN, sup1..supM, sub1..subK, body)   -- \sum
+-- (P,    n_vars, n_sup, n_sub, var1..varN, sup1..supM, sub1..subK, body)   -- \prod
+-- (U,    n_vars, n_sup, n_sub, var1..varN, sup1..supM, sub1..subK, body)   -- \bigcup
+-- (X,    n_vars, n_sup, n_sub, var1..varN, sup1..supM, sub1..subK, body)   -- \bigcap
+-- each sup/sub constraint is itself a real relation node (=, <, in, subeq, ...) built the same way
 -- any other relation is - a bigop remembers them rather than discarding them once the variables it
 -- spawns are known.
+-- SUP BEFORE SUB in all five operators since 2026-09-11 (new_bigop's own note for why). The side
+-- that SPAWNS is still the sub - that is a different question and it did not move.
 -- ...                          -- other custom ones to be thought about later?
 
 --[[ reminder: name option: mathew - math expression writter @date 2026-09-08 08:55 ]]
@@ -99,6 +104,60 @@ local ast = {
     shape (new_bigop_group below), not the single-var shape INT still uses. ]]
     UNION = 28,
     INTERSECT = 29,
+    --[[ NOTHING IN THIS SLOT, on purpose. An indefinite integral has no bounds, and `INT` keeps its
+    fixed four-slot shape (var, from, to, body) rather than growing a count the way the group
+    operators did - so "no bound" needs a node to BE.
+
+    Leaving the slot nil instead is what this replaced, and it was silently wrong: Lua's `#` stops
+    at the first hole, so `#node` answered 1 for `\int x dx` and every generic walk over a node's
+    children - the namespace copy, to_string, to_string_lines - skipped the body entirely. Binding
+    still worked, because catch_free reaches slot 4 by index rather than by walking, which is
+    exactly why it went unnoticed. Found 2026-09-11 by the check that pairs two integrals crossways.
+
+    A LEAF WITH NO OPERANDS, so it serializes as `(null:id)` and reads back like any other node.
+    Spelled out rather than given a punctuation symbol like the rest: it appeared as `(~:5)` for one
+    reading and drew "what is a tilda?" immediately, which is a fair question about a mark nothing
+    else in the format uses. Named by the author, 2026-09-11: "plz name them (NULL), like this",
+    then "null in paranthesis, like printf on a null string" - which is where the lower case comes
+    from, and the tuple's own brackets supply the parentheses.
+    @date 2026-09-11 07:00 ]]
+    NULL = 30,
+    --[[ `x \\to 0`, the relation a limit's subscript is written with. A RELATION rather than
+    anything limit-specific: `\to` is ordinary notation that happens to be where limits use it, and
+    a bigop's constraints are built through the same door as any other relation (RELATIONS in
+    mexpr_ast). Asymmetric like membership - only the left side varies, so only it may be spawned.
+    @date 2026-09-11 10:20 ]]
+    TENDS = 31,
+    --[[ THE NAMED BIG OPERATORS - written as words rather than as a glyph, and otherwise identical
+    to SUM/PROD: same group shape, same constraint lists, same spawning. Added 2026-09-11 on request
+    ("now do the limit too, it should look like sum and also add min, max argmin argmax").
+
+    They differ from `sin`/`log`/`det`, which are also words: those are NAMES applied to an
+    argument (`sin(),(1)` in the trie), while these DECLARE a variable in their subscript and bind
+    it in their body. Which is exactly the sum/integral distinction, so they take that machinery
+    whole - see GROUP_BIGOP_SYMBOL below for how little is per-operator. ]]
+    LIM = 32,
+    MIN = 33,
+    MAX = 34,
+    ARGMIN = 35,
+    ARGMAX = 36,
+    --[[ `limsup`/`liminf` are ONE word here, not two. They are written `lim sup` and this app
+    drops spaces before reading an operator's letters, so the vert spells `limsup` however it was
+    typed - which is also the macro LaTeX names it by. ]]
+    LIMSUP = 37,
+    LIMINF = 38,
+    SUP = 39,
+    INF = 40,
+    --[[ LOGICAL IMPLICATION AND EQUIVALENCE - `a \\Rightarrow b`, `a \\Leftrightarrow b`. Binary and
+    plain, the same shape as IN and the inequalities, which is all they need to be: nothing here
+    evaluates them, and a connective that joins two statements is structurally a relation.
+
+    NOT the same thing as TENDS, which shares an arrow-ish glyph family: `\\rightarrow` is a limit's
+    "tends to" and `\\Rightarrow` is "implies". Different glyphs (the catalog has both, ncod 138 and
+    146), different nodes, and the digraphs that produce them differ too - `-` then `>` gives the
+    first, `=` then `>` the second. @date 2026-09-11 16:00 ]]
+    IMPLIES = 41,
+    IFF = 42,
 }
 
 --[[ A fresh NAMESPACE: the id -> node table every ast node in one tree is registered in, plus the
@@ -241,6 +300,30 @@ never silently swapped, matching how `<`/`>` are already two types rather than o
 operands flipped. Whether `\subseteq` reaches the row as a single keystroke or as a digraph
 (`\subset` then `=`) is an input-method fact this layer never sees either way - by the time a row
 holds it, it is one real glyph like any other. ]]
+--[[ `expr1 \to expr2` - "expr1 tends to expr2". @date 2026-09-11 10:20 ]]
+function ast.new_tends(ns, expr1, expr2)
+    local ret = ast.new(ns, ast.TENDS)
+    ret[1] = expr1
+    ret[2] = expr2
+    return ret
+end
+
+--[[ `expr1 \\Rightarrow expr2` - expr1 implies expr2. @date 2026-09-11 16:00 ]]
+function ast.new_implies(ns, expr1, expr2)
+    local ret = ast.new(ns, ast.IMPLIES)
+    ret[1] = expr1
+    ret[2] = expr2
+    return ret
+end
+
+--[[ `expr1 \\Leftrightarrow expr2` - expr1 holds exactly when expr2 does. @date 2026-09-11 16:00 ]]
+function ast.new_iff(ns, expr1, expr2)
+    local ret = ast.new(ns, ast.IFF)
+    ret[1] = expr1
+    ret[2] = expr2
+    return ret
+end
+
 function ast.new_in(ns, expr1, expr2)
     local ret = ast.new(ns, ast.IN)
     ret[1] = expr1
@@ -338,7 +421,34 @@ local OLD_SHAPE_BIGOPS = {[ast.INT] = true}
 --[[ The GROUP shape's own types - SUM/PROD/UNION/INTERSECT, added alongside "Bigop scoping". Kept
 separate from OLD_SHAPE_BIGOPS because the slot layout differs: slot 1 there is THE var; here it is
 a COUNT, and the vars are a run of slots starting at 4. ]]
-local GROUP_BIGOPS = {[ast.SUM] = true, [ast.PROD] = true, [ast.UNION] = true, [ast.INTERSECT] = true}
+--[[ EVERY GROUP-SHAPED BIG OPERATOR, and the only place one is named.
+
+Type name -> the symbol it serializes as. Adding an operator is one row here: this table generates
+its membership in GROUP_BIGOPS (so catch_free scopes it), its entry in type_to_symbol and hence in
+symbol_to_type (so it round-trips), and its `ast.new_<name>` constructor. Nothing else is
+per-operator, because nothing else about them differs - they share the shape, the counts, the
+constraint lists and the spawning.
+
+Author, 2026-09-11: "also there is a lot of code in common in between those, make sure to keep it in
+common". Before this the four originals each had a hand-written constructor, a hand-written entry in
+each of the two symbol tables and a hand-written entry here - four places to keep in step per
+operator, and nine operators would have been thirty-six chances to miss one.
+
+WORD SYMBOLS for the named ones (`lim`, `argmax`) rather than single letters. The single letters are
+nearly used up, and a serialization is read by people; `(argmax, 1, 0, 1, ...)` needs no key. The
+tuple reader takes any symbol with no comma in it, so length costs nothing.
+@date 2026-09-11 10:20 ]]
+local GROUP_BIGOP_SYMBOL = {
+    SUM = "S", PROD = "P", UNION = "U", INTERSECT = "X",
+    LIM = "lim", LIMSUP = "limsup", LIMINF = "liminf",
+    MIN = "min", MAX = "max", SUP = "sup", INF = "inf",
+    ARGMIN = "argmin", ARGMAX = "argmax",
+}
+
+local GROUP_BIGOPS = {}
+for name in pairs(GROUP_BIGOP_SYMBOL) do
+    GROUP_BIGOPS[ast[name]] = true
+end
 
 --[[ Rebinds every free reference to `name` inside `sub` so it points at `var` instead.
 
@@ -376,7 +486,7 @@ local function catch_free(ns, sub, name, var)
         return
     end
     if GROUP_BIGOPS[sub.type] then
-        local n_vars, n_sub, n_sup = sub[1], sub[2], sub[3]
+        local n_vars, n_sup, n_sub = sub[1], sub[2], sub[3]
         for k = 1, n_vars do
             if sub[3 + k][1] == name then
                 -- Shadowed: this group rebinds `name` itself - its subs, sups and body are its
@@ -385,11 +495,11 @@ local function catch_free(ns, sub, name, var)
             end
         end
         local idx = 3 + n_vars
-        for _ = 1, n_sub do
+        for _ = 1, n_sup do
             idx = idx + 1
             catch_free(ns, sub[idx], name, var)
         end
-        for _ = 1, n_sup do
+        for _ = 1, n_sub do
             idx = idx + 1
             catch_free(ns, sub[idx], name, var)
         end
@@ -401,10 +511,29 @@ local function catch_free(ns, sub, name, var)
     end
 end
 
---[[ A big operator over `name`, whose variable it DECLARES and whose body it then binds. Still
-INT's own shape (var, from, to, body) - see the note above for why it stays this way.
+--[[ WHY SUP COMES BEFORE SUB, in every big operator.
 
-    ast.new_int(ns, "x", zero, one, body)      -- body's free `x` now means this integral's `x`
+It reads UPSIDE DOWN otherwise. The sup is drawn ABOVE the operator and the sub BELOW it, so a
+listing that puts the sub first inverts what is on screen - and the two debug views print the tuple
+in order, so both were inverted. Reported 2026-09-11: "put sub under sup in f5, that is really
+strange, the same in f4", then "like, flip the serialization maybe?".
+
+FLIPPED IN THE NODE, not in the viewers. F5 prints exactly what ast.to_string writes and is
+documented as the ground truth F4 is read FROM, so reordering only the display would have made it
+disagree with the serialization it exists to show. This supersedes the original wording for INT -
+"(var declaration, start_value, end_value, bound-expression)", 2026-09-10 - which fixed the four
+slots and their meanings, not their order; the meanings are unchanged.
+
+WHAT THIS BREAKS: an AST written as text before 2026-09-11 reads back with its two bounds swapped.
+There is no version marker in the format to detect that, and nothing in the app stores AST text
+today - the document is saved as LaTeX and the tree is rebuilt on load - so the exposure is limited
+to a tree somebody serialized by hand.
+@date 2026-09-11 09:40 ]]
+
+--[[ A big operator over `name`, whose variable it DECLARES and whose body it then binds. INT's own
+shape, (var, sup, sub, body) - the upper bound first, for the reason just above.
+
+    ast.new_int(ns, "x", one, zero, body)      -- body's free `x` now means this integral's `x`
 
 THE NAME COMES IN, NOT THE VARIABLE. Author, 2026-09-10: "bigop ops need to create a var, probably
 reuse new_var, the idea is that in this way we will achieve our binding". So the operator owns the
@@ -415,39 +544,48 @@ body - the `dx` at the end is where `x` is declared - so anything that needed th
 the body could not read an integral at all. Catching afterwards asks the caller for nothing: build
 the body with `x` free, then say who binds it.
 @date 2026-09-10 07:40 ]]
-local function new_bigop(ns, node_type, name, from, to, body)
+local function new_bigop(ns, node_type, name, sup, sub, body)
     local ret = ast.new(ns, node_type)
     ret[1] = ast.new_var(ns, name)
-    ret[2] = from
-    ret[3] = to
+    --[[ FILLED HERE rather than by the caller, so no INT can exist with a hole in it whoever built
+    it - see ast.NULL for what a hole did. An indefinite integral is an ordinary integral with
+    nothing where its bounds go, not a different node. ]]
+    ret[2] = sup or ast.new_null(ns)
+    ret[3] = sub or ast.new_null(ns)
     ret[4] = body
     catch_free(ns, body, name, ret[1])
     return ret
 end
 
-function ast.new_int(ns, name, from, to, body)
-    return new_bigop(ns, ast.INT, name, from, to, body)
+function ast.new_int(ns, name, sup, sub, body)
+    return new_bigop(ns, ast.INT, name, sup, sub, body)
 end
 
 --[[ SUM/PROD/UNION/INTERSECT - the GROUP shape, "Bigop scoping" (docs/phase2_design.md).
 
+    (op, n_vars, n_sup, n_sub, var1..varN, sup1..supM, sub1..subK, body)
+
 Unlike `new_bigop` above, this one binds N names at once. `vars` is a list of NAME STRINGS (the
 operator makes its own `ast.new_var` for each, same "the name comes in, not the variable" rule);
-`subs`/`sups` are lists of ALREADY-BUILT constraint nodes - ordinary relation trees (`=`, `<`, `in`,
+`sups`/`subs` are lists of ALREADY-BUILT constraint nodes - ordinary relation trees (`=`, `<`, `in`,
 `subeq`, or anything a general expression parser produced), built and handed in by the caller the
 same way `body` already is, because building them means parsing row units and this file does not
 parse rows.
+
+SUP BEFORE SUB here too, counts included - see new_bigop above for why. Note that the SUB is still
+the side that spawns the variables (`\sum_{i=1}^{n}`): which side declares has nothing to do with
+which side is written first, and moving the order did not move that.
 
 CATCHING RUNS OVER EVERY TREE, FOR EVERY NAME - each sub constraint, each sup constraint, and the
 body - because a sup or a later sub may reference an earlier sub's own variable
 (`\sum_{i=0,j=i+1}`) exactly as the body may. Order between different names does not matter; each
 name's catch is an independent walk of the same fixed set of trees.
 @date 2026-09-10 ]]
-local function new_bigop_group(ns, node_type, vars, subs, sups, body)
+local function new_bigop_group(ns, node_type, vars, sups, subs, body)
     local ret = ast.new(ns, node_type)
     ret[1] = #vars
-    ret[2] = #subs
-    ret[3] = #sups
+    ret[2] = #sups
+    ret[3] = #subs
 
     local var_nodes = {}
     for k, name in ipairs(vars) do
@@ -456,21 +594,21 @@ local function new_bigop_group(ns, node_type, vars, subs, sups, body)
     end
 
     local idx = 3 + #vars
-    for _, s in ipairs(subs) do
+    for _, s in ipairs(sups) do
         idx = idx + 1
         ret[idx] = s
     end
-    for _, s in ipairs(sups) do
+    for _, s in ipairs(subs) do
         idx = idx + 1
         ret[idx] = s
     end
     ret[idx + 1] = body
 
     for k, name in ipairs(vars) do
-        for _, s in ipairs(subs) do
+        for _, s in ipairs(sups) do
             catch_free(ns, s, name, var_nodes[k])
         end
-        for _, s in ipairs(sups) do
+        for _, s in ipairs(subs) do
             catch_free(ns, s, name, var_nodes[k])
         end
         catch_free(ns, body, name, var_nodes[k])
@@ -479,20 +617,28 @@ local function new_bigop_group(ns, node_type, vars, subs, sups, body)
     return ret
 end
 
-function ast.new_sum(ns, vars, subs, sups, body)
-    return new_bigop_group(ns, ast.SUM, vars, subs, sups, body)
+--[[ Builds any group operator by TYPE - what a caller that read the operator out of a row has in
+hand, rather than one it picked at write time. mexpr_ast's reader uses this; the named constructors
+below are for callers that know which operator they mean.
+@date 2026-09-11 10:20 ]]
+function ast.new_group_bigop(ns, node_type, vars, sups, subs, body)
+    assert(GROUP_BIGOPS[node_type], "not a group big operator")
+    return new_bigop_group(ns, node_type, vars, sups, subs, body)
 end
 
-function ast.new_prod(ns, vars, subs, sups, body)
-    return new_bigop_group(ns, ast.PROD, vars, subs, sups, body)
-end
+--[[ ast.new_sum, ast.new_prod, ast.new_lim, ast.new_argmax ... - one per row of
+GROUP_BIGOP_SYMBOL, all identical but for the type they pass. Generated rather than typed out
+because "identical but for one constant" is what a loop is for, and because a hand-written set is
+where the tenth operator gets forgotten.
 
-function ast.new_union(ns, vars, subs, sups, body)
-    return new_bigop_group(ns, ast.UNION, vars, subs, sups, body)
-end
-
-function ast.new_intersect(ns, vars, subs, sups, body)
-    return new_bigop_group(ns, ast.INTERSECT, vars, subs, sups, body)
+`pairs` ORDER IS IRRELEVANT HERE, unlike the read_constraints walk that was bitten by it: this only
+populates a table, and no two rows touch the same key. Said explicitly because a `pairs` over
+string keys in this project has meant a real bug before. ]]
+for name in pairs(GROUP_BIGOP_SYMBOL) do
+    local node_type = ast[name]
+    ast["new_" .. name:lower()] = function(ns, vars, sups, subs, body)
+        return new_bigop_group(ns, node_type, vars, sups, subs, body)
+    end
 end
 
 function ast.new_exp(ns, base, exponent)
@@ -500,6 +646,37 @@ function ast.new_exp(ns, base, exponent)
     ret[1] = base
     ret[2] = exponent
     return ret
+end
+
+--[[ What a NUM node IS, as text - the reading its three slots stand for.
+
+    (N, 3, 4, -1)   ->  -3/4
+    (N, 7, 1, 1)    ->  7
+    (N, 1, 0, 1)    ->  inf
+
+INFINITY IS A DENOMINATOR OF ZERO, which is why this has to exist rather than every viewer doing its
+own division. Author, 2026-09-11: "infty should also parse, it's a number like any other, give it a
+specific value in over 0 in denominator". So it needs no node type of its own, no special case in
+arithmetic that does not want one, and the SIGN gives it a direction for free - `-\infty` goes
+through build_product's ordinary negation and comes out (N, 1, 0, -1).
+
+`m/0` FOR ANY OTHER m IS NOT GLOSSED AS INFINITY. Nothing builds one today, and reading `0/0` back as
+"inf" would be this function inventing an answer to a question the AST has not been asked. It prints
+the raw pair instead, which is a thing a reader can go and look at.
+
+Used by both debug views, which is the whole point of it living here: F4 and F5 cannot disagree
+about what a number says.
+@date 2026-09-11 09:00 ]]
+function ast.num_text(node)
+    local m, n, sign = node[1], node[2], node[3]
+    local s = ((sign or 1) < 0) and "-" or ""
+    if n == 0 then
+        return (m == 1) and (s .. "inf") or (s .. tostring(m) .. "/0")
+    end
+    if n == 1 then
+        return s .. tostring(m)
+    end
+    return s .. tostring(m) .. "/" .. tostring(n)
 end
 
 -- Number: (N, m, n, sign) - rational/natural number m/n
@@ -543,6 +720,11 @@ function ast.new_call(ns, fn, ...)
 end
 
 -- Named variable: (#, name)
+--[[ The absent operand - see ast.NULL. Carries nothing but its own id. @date 2026-09-11 06:30 ]]
+function ast.new_null(ns)
+    return ast.new(ns, ast.NULL)
+end
+
 function ast.new_var(ns, name)
     local ret = ast.new(ns, ast.VAR)
     ret[1] = name
@@ -620,8 +802,6 @@ local type_to_symbol = {
     [ast.MAT] = "M",
     [ast.CELL] = "_",
     [ast.VREF] = "&",
-    [ast.SUM] = "S",
-    [ast.PROD] = "P",
     [ast.INT] = "I",
     [ast.IN] = "in",
     [ast.NI] = "ni",
@@ -629,9 +809,17 @@ local type_to_symbol = {
     [ast.SUBSETEQ] = "subeq",
     [ast.SUPSET] = "supset",
     [ast.SUPSETEQ] = "supeq",
-    [ast.UNION] = "U",
-    [ast.INTERSECT] = "X",
+    [ast.NULL] = "null",
+    [ast.TENDS] = "to",
+    [ast.IMPLIES] = "=>",
+    [ast.IFF] = "<=>",
 }
+
+--[[ The group operators' symbols come from the one table that defines them - see
+GROUP_BIGOP_SYMBOL. Written in here rather than listed twice. ]]
+for name, symbol in pairs(GROUP_BIGOP_SYMBOL) do
+    type_to_symbol[ast[name]] = symbol
+end
 
 function ast.to_string(ns, node)
     if type(node) == "number" then
@@ -651,37 +839,136 @@ function ast.to_string(ns, node)
 end
 
 
+--[[ The same serialization as to_string, split one NODE per line, with its depth.
+
+    (=:9)
+      (@, F(),(1):5)
+        (N, 0, 1, 1:4)
+      (&, 2:7)          ref: x
+
+Each line is exactly what to_string would have written for that node with its child NODES lifted
+out - so a leaf's line is byte-identical to its to_string text, and a compound's line is its head,
+its scalar operands and its id. Reading them back in order and re-nesting by depth reconstructs the
+string to_string produces.
+
+WHY IT LIVES HERE rather than in the overlay that draws it: it has to agree with to_string, and two
+functions that must agree are kept next to each other so a change to the tuple shape is made in both
+or in neither. The F5 view is a debug instrument, but the format it shows is this file's.
+
+EVERY LINE COMES BACK AS COLOURED PIECES, `parts`, alongside the plain `text` they concatenate to.
+A reader that only wants the text ignores them; the F5 overlay paints them. The ROLES:
+
+    "op_sym"    an operator's symbol - the ^, +, *, =, I, S   - RED
+    "bind_sym"  the # of a declaration, the & of a reference  - BLUE
+    "var_name"  the name a declaration declares               - GREEN
+    "ref_name"  the name a reference resolves to              - GREEN
+    "num_value" what a number cell actually is                - YELLOW
+
+Asked for 2026-09-11: "var creations are going to have the # blue and the k inside also colored in
+green", then "I want ^, +, *, those things in red", then "and & should also be blue", then "also in
+yellow write the number next to the number cell".
+
+THE YELLOW IS A READING, NOT A FIELD. A number is stored as three slots - `(N, 3, 4, -1)` is
+numerator, denominator and sign - which is the right shape to compute with and an awful one to read.
+The value beside it says what those three mean, exactly as a reference's green name says what its id
+points at: the tuple stays authoritative and the gloss sits alongside.
+
+WHAT THE SPLIT IS ACTUALLY FOR - the two blues against the reds. Everything painted blue or green
+names a VARIABLE: `#` makes one, `&` points at one, and the greens say which. Everything red is an
+OPERATION on whatever those produce. So the colour separates a tree's naming from its arithmetic at
+a glance, which is the question F5 is opened to answer. The identificators are left alone: they are
+on every line and colouring them would drown the two nodes that matter.
+
+WHY THE SPLIT LIVES HERE and not in the overlay: the pieces have to agree with to_string, and two
+functions that must agree are kept next to each other so a change to the tuple shape is made in both
+or in neither. The colours are the F5 view's business; knowing which SPAN is a symbol is this
+file's.
+@date 2026-09-11 05:30 ]]
+function ast.to_string_lines(ns, node, depth, out)
+    out = out or {}
+    depth = depth or 0
+
+    if type(node) ~= "table" or not node.type then
+        local text = tostring(node)
+        out[#out + 1] = {depth = depth, text = text, parts = {{text = text}}}
+        return out
+    end
+
+    local is_var, is_ref = node.type == ast.VAR, node.type == ast.VREF
+    local parts, kids = {}, {}
+    local function put(text, role)
+        parts[#parts + 1] = {text = text, role = role}
+    end
+
+    put("(")
+    --[[ The two BINDING nodes share a colour because they are two halves of one thing: `#` makes a
+    variable and `&` names one. Every other symbol is an operation and takes the operator colour. ]]
+    put(type_to_symbol[node.type] or "?", (is_var or is_ref) and "bind_sym" or "op_sym")
+    for i = 1, #node do
+        local v = node[i]
+        if type(v) == "table" and v.type then
+            kids[#kids + 1] = v
+        else
+            put(", ")
+            --[[ A VAR's single operand IS the name it declares - see ast.new_var. Nothing else
+            here carries a name, so the role is decided by the node, not by the slot. ]]
+            put(tostring(v), is_var and "var_name" or nil)
+        end
+    end
+    -- Left unpainted, but still written on every node: the line has to stay byte-identical to
+    -- what to_string produces.
+    put(":" .. tostring(node.id))
+    put(")")
+
+    if is_ref then
+        local target = ns.by_id[node[1]]
+        if target and target[1] then
+            put("  " .. tostring(target[1]), "ref_name")
+        end
+    elseif node.type == ast.NUM then
+        -- (N, numerator, denominator, sign) read back as the number it is - see ast.num_text,
+        -- which F4 uses too so the two views cannot gloss one tuple two ways.
+        put("  " .. ast.num_text(node), "num_value")
+    end
+
+    local text = {}
+    for _, piece in ipairs(parts) do
+        text[#text + 1] = piece.text
+    end
+    out[#out + 1] = {depth = depth, text = table.concat(text), parts = parts}
+    for _, kid in ipairs(kids) do
+        ast.to_string_lines(ns, kid, depth + 1, out)
+    end
+    return out
+end
+
 -- Deserialization: string -> AST node
-local symbol_to_type = {
-    ["="] = ast.EQ,
-    ["<"] = ast.INEQ_LESS,
-    ["<="] = ast.INEQ_LEQ,
-    ["!="] = ast.INEQ_NEQ,
-    [">"] = ast.INEQ_GREATER,
-    [">="] = ast.INEQ_GEQ,
-    ["+"] = ast.ADD,
-    ["*"] = ast.MUL,
-    ["/"] = ast.DIV,
-    ["^"] = ast.EXP,
-    ["N"] = ast.NUM,
-    ["@"] = ast.CALL,
-    ["#"] = ast.VAR,
-    ["V"] = ast.VEC,
-    ["M"] = ast.MAT,
-    ["_"] = ast.CELL,
-    ["&"] = ast.VREF,
-    ["S"] = ast.SUM,
-    ["P"] = ast.PROD,
-    ["I"] = ast.INT,
-    ["in"] = ast.IN,
-    ["ni"] = ast.NI,
-    ["subset"] = ast.SUBSET,
-    ["subeq"] = ast.SUBSETEQ,
-    ["supset"] = ast.SUPSET,
-    ["supeq"] = ast.SUPSETEQ,
-    ["U"] = ast.UNION,
-    ["X"] = ast.INTERSECT,
-}
+--[[ A node type's own NAME, for anything that shows a type to a person - F4's labels are exactly
+this. Built by reversing the constants out of `ast` itself, so there is no second vocabulary that
+could disagree with the one every branch tests against.
+@date 2026-09-11 10:20 ]]
+local type_name = {}
+for key, value in pairs(ast) do
+    if type(value) == "number" then
+        type_name[value] = key
+    end
+end
+
+function ast.type_name(node_type)
+    return type_name[node_type]
+end
+
+--[[ The exact inverse of type_to_symbol, DERIVED rather than written.
+
+It was a second literal listing all 29 pairs by hand, which is a serialization that can silently
+stop round-tripping: a type whose two entries disagree writes one symbol and reads back as another,
+or as nothing. They happened to agree; nothing made them.
+@date 2026-09-11 10:20 ]]
+local symbol_to_type = {}
+for node_type, symbol in pairs(type_to_symbol) do
+    assert(symbol_to_type[symbol] == nil, "two node types share the symbol " .. tostring(symbol))
+    symbol_to_type[symbol] = node_type
+end
 
 -- Helper: parse a token that's either a number or a string
 local function parse_atom(s)
@@ -753,13 +1040,15 @@ function ast.from_string(ns, s)
     end
     
     -- Find the type symbol (everything before first comma)
+    --[[ Or the WHOLE of what is left, when a node has no operands at all. `(null:5)` is the case
+    that made this legal: ast.NULL is a leaf, so there is nothing after its symbol and nothing to
+    separate with a comma. Before this, reading one back raised "Missing comma in tuple", which
+    meant an indefinite integral could be written and never read - and to_string/from_string are
+    meant to be inverses. @date 2026-09-11 06:30 ]]
     local first_comma = inner:find(",")
-    if not first_comma then
-        error("Missing comma in tuple: " .. s)
-    end
     
-    local type_str = inner:sub(1, first_comma - 1)
-    local args_str = inner:sub(first_comma + 1)
+    local type_str = first_comma and inner:sub(1, first_comma - 1) or inner
+    local args_str = first_comma and inner:sub(first_comma + 1) or ""
     
     -- Look up the type
     local node_type = symbol_to_type[type_str]

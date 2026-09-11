@@ -180,6 +180,45 @@ function run_test()
         check("...with only the pair itself tagged", #bracket_tags(c) == 2, #bracket_tags(c))
     end
 
+    -- ------------------------------------------------------------------ a close REPORTS itself
+    do
+        --[[ try_close_bracket must return TRUE when it closes. Everything else it can do already
+        returns false, and for every other bracket the answer is ignored - the ")" key types a
+        character - so the one caller that asks is the bar, which is a single shortcut meaning
+        "close if you can, otherwise open".
+
+        WHY THIS IS A CRASH AND NOT A COSMETIC WART, which is the thing worth writing down: on a
+        nil answer that caller believes the close refused, and goes on to OPEN a bracket using the
+        `target`/`target_parent` it captured before the call. propagate_rebuild has replaced the
+        tree by then, so those name freed nodes, and touching one faults - an 0xC0000005, no Lua
+        error, no log, the window simply gone. Reported live 2026-09-11: "ctrl+shift+\\ and
+        closing it with ctrl+shift+\\ crashed the app", and localised by tracing the running app
+        to `tostring(target_parent)` being the last thing that ran.
+
+        The bar's own handler already documented the contract this breaks - "it now says so with a
+        return value" - which is how a caller came to be written against a promise the function
+        never kept. The comment was right; the code was missing one line.
+
+        ASSERTED ON THE RETURN VALUE, not on the resulting tree: a test that only checked the
+        formula came out as `\lvert \rvert ` passes either way, because the close DID work. It is
+        the answer that was wrong. ]]
+        local c = mformula.new(fs, SZ)
+        local t = c.cursor_pos:get_obj()
+        mformula.open_bracket(c, fs, t, t:get_parent(), false, true, false, SZ,
+                vc.MEXPR_BRACKET_BAR)
+        check("setup: the bar opened", #bracket_tags(c) == 1, #bracket_tags(c))
+
+        local closed = mformula.try_close_bracket(c, fs, vc.MEXPR_BRACKET_BAR)
+        check("a successful close reports TRUE", closed == true, tostring(closed))
+        check("...and really did close", #bracket_tags(c) == 2, #bracket_tags(c))
+
+        --[[ And the refusals still report false rather than nil, so the caller's `if` means the
+        same thing on both paths. Nothing is open here, which is the simplest refusal there is. ]]
+        local fresh = mformula.new(fs, SZ)
+        check("a close with nothing open reports FALSE",
+                mformula.try_close_bracket(fresh, fs, vc.MEXPR_BRACKET_BAR) == false)
+    end
+
     print("checks: " .. checks_run .. ", failed: " .. checks_failed)
     if checks_failed > 0 then
         return false

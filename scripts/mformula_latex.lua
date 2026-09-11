@@ -36,6 +36,11 @@ local MAX_SIZE_INDEX = mexpru.MAX_SIZE_INDEX
 -- a group delimiter for ^{...}/_{...}/\frac{...}{...}, and parse_latex_children() stops at a bare
 -- "}". A literal curly BRACKET is a different character: it only ever arrives escaped, as "\{", so
 -- it gets its own table below.
+--[[ The operators whose glyph OPENS an integral pair on the way in. Keyed by desc, which is what
+the macro branch has in hand. \oint rides along with \int everywhere else in this parser and there
+is no reason for it to differ here. @date 2026-09-11 05:10 ]]
+local INTEGRAL_OPENS = { ["\\int"] = true, ["\\oint"] = true }
+
 local OPEN_BRACKETS = { ["("] = vc.MEXPR_BRACKET_ROUND, ["["] = vc.MEXPR_BRACKET_SQUARE }
 local CLOSE_BRACKETS = { [")"] = vc.MEXPR_BRACKET_ROUND, ["]"] = vc.MEXPR_BRACKET_SQUARE }
 
@@ -110,9 +115,54 @@ local TEX_BIG_OPERATORS = {
     ["\\bigcup"] = true, ["\\bigcap"] = true,
 }
 
+--[[ The word a 1-tall vert of letters spells - "lim", "argmax" - or nil for any other vert.
+
+THE SAME QUESTION mexpr_ast's `operator_name` asks, deliberately asked again here rather than
+imported. Two reasons, and they are about layering rather than convenience: this file must not
+depend on the expression parser, and the alphabets genuinely differ - a NAME may be Greek
+(`\\pi` is a letter to the parser since 2026-09-11), while a LaTeX operator macro is ASCII by
+construction, since char.operator_words is keyed by ASCII. A vert holding `\\pi` is a name and is
+not an operator word.
+
+Spaces are skipped, so a stack written `l i m` reads as "lim" - the same allowance operator_name
+makes, and the reason `lim sup` can be typed as two words and still come out `limsup`.
+@date 2026-09-11 11:20 ]]
+local function vert_operator_word(node)
+    local u = mexpru.u(node)
+    if u.kind ~= "vert" or not u.slots or #u.slots ~= 1 then
+        return nil
+    end
+    local letters = {}
+    for _, ch in ipairs(mexpru.u(u.slots[1]).children or {}) do
+        if ch.type ~= vc.MEXPR_TYPE_SYMBOL then
+            return nil
+        end
+        local e = char.find_by_ncod(ch.symb.code)
+        if not e or not e.acod then
+            return nil
+        end
+        if e.acod ~= " " then
+            if not e.acod:match("^%a$") then
+                return nil
+            end
+            letters[#letters + 1] = e.acod
+        end
+    end
+    if #letters == 0 then
+        return nil
+    end
+    return table.concat(letters)
+end
+
+--[[ Is this base something LaTeX will accept `\\limits` after, without a `\\mathop` wrapper?
+
+A big-operator GLYPH is one. So is an operator WORD, now that one goes out as its own macro
+(`\\lim`, `\\operatorname{argmax}`) - both are large operators to LaTeX, and wrapping either in
+`\\mathop` would be harmless noise rather than a fix. Anything else still needs the wrapper.
+@date 2026-09-11 11:20 ]]
 local function base_is_tex_operator(node)
     if node.type ~= vc.MEXPR_TYPE_SYMBOL then
-        return false                -- anything built out of several glyphs, e.g. "lim"
+        return vert_operator_word(node) ~= nil
     end
     local entry = char.find_by_ncod(node.symb.code)
     return entry ~= nil and TEX_BIG_OPERATORS[entry.desc] == true
@@ -125,7 +175,30 @@ wrote char.lua's first entry - every big operator saved as "!", the same failure
 @date 2026-09-08 09:00 ]]
 local function is_supsub(node)
     local kind = mexpru.u(node).kind
-    return kind == "supsub" or kind == "bigop"
+    return kind == "supsub"
+end
+
+--[[ Does this node's placement have a `\limits` spelling - are all the sides it HAS drawn display?
+
+MIXED PLACEMENT HAS NO MARKER OF ITS OWN, because `\limits` is one word about the whole node. LaTeX
+writes a limit under an operator with a power beside it by COMPOSING: `{\sum\limits_{i}}^{n}`, a
+braced group carrying the display side, with the beside side hung on the group. Author, 2026-09-10:
+"latex can express it, imagine limit raised to the power, isn't it composed of two".
+
+A node with no sides at all is not a big operator either way, so it answers false and serializes
+plain.
+@date 2026-09-10 16:40 ]]
+local function limits_uniform(u)
+    local seen, all_display = false, true
+    if u.sup then
+        seen = true
+        all_display = all_display and (u.sup_place == mexpru.PLACE_DISPLAY)
+    end
+    if u.sub then
+        seen = true
+        all_display = all_display and (u.sub_place == mexpru.PLACE_DISPLAY)
+    end
+    return seen and all_display
 end
 
 local function is_frac(node)
@@ -269,22 +342,94 @@ for name, spec in pairs(ACCENT_COMMANDS) do
     end
 end
 
-local function node_to_latex(node)
+--[[ Writes one node as LaTeX. `subst` optionally REPLACES whole subtrees on the way past.
+
+WHY A HOOK HERE RATHER THAN A SECOND WALKER. A caller that wants "this formula, but with these
+particular nodes standing for something else" needs the identical walk - every accent spelling,
+every wide-vs-narrow choice, the {} rules - and the nodes it wants to replace are usually nested
+(a parameter inside a subscript, inside a name). Writing that walk again to substitute on the way
+would be a second definition of what this file writes, and the two would drift. One parameter,
+threaded through the recursion that already exists, cannot.
+
+KEYED BY THE NODE'S `u` TABLE, not by the node. A Lua table cannot be keyed by an mexpr_p - two
+handles onto one mexpr_t are two different Lua values and `==` between them only works through the
+__eq handler, which hashing does not consult. `mexpru.u()` is the way around it that this project
+already relies on: lua_object_t::push() hands back THE SAME table for the same node every time, so
+that table is a real identity key. The bracket model's `peer` is the same trick (mexpru's own
+comment), and `Parser.marks` is a LIST precisely because whoever wrote it did not have this.
+
+Values are finished LaTeX: `{[mexpru.u(node)] = "\\cdot "}` replaces that node, and everything under
+it, with a centred dot. A node not in the table is written normally, so an absent or empty table
+costs one lookup per node and changes nothing.
+
+Its only caller today is the definition editor's computed-name row, which draws the name the user
+actually typed with a dot standing in each parameter position (editor_definition.lua's
+`pattern_latex`). That row used to be built by rendering the parser's INTERNAL name string as if it
+were LaTeX, which it is not - `F\\vec` came out as an F followed by a loose arrow instead of an
+accented F. Reported live, 2026-09-11: "the vector is not drawn above the F, but right of it".
+@date 2026-09-11 02:10 ]]
+local function node_to_latex(node, subst)
+    if subst then
+        local replacement = subst[mexpru.u(node)]
+        if replacement then
+            return replacement
+        end
+    end
     if is_horiz(node) then
         local parts = {}
         for _, child in ipairs(mexpru.u(node).children) do
-            parts[#parts + 1] = node_to_latex(child)
+            parts[#parts + 1] = node_to_latex(child, subst)
         end
         return table.concat(parts)
     elseif is_supsub(node) then
         local u = mexpru.u(node)
-        local parts = {node_to_latex(u.base)}
+
+        --[[ MIXED PLACEMENT IS COMPOSED, because `\\limits` is one word about the WHOLE node and
+        cannot say "this side over, that side beside".
+
+            a limit under, a power beside   ->   {\\mathop{lim}\\limits_{x\\to 0}}^{2}
+
+        LaTeX's own way of writing it: a braced group carrying the DISPLAY side, with the BESIDE
+        side hung on the group. Author, 2026-09-10, on why this had to exist rather than being
+        rounded to one or the other: "latex can express it, imagine limit raised to the power, isn't
+        it composed of two? maybe we should do that too".
+
+        Without this both mixed combinations came out as `\\sum ^{n}_{i}` - all beside - so a limit
+        with its variable underneath and a power beside it silently flattened on save, and the four
+        combinations the node can hold collapsed to two.
+
+        Read back by the `{` branch marking its result (see group_closed there): the side arriving
+        from OUTSIDE a group is beside, the one inside kept its \\limits. ]]
+        local sup_shown = u.sup and not horiz_is_untyped(u.sup)
+        local sub_shown = u.sub and not horiz_is_untyped(u.sub)
+        if sup_shown and sub_shown and u.sup_place ~= u.sub_place then
+            local inner = node_to_latex(u.base, subst)
+            if not base_is_tex_operator(u.base) then
+                inner = "\\mathop{" .. inner .. "}"
+            end
+            inner = inner .. "\\limits"
+            local display_is_sup = (u.sup_place == mexpru.PLACE_DISPLAY)
+            if display_is_sup then
+                inner = inner .. "^{" .. node_to_latex(u.sup, subst) .. "}"
+            else
+                inner = inner .. "_{" .. node_to_latex(u.sub, subst) .. "}"
+            end
+            local out = "{" .. inner .. "}"
+            if display_is_sup then
+                out = out .. "_{" .. node_to_latex(u.sub, subst) .. "}"
+            else
+                out = out .. "^{" .. node_to_latex(u.sup, subst) .. "}"
+            end
+            return out
+        end
+
+        local parts = {node_to_latex(u.base, subst)}
         --[[ \\limits is what makes a big operator round-trip as one. LaTeX places a sum's limits
         above and below by default in display style and beside it inline, and an ordinary symbol's
         always beside - so without an explicit marker "\\sum^{n}_{i}" reads back as a plain supsub
         and the operator loses its shape. \\limits says exactly "put them over and under", which is
         both correct LaTeX and the flag the parser needs. ]]
-        if u.kind == "bigop" then
+        if limits_uniform(u) then
             --[[ \\limits is only legal directly after an OPERATOR atom. A bigop whose operator is a
             node rather than one symbol - "lim", the case that motivated making it a node at all -
             serializes as ordinary letters or as a matrix, and pdfTeX answers exactly that with
@@ -308,10 +453,10 @@ local function node_to_latex(node)
         -- nothing worth round-tripping - omitted entirely (not even as "^{}"), same as
         -- the old row-based editor's row_to_latex() did for its own eager-but-still-empty slots.
         if u.sup and not horiz_is_untyped(u.sup) then
-            parts[#parts + 1] = "^{" .. node_to_latex(u.sup) .. "}"
+            parts[#parts + 1] = "^{" .. node_to_latex(u.sup, subst) .. "}"
         end
         if u.sub and not horiz_is_untyped(u.sub) then
-            parts[#parts + 1] = "_{" .. node_to_latex(u.sub) .. "}"
+            parts[#parts + 1] = "_{" .. node_to_latex(u.sub, subst) .. "}"
         end
         return table.concat(parts)
     elseif mexpru.u(node).kind == "dress" then
@@ -344,7 +489,7 @@ local function node_to_latex(node)
             end
         end
 
-        local out = node_to_latex(u.target)
+        local out = node_to_latex(u.target, subst)
         if not above and not below then
             return out                       -- dressed with nothing; write the bare atom
         end
@@ -361,8 +506,27 @@ local function node_to_latex(node)
         -- requires both - mexpru.frac()'s own comment), so an empty one round-trips as "\frac{}{}"
         -- rather than being dropped.
         local u = mexpru.u(node)
-        return "\\frac{" .. node_to_latex(u.num) .. "}{" .. node_to_latex(u.den) .. "}"
+        return "\\frac{" .. node_to_latex(u.num, subst) .. "}{"
+                .. node_to_latex(u.den, subst) .. "}"
     elseif mexpru.u(node).kind == "vert" then
+        --[[ AN OPERATOR NAME GOES OUT AS AN OPERATOR, not as a one-row matrix.
+
+        `lim` is written here as a 1-tall vert of letters, and that used to serialize as
+        `\\begin{matrix}lim\\end{matrix}` - which compiles, as a MATRIX, and is nonsense in a
+        document. Author, 2026-09-11: "serialize it/deserialize it so that latex understands it".
+
+        Two spellings, because LaTeX names only some of them: the ones it has a macro for take it,
+        and everything else takes `\\operatorname{...}` - which is how amsmath spells exactly this,
+        an operator whose name it does not already know. `\\argmin` really is undefined in plain
+        LaTeX; `\\operatorname{argmin}` is the only correct way to write it.
+
+        The trailing space after a macro name is the ordinary separator every control word here
+        gets, so `\\lim x` does not run together into `\\limx`. ]]
+        local word = vert_operator_word(node)
+        if word then
+            local macro = char.operator_words[word]
+            return macro and ("\\" .. macro .. " ") or ("\\operatorname{" .. word .. "}")
+        end
         --[[ "\\begin{matrix} a \\\\ b \\end{matrix}" - real amsmath, so a saved formula pastes into a
         document and renders. It used to be "\\stack{a}{b}", this file's own invented macro, which
         round-tripped perfectly here and was an undefined control sequence anywhere else.
@@ -372,7 +536,7 @@ local function node_to_latex(node)
         anything that brings its own parentheses would add a second pair on the way out. ]]
         local rows = {}
         for _, slot in ipairs(mexpru.u(node).slots) do
-            rows[#rows + 1] = node_to_latex(slot)
+            rows[#rows + 1] = node_to_latex(slot, subst)
         end
         return "\\begin{matrix}" .. table.concat(rows, "\\\\") .. "\\end{matrix}"
     elseif false then
@@ -384,7 +548,7 @@ local function node_to_latex(node)
         something it isn't. ]]
         local parts = {"\\stack"}
         for _, slot in ipairs(mexpru.u(node).slots) do
-            parts[#parts + 1] = "{" .. node_to_latex(slot) .. "}"
+            parts[#parts + 1] = "{" .. node_to_latex(slot, subst) .. "}"
         end
         return table.concat(parts)
     elseif node.type == vc.MEXPR_TYPE_EMPTY_BOX then
@@ -411,6 +575,29 @@ local function node_to_latex(node)
     instead of the glyph - a resolved pair's two atoms are only ever "the same bracket" by that
     tag, never by what they currently happen to be drawn as. ]]
     local br = mexpru.u(node).bracket
+    --[[ THE DIFFERENTIAL IS WRITTEN "\\,d", AND THAT IS WHAT CARRIES THE PAIRING ACROSS A SAVE.
+
+    An integral's two halves are a bracket pair (char.BRACKET_INTEGRAL), but unlike every other pair
+    both halves are ORDINARY GLYPHS - an operator and the letter `d` - so a save wrote them plainly
+    and a load had no way to tell which `d` was a differential and which was a variable. Integrals
+    stayed correct on screen and stopped parsing after a reload. Reported 2026-09-11: "integrals
+    don't survive a reload... we don't have a way to encode it, what about this: /int/,dx?"
+
+    So the thin space is the mark. It is real LaTeX, and the conventional spelling of a differential
+    at that, so the export still reads correctly elsewhere - and a paper's own "\\int f(x)\\,dx" now
+    pastes in as a real pair, which it never did before. Author on what it means here: "this is only
+    present in the export we forget it and link with the integral" - the reader consumes it and
+    keeps no glyph for it.
+
+    ONLY A PAIRED CLOSE. A `d` that closes nothing is a letter, and a mid-edit integral with no
+    differential yet is a legitimate state; both write themselves plainly, exactly as before.
+
+    The letter is spelled out rather than looked up because it IS the constant here - try_close_
+    bracket builds this half from `d` and from nothing else (mformula_new's own bracket_entry).
+    @date 2026-09-11 05:10 ]]
+    if br and br.peer and br.type == char.BRACKET_INTEGRAL and not br.is_open then
+        return "\\,d"
+    end
     if br then
         --[[ A PAIRED bracket goes out as \\left.../\\right..., because that is what it does here:
         a resolved pair grows to fit whatever sits between it, and \\left/\\right is LaTeX's name
@@ -497,8 +684,10 @@ produce: plain glyphs, the greek/symbol shortcuts in char.lua (by their own `des
 for sup/sub, \frac{...}{...} - nothing fancier (big-op layout tweaks) since nothing in that editor
 builds those yet either.
 @date 2026-09-08 09:00 ]]
-function mformula_latex.to_latex(container)
-    return node_to_latex(container.root)
+--[[ `subst` is optional and passes straight to node_to_latex - see its comment for the shape and
+for why the substitution belongs in that walk rather than in a second one. ]]
+function mformula_latex.to_latex(container, subst)
+    return node_to_latex(container.root, subst)
 end
 
 --[[ The same rendering for a RUN of sibling nodes rather than a whole tree - what copying a
@@ -506,10 +695,10 @@ selection inside a formula needs (mformula_new's own selection is always a conti
 horiz's children, so this is exactly the shape it has to serialise). Concatenated with no separator,
 identically to how node_to_latex() already walks a horiz's own children.
 @date 2026-09-08 09:00 ]]
-function mformula_latex.nodes_to_latex(nodes)
+function mformula_latex.nodes_to_latex(nodes, subst)
     local parts = {}
     for _, node in ipairs(nodes) do
-        parts[#parts + 1] = node_to_latex(node)
+        parts[#parts + 1] = node_to_latex(node, subst)
     end
     return table.concat(parts)
 end
@@ -560,17 +749,29 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
 
     `ascii` is the character the tag should be read from, which for the escaped path is the one
     AFTER the backslash. ]]
-    local function push_char(entry, ascii, from_escape)
+    --[[ `force_open`/`force_close` name a bracket type the ASCII tables cannot: an integral's two
+    halves are \int and `d`, which are not bracket characters and must not become one every time
+    they are typed. Passing the type in lets the integral reuse THIS function - the same stack, the
+    same peer wiring, the same empty-span filler, the same leniency about a close that matches
+    nothing - rather than a second pairing mechanism running beside it. Author, 2026-09-11: "don't
+    duplicate code, paranthesis already have a relinking solution". ]]
+    local function push_char(entry, ascii, from_escape, force_open, force_close)
         --[[ A bare "{" is a group; an escaped "\{" is a literal curly bracket. Only the escape
         path may consult the curly table, or every group delimiter in the document would try to
         pair as a bracket. ]]
-        local open_type = OPEN_BRACKETS[ascii]
+        local open_type = force_open or OPEN_BRACKETS[ascii]
                 or (from_escape and ESCAPED_OPEN_BRACKETS[ascii]) or nil
-        local close_type = CLOSE_BRACKETS[ascii]
+        local close_type = force_close or CLOSE_BRACKETS[ascii]
                 or (from_escape and ESCAPED_CLOSE_BRACKETS[ascii]) or nil
-        -- sz is LOGICAL - mapped to PHYSICAL only for the real construction call.
+        --[[ sz is LOGICAL - mapped to PHYSICAL only for the real construction call. The
+        size_delta_by_desc boost moved here from the macro branch that used to own it, because
+        \int reaches this function now: a big operator built at plain text size reads as a thin
+        undersized squiggle (that table's own comment). u(g).sz stays the surrounding NOMINAL size
+        either way - the boost is real ink, not a change of context level. ]]
+        local delta = char.size_delta_by_desc[entry.desc]
+        local glyph_sz = delta and math.max(1, math.min(sz + delta, MAX_SIZE_INDEX)) or sz
         local g = mexpru.mexpr_symbol(fontset,
-                {size = mexpru.physical_sz(sz), code = entry.ncod}, true)
+                {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
         mexpru.u(g).sz = sz
         if open_type then
             -- Always tagged, paired or not - a literal unmatched "(" in the source (a
@@ -632,6 +833,17 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
             end
             for _, g in ipairs(grp) do
                 children[#children + 1] = g
+            end
+            --[[ A GROUP THAT PRODUCED EXACTLY ONE NODE IS MARKED AS CLOSED, and the sup/sub handler
+            refuses to carry placement across that mark - see `wants_limits` there.
+
+            It is what tells `{X\\limits_{i}}^{n}` (mixed placement, node_to_latex's own composed
+            form) apart from `X\\limits^{n}_{i}` (both display). In the first the `^` arrives from
+            OUTSIDE the group and is beside; in the second the `\\limits` governs the whole node and
+            both sides are display. Nothing else distinguishes them - by the time the `^` is read
+            the group's braces are gone and both look like "a supsub, then a sup". ]]
+            if #grp == 1 then
+                mexpru.u(grp[1]).group_closed = true
             end
         elseif row_mode and c == "\\"
                 and (s:sub(pos + 1, pos + 1) == "\\" or s:sub(pos + 1, pos + 4) == "end{") then
@@ -700,31 +912,32 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
             where it was set because "\sum\limits" alone is still just a sum until a limit
             actually arrives. Once the node exists its own kind carries the distinction, so the
             reuse path below asks it rather than the flag. ]]
-            local wants_limits = (reuse and is_supsub(reuse) and mexpru.u(reuse).kind == "bigop")
+            --[[ A SECOND SIDE INHERITS DISPLAY FROM THE FIRST - `\\sum \\limits^{n}_{i}` writes its
+            marker once and means it for both - UNLESS the node came out of a brace group, in which
+            case the arriving side is outside that group and is beside. See group_closed above. ]]
+            local reused_supsub = reuse and is_supsub(reuse) and not mexpru.u(reuse).group_closed
+            local wants_limits =
+                    (reused_supsub and mexpru.u(reuse).sup_place == mexpru.PLACE_DISPLAY)
+                    or (reused_supsub and mexpru.u(reuse).sub_place == mexpru.PLACE_DISPLAY)
                     or (base and mexpru.u(base).wants_limits)
+            local place = wants_limits and mexpru.PLACE_DISPLAY or mexpru.PLACE_BESIDE
 
             if reuse and is_supsub(reuse) then
                 local u = mexpru.u(reuse)
-                local new_sup = slot == "sup" and slot_horiz or u.sup
-                local new_sub = slot == "sub" and slot_horiz or u.sub
-                local rebuilt
-                if wants_limits then
-                    rebuilt = mexpru.bigop(fontset, u.base, new_sup, new_sub, u.sz or sz)
-                else
-                    rebuilt = mexpru.supsub(fontset, u.base, new_sup, new_sub)
-                end
-                children[#children] = rebuilt
+                --[[ The side arriving takes the placement its own marker asked for; the side
+                already there keeps the one it was built with. That is what reads `{X\limits_i}^n`
+                back as ONE node with a display sub and a beside sup, rather than two. ]]
+                children[#children] = mexpru.supsub(fontset, u.base,
+                        slot == "sup" and slot_horiz or u.sup,
+                        slot == "sub" and slot_horiz or u.sub,
+                        u.sz or sz,
+                        slot == "sup" and place or u.sup_place,
+                        slot == "sub" and place or u.sub_place)
             else
-                local new_sup = slot == "sup" and slot_horiz or nil
-                local new_sub = slot == "sub" and slot_horiz or nil
-                local node
-                if wants_limits then
-                    node = mexpru.bigop(fontset, base, new_sup, new_sub,
-                            mexpru.u(base).sz or sz)
-                else
-                    node = mexpru.supsub(fontset, base, new_sup, new_sub)
-                end
-                children[#children + 1] = node
+                children[#children + 1] = mexpru.supsub(fontset, base,
+                        slot == "sup" and slot_horiz or nil,
+                        slot == "sub" and slot_horiz or nil,
+                        mexpru.u(base).sz or sz, place, place)
             end
         elseif c == "\\" then
             pos = pos + 1
@@ -943,37 +1156,69 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                         slots[1] = mexpru.horiz(fontset, {build_empty_atom(fontset, sz)}, sz)
                     end
                     children[#children + 1] = mexpru.vert(fontset, slots, sz)
+                elseif char.operator_words[name] or name == "operatorname" then
+                    --[[ AN OPERATOR NAME COMES BACK AS THE 1-TALL VERT this app writes it with -
+                    see vert_operator_word for the shape and node_to_latex for the two spellings
+                    that produce it.
+
+                    THIS IS ALSO THE PASTE PATH, and it is why the gap mattered: `\\lim` was not a
+                    catalogued glyph and no branch claimed it, so an unrecognised macro was dropped
+                    and a limit copied out of a paper arrived with its operator missing and its
+                    subscript hanging off nothing.
+
+                    `\\operatorname*{...}` and `\\operatorname{...}` are read the same. The star is
+                    amsmath's "put the limits under it", which this model carries on the supsub's
+                    own placement instead (the `\\limits` marker below), so there is nothing here
+                    for it to change. ]]
+                    local word, starred = name, false
+                    if name == "operatorname" then
+                        --[[ The STAR is amsmath's "set this operator's limits under it", which is
+                        exactly what \limits says for the built-in operators - so it is read as
+                        the same thing rather than discarded, and a pasted `\operatorname*{argmin}`
+                        keeps its placement instead of quietly flattening to a beside subscript. ]]
+                        if s:sub(pos, pos) == "*" then
+                            starred = true
+                            pos = pos + 1
+                        end
+                        word = nil
+                        if s:sub(pos, pos) == "{" then
+                            local close = s:find("}", pos + 1, true)
+                            if close then
+                                word = s:sub(pos + 1, close - 1)
+                                pos = close + 1
+                            end
+                        end
+                    end
+                    if word and word:match("^%a+$") then
+                        local glyphs = {}
+                        for k = 1, #word do
+                            local e = char.find_by_ascii(word:sub(k, k))
+                            if e then
+                                local g = mexpru.mexpr_symbol(fontset,
+                                        {size = mexpru.physical_sz(sz), code = e.ncod}, true)
+                                mexpru.u(g).sz = sz
+                                glyphs[#glyphs + 1] = g
+                            end
+                        end
+                        if #glyphs > 0 then
+                            local v = mexpru.vert(fontset,
+                                    {mexpru.horiz(fontset, glyphs, sz)}, sz)
+                            mexpru.u(v).wants_limits = starred or nil
+                            children[#children + 1] = v
+                        end
+                    end
                 else
                     local entry = char.find_by_desc("\\" .. name)
                     if entry then
-                        -- char.lua's own size_delta_by_desc (currently just "\\int") - a big
-                        -- operator built at plain text size reads as a thin, undersized squiggle
-                        -- instead of the display-style glyph it's supposed to be (see that
-                        -- table's own comment; main.lua's dead demo does the same bigger \\int
-                        -- by hand at sz-5). Clamped into the valid [1, MAX_SIZE_INDEX] table
-                        -- range the same way every other size computation in this codebase is -
-                        -- size_delta_by_desc's deltas are small relative to the table (-5 vs 18
-                        -- entries) so this only ever matters for glyphs already near an edge.
-                        --
-                        -- glyph_sz is ONLY for mexpr_symbol()'s own construction call - it bakes
-                        -- the bigger visual size directly into the glyph's real geometry (tl/br),
-                        -- permanently, independent of anything tagged afterward. u(g).sz is tagged
-                        -- with the surrounding NOMINAL `sz` instead, deliberately NOT glyph_sz -
-                        -- u(_).sz is a LOGICAL "what level does this belong to" reading (cursor
-                        -- height via cursor_metrics()'s own G/g measurement, and the base size any
-                        -- later supsub built off this glyph sizes its own sup/sub relative to),
-                        -- not a visual one - \\int's own display-style boost is real ink, not a
-                        -- change of context level, and a cursor parked on \\int rendering at 4x a
-                        -- normal glyph's height (matching \\int's own boosted line-height) reads as
-                        -- broken, not as "you're now inside bigger text".
-                        local delta = char.size_delta_by_desc[entry.desc]
-                        -- glyph_sz is LOGICAL too (same table, just a boosted level) - mapped to
-                        -- PHYSICAL only for the real construction call (mexpru.physical_sz()'s own
-                        -- comment), same as every other glyph this file builds.
-                        local glyph_sz = delta and math.max(1, math.min(sz + delta, MAX_SIZE_INDEX)) or sz
-                        local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
-                        mexpru.u(g).sz = sz
-                        children[#children + 1] = g
+                        --[[ AN INTEGRAL OPENS A PAIR, exactly as "(" does - its close is the
+                        `d` of its differential, written "\\,d" (node_to_latex's own note). Every
+                        other macro glyph passes nil here and is built as an ordinary atom.
+
+                        THE HAND-ROLLED BUILD THAT STOOD HERE MOVED INTO push_char, size_delta and
+                        all: the two were the same handful of lines, and an integral now has to go
+                        through the one that also does the pairing. ]]
+                        push_char(entry, nil, false,
+                                INTEGRAL_OPENS[entry.desc] and char.BRACKET_INTEGRAL or nil)
                     end
                 end
                 --[[ The ONE separator space that follows a control word, consumed here so it
@@ -1003,14 +1248,38 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                 pasted. And the escape has to be tried FIRST: the catalog also holds a desc "\{" for
                 cmsy's BIG brace, so a desc-first order quietly turned every escaped "\{" into a
                 bracket-sized one. Caught by test_latex_groups.lua. ]]
-                local entry = (TEX_ESCAPABLE[nc] and char.find_by_ascii(nc))
-                        or (nc ~= "" and char.find_by_desc("\\" .. nc))
-                        or (nc ~= "" and char.find_by_ascii(nc))
-                if entry then
-                    -- from_escape = true: this is where a literal curly BRACKET arrives.
-                    push_char(entry, nc, true)
+                --[[ "\\,d" CLOSES AN OPEN INTEGRAL, and nothing else does. The thin space is a
+                MARK, not content, so it leaves no glyph behind - author, 2026-09-11: "this is only
+                present in the export we forget it and link with the integral".
+
+                GUARDED BY THE STACK, which is what keeps "\\," an ordinary thin space everywhere
+                else: it binds only when an integral is actually open, so a deliberately typed
+                "\\,d" outside one survives untouched. Inside one it is the differential, which is
+                the only thing it can reasonably be.
+
+                The stack also decides WHICH integral, and it can only ever produce the nesting the
+                editor itself can produce: try_close_bracket closes the innermost open half, so
+                nothing typeable pairs an outer integral with an inner `d`. A crossed pairing has no
+                LaTeX spelling and needs none. ]]
+                local top = bracket_stack[#bracket_stack]
+                local d_entry = nil
+                if nc == "," and s:sub(pos + 1, pos + 1) == "d" and top
+                        and mexpru.u(top.atom).bracket.type == char.BRACKET_INTEGRAL then
+                    d_entry = char.find_by_ascii("d")
                 end
-                pos = pos + 1
+                if d_entry then
+                    push_char(d_entry, "d", false, nil, char.BRACKET_INTEGRAL)
+                    pos = pos + 2
+                else
+                    local entry = (TEX_ESCAPABLE[nc] and char.find_by_ascii(nc))
+                            or (nc ~= "" and char.find_by_desc("\\" .. nc))
+                            or (nc ~= "" and char.find_by_ascii(nc))
+                    if entry then
+                        -- from_escape = true: this is where a literal curly BRACKET arrives.
+                        push_char(entry, nc, true)
+                    end
+                    pos = pos + 1
+                end
             end
         else
             --[[ A literal space in the source becomes a real space GLYPH, deliberately - this

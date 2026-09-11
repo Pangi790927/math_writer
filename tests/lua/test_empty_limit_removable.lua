@@ -22,10 +22,18 @@ condition reads perfectly reasonable in isolation ("only undo a spawn nobody typ
 own comment defends it convincingly. What it does not say is what happens to the OTHER case, and
 the answer was "nothing, forever".
 
-WHAT IS DELIBERATELY STILL TRUE, and asserted here so a later change cannot quietly drop it: with
-both slots untyped the WHOLE structure goes, not one side; and a slot with content in it is never
-removed by Backspace - that key clears content one glyph at a time, and only an already-empty slot
-is structural.
+WHAT IS DELIBERATELY STILL TRUE, and asserted here so a later change cannot quietly drop it: a
+SINGLE-SIDED node with nothing typed into it goes whole, undoing the spawn that made it; and a slot
+with content in it is never removed by Backspace - that key clears content one glyph at a time, and
+only an already-empty slot is structural.
+
+THAT FIRST CLAUSE USED TO READ "with both slots untyped the WHOLE structure goes", which is what the
+code did and is not what it meant. It was written when case 2 below was the only way to reach it, a
+node with one side; the rule as coded asked whether both sides were UNTYPED, and an absent side
+counts as untyped. So once each side could be added by its own keypress, a node with a limit below
+and an empty power beside it lost BOTH when the power was deleted. Reported live, 2026-09-10:
+"deleting sup also deletes bsub, not ok". Case 5 is that case, and the rule now asks whether the
+other side EXISTS rather than whether it is empty.
 
 Driven through make_bigop/collapse_empty_supsub rather than key presses, for the reason every
 handle_input-adjacent test here gives: handle_input() needs real keys, so these tests work one
@@ -164,5 +172,38 @@ function run_test()
         print("empty limits are removable by either delete key; filled ones are not;"
                 .. " untouched spawns still collapse")
     end
+    --[[ CASE 5 - TWO EMPTY SIDES ARE STILL TWO SIDES. Delete one and the other stays.
+
+    The case the "both untyped" rule got wrong, and the reason it was invisible for so long: while
+    a node's two sides could only be spawned together, "both untyped" and "one side, untyped" were
+    the same state. They stopped being the same the moment a limit below and a power beside could
+    be added by two separate keypresses.
+
+    Asserted on the SHAPE rather than on the return value - both readings return true here, and the
+    difference is only in what is left behind. ]]
+    local c5 = mformula.from_latex(fs, sz, "S")
+    local k5 = mexpru.u(c5.root).children
+    c5.cursor_pos = vc.wref_mexpr(k5[1])
+    mformula.make_bigop(c5, fs, "sub")          -- a limit below, empty
+    local made5 = cursor_node(c5)
+    ok = check(made5 ~= nil, "make_bigop left no cursor") and ok
+
+    -- back onto the operator, then a power beside it - also empty
+    local node5 = mexpru.u(c5.root).children[1]
+    c5.cursor_pos = vc.wref_mexpr(mexpru.u(node5).base)
+    mformula.make_supsub(c5, fs, "sup")
+
+    -- Backspace in the empty power must take the power, and nothing else.
+    local dropped = mformula.collapse_empty_supsub(c5, fs)
+    ok = check(dropped == true, "an empty side of a two-sided node could not be removed") and ok
+
+    local after = mexpru.u(c5.root).children[1]
+    local au = mexpru.u(after)
+    ok = check(au.kind == "supsub", "the node itself was destroyed; kind is now "
+            .. tostring(au.kind)) and ok
+    ok = check(au.sup == nil, "the side being deleted survived") and ok
+    ok = check(au.sub ~= nil,
+            "deleting the empty power took the limit below with it - the reported bug") and ok
+
     return ok
 end

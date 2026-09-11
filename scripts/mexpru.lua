@@ -60,7 +60,7 @@ end
 -- wref_mexpr/rref_mexpr wrap an EXISTING mexpr_t rather than making a new one and aren't mexpr_t
 -- themselves - no u field on those at all.)
 local WRAPPED = {
-    "mexpr_empty", "mexpr_symbol", "mexpr_bigop", "mexpr_frac", "mexpr_supsub",
+    "mexpr_empty", "mexpr_symbol", "mexpr_frac", "mexpr_supsub",
     "mexpr_bracket_left", "mexpr_bracket_right",
     "mexpr_unarexpr", "mexpr_binexpr", "mexpr_merge_h", "mexpr_merge_v",
     "mexpr_accent", "mexpr_dress",
@@ -99,9 +99,16 @@ mis-balancing, the sprint skipping a bracket carrying an exponent), so every wal
 through here. A dress needs the same look-through for the same reason, and recursively: a hatted,
 squared ")" still has to resolve.
 
-NOT the same question as mformula_new.lua's target_is_supsub_base, which asks about the cursor's own
-node rather than what a slot carries. They look alike; don't merge them.
-@date 2026-09-08 08:55 ]]
+A BIGOP TOO, since 2026-09-10, and for exactly the same reason. A big operator carrying limits has
+the same base/sup/sub slots as a supsub and differs only in how it draws (mformula_new's own
+is_supsub note), so a bracket sitting in ITS base was invisible here in every one of those four
+ways: the counter read a row as balanced when it was not, and the pair could no longer be found to
+delete or resize. Reachable today - make_bigop has no bracket guard - and load-bearing for the
+integral, whose opening half is a bracket that must be able to take limits.
+
+NOT the same question as mformula_new.lua's is_wrapper_base, which asks about the cursor's own node
+rather than what a slot carries. They look alike; don't merge them.
+@date 2026-09-10 14:10 ]]
 function mexpru.slot_atom(node)
     local u = mexpru.u(node)
     if not u.bracket and u.kind == "supsub" and u.base then
@@ -109,6 +116,33 @@ function mexpru.slot_atom(node)
     end
     if not u.bracket and u.kind == "dress" and u.target then
         return mexpru.slot_atom(u.target)
+    end
+    return node
+end
+
+--[[ THE NODE A DRESS IS WRAPPING - "make the dress transparent".
+
+A decoration is not a thing in its own right; it is something done TO a thing, and anything asking
+what is really here should see through it. `\\vec{F_{n}}` is a dress around a supsub, and a reader
+that stops at the dress sees a decorated letter with no subscript - which is how the subscript in
+that spelling went missing for as long as it did (mexpr_ast's `unit`).
+
+STOPS AT WHATEVER THE DRESS WRAPS, unlike slot_atom next door, which keeps going through supsubs as
+well until it reaches the bare atom. The two answer different questions: slot_atom asks "which glyph
+is this, ultimately", this asks "what is this decoration applied to" - and for a supsub the answer
+has to still BE the supsub, or its limits are lost again.
+
+A BRACKET IS NEVER LOOKED THROUGH, same carve-out slot_atom makes: a bracket atom's own tagging is
+the thing callers are after, and unwrapping past it would hide it.
+
+Loops rather than unwrapping once: nothing forbids a rebuild nesting two dresses, and a single step
+would leave the inner one in the way.
+@date 2026-09-11 16:45 ]]
+function mexpru.undressed(node)
+    local u = node and mexpru.u(node)
+    while u and not u.bracket and u.kind == "dress" and u.target do
+        node = u.target
+        u = mexpru.u(node)
     end
     return node
 end
@@ -272,7 +306,7 @@ has to be un-hideable again, or a pair that can be found is one that cannot be r
 local function replace_slot_atom(fs, node, new_atom)
     local u = mexpru.u(node)
     if not u.bracket and u.kind == "supsub" and u.base then
-        return mexpru.supsub(fs, replace_slot_atom(fs, u.base, new_atom), u.sup, u.sub)
+        return mexpru.resupsub(fs, u, replace_slot_atom(fs, u.base, new_atom), u.sup, u.sub)
     end
     if not u.bracket and u.kind == "dress" and u.target then
         return mexpru.redress(fs, replace_slot_atom(fs, u.target, new_atom), u, u.sz)
@@ -344,44 +378,50 @@ local function resolve_bracket_pairs(fs, children, lo, hi)
                 -- ignoring the current zoom entirely, while everything around it correctly rescaled.
                 local sz = mexpru.u(open_atom).sz
                 local phys_sz = mexpru.physical_sz(sz)
+                --[[ A pair with no tiered family is left exactly as typed: the integral's, whose
+                halves are an operator glyph and a `d` and grow with nothing. The recursion above has
+                already resolved whatever nests INSIDE it, which is the part that does still matter.
+                @date 2026-09-10 23:40 ]]
                 local opts = char.bracket_opts(br.type, phys_sz)
-                local assembled = (#inner == 1) and inner[1] or mexpru.mexpr_merge_h(fs, inner)
+                if opts then
+                    local assembled = (#inner == 1) and inner[1] or mexpru.mexpr_merge_h(fs, inner)
 
-                -- Short content keeps the PLAIN typed glyphs, untouched. Do not "fix" this by
-                -- forcing a minimum height into the tiered system instead (tried twice): its
-                -- smallest tier ("\\bigl(", FONT_MATH_EX) is not a same-size stand-in for a typed
-                -- "(" (FONT_NORMAL) but a deliberately larger glyph, so any threshold still lands
-                -- on it. "(a" -> "(a)" has to change nothing but the ")" appearing.
-                local plain_paren = char.find_by_ascii("(")
-                local paren_sz = fs:char_get_sz({size = phys_sz, code = plain_paren.ncod})
-                local plain_h = math.abs(paren_sz.tr.y - paren_sz.bl.y)
-                local content_bb = vc.mexpr_get_bb(assembled)
-                local content_h = content_bb.br.y - content_bb.tl.y
+                    -- Short content keeps the PLAIN typed glyphs, untouched. Do not "fix" this by
+                    -- forcing a minimum height into the tiered system instead (tried twice): its
+                    -- smallest tier ("\\bigl(", FONT_MATH_EX) is not a same-size stand-in for a typed
+                    -- "(" (FONT_NORMAL) but a deliberately larger glyph, so any threshold still lands
+                    -- on it. "(a" -> "(a)" has to change nothing but the ")" appearing.
+                    local plain_paren = char.find_by_ascii("(")
+                    local paren_sz = fs:char_get_sz({size = phys_sz, code = plain_paren.ncod})
+                    local plain_h = math.abs(paren_sz.tr.y - paren_sz.bl.y)
+                    local content_bb = vc.mexpr_get_bb(assembled)
+                    local content_h = content_bb.br.y - content_bb.tl.y
 
-                --[[ `inner` is what sits strictly BETWEEN the brackets, so an exponent riding on
-                the closing one is correctly NOT counted - "(a/b)^{2}" sizes its parentheses to the
-                fraction, not to the fraction plus the 2, which is what TeX does too. ]]
-                local grew = content_h > plain_h
-                local new_left, new_right
-                if not grew then
-                    new_left = open_atom
-                    new_right = close_atom
-                else
-                    new_left = mexpru.mexpr_bracket_left(fs, assembled, opts)
-                    new_right = mexpru.mexpr_bracket_right(fs, assembled, opts)
-                    mexpru.u(new_left).sz = sz
-                    mexpru.u(new_right).sz = mexpru.u(close_atom).sz
-                end
-                mexpru.u(new_left).bracket = {is_open = true, type = br.type, peer = mexpru.u(new_right)}
-                mexpru.u(new_right).bracket = {is_open = false, type = br.type, peer = mexpru.u(new_left)}
+                    --[[ `inner` is what sits strictly BETWEEN the brackets, so an exponent riding on
+                    the closing one is correctly NOT counted - "(a/b)^{2}" sizes its parentheses to the
+                    fraction, not to the fraction plus the 2, which is what TeX does too. ]]
+                    local grew = content_h > plain_h
+                    local new_left, new_right
+                    if not grew then
+                        new_left = open_atom
+                        new_right = close_atom
+                    else
+                        new_left = mexpru.mexpr_bracket_left(fs, assembled, opts)
+                        new_right = mexpru.mexpr_bracket_right(fs, assembled, opts)
+                        mexpru.u(new_left).sz = sz
+                        mexpru.u(new_right).sz = mexpru.u(close_atom).sz
+                    end
+                    mexpru.u(new_left).bracket = {is_open = true, type = br.type, peer = mexpru.u(new_right)}
+                    mexpru.u(new_right).bracket = {is_open = false, type = br.type, peer = mexpru.u(new_left)}
 
-                --[[ Only when the glyphs actually CHANGED. Short content keeps the atoms it already
-                had, and rebuilding a wrapper around an identical base would hand back a new node for
-                no reason - a fresh identity that peer transfer and any live cursor ref would then
-                have to chase. The untouched case stays exactly the no-op it always was. ]]
-                if grew then
-                    children[i] = replace_slot_atom(fs, children[i], new_left)
-                    children[close_idx] = replace_slot_atom(fs, children[close_idx], new_right)
+                    --[[ Only when the glyphs actually CHANGED. Short content keeps the atoms it already
+                    had, and rebuilding a wrapper around an identical base would hand back a new node for
+                    no reason - a fresh identity that peer transfer and any live cursor ref would then
+                    have to chase. The untouched case stays exactly the no-op it always was. ]]
+                    if grew then
+                        children[i] = replace_slot_atom(fs, children[i], new_left)
+                        children[close_idx] = replace_slot_atom(fs, children[close_idx], new_right)
+                    end
                 end
 
                 i = close_idx + 1
@@ -404,7 +444,7 @@ RELATIVE to (0, 0), not screen coordinates: the cache survives the box being dra
 invalidates it; recompute by calling again.
 
 The `if u then` guard is for the raw subobjs a few vc.mexpr_* constructors build in C++ without
-going through this layer (mexpr_frac's divider line, mexpr_bigop's operator symbol): those never had
+going through this layer (mexpr_frac's divider line, a big operator's symbol): those never had
 a table captured, so mexpru.u() returns nil. They are always leaves, and nothing else in this file
 ever reaches one - this anchor walk is the only exception.
 @date 2026-09-08 08:55 ]]
@@ -443,29 +483,64 @@ above it, sub what sits below. Naming them base/sup/sub rather than op/above/bel
 is_supsub() cover both kinds in mformula_new, so navigation, the cascade and every other walk needs
 no bigop case at all - only the two places that REBUILD a node dispatch on kind to pick a builder.
 
-`metrics` is a char passed purely for its size (mexpr_bigop's own comment): it scales the gap
+`metrics` is a char passed purely for its size (mexpr_supsub's own comment): it scales the gap
 between the operator and its limits, and its code is never read.
 @date 2026-09-08 08:55 ]]
-function mexpru.bigop(fs, base, sup, sub, sz)
-    local ret = mexpru.mexpr_bigop(fs, base, sup, sub,
-            char.hline_basic(mexpru.physical_sz(sz)))
-    mexpru.u(ret).kind = "bigop"
-    mexpru.u(ret).base = base
-    mexpru.u(ret).sup = sup
-    mexpru.u(ret).sub = sub
-    mexpru.u(ret).sz = sz
-    return ret
-end
+--[[ WHERE ONE SIDE IS DRAWN. Named here rather than registered as a C++ enum because the binding
+takes plain ints - the enum machinery in math_expr_composer.h feeds the YAML config, not Lua.
+@date 2026-09-10 16:20 ]]
+mexpru.PLACE_BESIDE = 0
+mexpru.PLACE_DISPLAY = 1
 
--- base required, sup/sub each a node or nil. Three NAMED slots rather than horiz's ordered list,
--- so propagate_rebuild() finds which one changed by name.
-function mexpru.supsub(fs, base, sup, sub)
-    local ret = mexpru.mexpr_supsub(fs, base, sup, sub)
+--[[ A base with a superscript and/or a subscript, each drawn beside it or centred over/under it.
+
+base required, sup/sub each a node or nil. Three NAMED slots rather than horiz's ordered list, so
+propagate_rebuild() finds which one changed by name.
+
+PLACEMENT IS PER SIDE, and both are remembered in `u` so a rebuild puts them back. This used to be
+two functions over two node kinds - `supsub` and `bigop` - which the C++ has now merged, because
+they always created the same node with the same three slots and differed only in where the sides
+were anchored. The Lua side kept the difference as a `kind`, and every walk that forgot to handle
+the second one lost a bracket or rebuilt an operator as the wrong thing.
+@date 2026-09-10 16:20 ]]
+function mexpru.supsub(fs, base, sup, sub, sz, sup_place, sub_place)
+    sup_place = sup_place or mexpru.PLACE_BESIDE
+    sub_place = sub_place or mexpru.PLACE_BESIDE
+    local ret = mexpru.mexpr_supsub(fs, base, sup, sub,
+            char.hline_basic(mexpru.physical_sz(sz or mexpru.DEFAULT_SIZE)),
+            sup_place, sub_place)
     mexpru.u(ret).kind = "supsub"
     mexpru.u(ret).base = base
     mexpru.u(ret).sup = sup
     mexpru.u(ret).sub = sub
+    mexpru.u(ret).sup_place = sup_place
+    mexpru.u(ret).sub_place = sub_place
+    if sz then
+        mexpru.u(ret).sz = sz
+    end
     return ret
+end
+
+--[[ Rebuilds `node` with new slots, keeping the placement and size it already had.
+
+THE single place a supsub is reconstructed from an existing one, for the same reason redress() is
+for a dress: the placement of each side is bookkeeping that lives only in `u`, so every rebuild that
+forgot to carry it would silently move a limit from under its operator to beside it. There were five
+such rebuilds when the two node kinds merged, each choosing a constructor by kind - this replaces
+that choice with the thing the kind used to stand for.
+@date 2026-09-10 16:20 ]]
+function mexpru.resupsub(fs, u, base, sup, sub)
+    return mexpru.supsub(fs, base, sup, sub, u.sz, u.sup_place, u.sub_place)
+end
+
+--[[ A big operator with its limits: the same node, with both sides DISPLAY.
+
+Kept as a name of its own because that is what the callers mean, and because the size argument is
+required here where supsub's is optional - a display side needs a size to scale its gap from.
+@date 2026-09-10 16:20 ]]
+function mexpru.bigop(fs, base, sup, sub, sz)
+    return mexpru.supsub(fs, base, sup, sub, sz,
+            mexpru.PLACE_DISPLAY, mexpru.PLACE_DISPLAY)
 end
 
 --[[ The floor a vert cell never shrinks below - "the size the cell started with". H's advance wide,
@@ -655,7 +730,7 @@ function mexpru.propagate_rebuild(fs, old_node, new_node, known_parent)
         children[known_parent and mexpru.index_of(children, old_node)
                 or old_node:get_parent_idx()] = new_node
         rebuilt = mexpru.horiz(fs, children, mexpru.u(parent).sz)
-    elseif kind == "supsub" or kind == "bigop" then
+    elseif kind == "supsub" then
         local u = mexpru.u(parent)
         local base, sup, sub = u.base, u.sup, u.sub
         if same(base, old_node) then
@@ -670,11 +745,7 @@ function mexpru.propagate_rebuild(fs, old_node, new_node, known_parent)
         end
         --[[ A bigop rebuilds through its own constructor but finds its changed slot exactly as a
         supsub does - they carry the same base/sup/sub fields, which is the whole point. ]]
-        if u.kind == "bigop" then
-            rebuilt = mexpru.bigop(fs, base, sup, sub, u.sz)
-        else
-            rebuilt = mexpru.supsub(fs, base, sup, sub)
-        end
+        rebuilt = mexpru.resupsub(fs, u, base, sup, sub)
     elseif kind == "frac" then
         local u = mexpru.u(parent)
         local num, den = u.num, u.den

@@ -519,8 +519,11 @@ local DEFAULTS = {
     {id = "math.frac",           desc = "Insert a fraction",                         binds = {"Ctrl+/"}},
     {id = "math.stack_grow",     desc = "Start a stack, or add a cell",              binds = {"Ctrl+="}},
     {id = "math.stack_shrink",   desc = "Drop a cell from the stack",                binds = {"Ctrl+-"}},
-    {id = "math.limit_above",    desc = "Limit above (makes a big operator)",        binds = {"Ctrl+Shift+["}},
-    {id = "math.limit_below",    desc = "Limit below (makes a big operator)",        binds = {"Ctrl+Shift+]"}},
+    --[[ [ IS BELOW AND ] IS ABOVE, swapped 2026-09-10 on the author's own reading of them.
+    The pair mirrors math.sub/math.sup above it, where the UNSHIFTED-looking key of the pair is
+    the lower one; a rebinding in the customiser overrides either, so this is only the default. ]]
+    {id = "math.limit_below",    desc = "Limit below (makes a big operator)",        binds = {"Ctrl+Shift+["}},
+    {id = "math.limit_above",    desc = "Limit above (makes a big operator)",        binds = {"Ctrl+Shift+]"}},
     {id = "math.bar_bracket",    desc = "Open or close a | delimiter",               binds = {"Ctrl+Shift+\\"}},
     {id = "math.accent_bar",     desc = "Bar above (press again to remove)",         binds = {"Ctrl+G"}},
     {id = "math.accent_hat",     desc = "Hat above",                                 binds = {"Ctrl+6"}},
@@ -532,10 +535,16 @@ local DEFAULTS = {
     {id = "math.dot_remove",     desc = "Remove a dot",                              binds = {"Ctrl+,"}},
     {id = "math.vec",            desc = "Vector arrow, pointing right",              binds = {"Ctrl+Shift+."}},
     {id = "math.vec_left",       desc = "Vector arrow, pointing left",               binds = {"Ctrl+Shift+,"}},
-    {id = "math.sprint_left",    desc = "Sprint to the previous landmark", repeat_ = true, binds = {"Shift+Left"}},
-    {id = "math.sprint_right",   desc = "Sprint to the next landmark",     repeat_ = true, binds = {"Shift+Right"}},
-    {id = "math.select_left",    desc = "Select within the row, left",     repeat_ = true, binds = {"Ctrl+Shift+Left"}},
-    {id = "math.select_right",   desc = "Select within the row, right",    repeat_ = true, binds = {"Ctrl+Shift+Right"}},
+    --[[ SHIFT SELECTS, CTRL+SHIFT JUMPS - swapped 2026-09-10 on the author's instruction,
+    "holding shift selects, ctrl+shift jumps on left,right arrows".
+
+    It was the other way round, which made a formula the one place in the app where Shift+Left
+    did not extend a selection: the text side has bound that to nav.select_left from the start.
+    Sprinting is the rarer motion of the two, so it takes the longer chord. ]]
+    {id = "math.select_left",    desc = "Select within the row, left",     repeat_ = true, binds = {"Shift+Left"}},
+    {id = "math.select_right",   desc = "Select within the row, right",    repeat_ = true, binds = {"Shift+Right"}},
+    {id = "math.sprint_left",    desc = "Sprint to the previous landmark", repeat_ = true, binds = {"Ctrl+Shift+Left"}},
+    {id = "math.sprint_right",   desc = "Sprint to the next landmark",     repeat_ = true, binds = {"Ctrl+Shift+Right"}},
     {id = "math.back_up",        desc = "Go back up the way you came",     repeat_ = true, binds = {"Alt+Up"}},
     {id = "math.back_down",      desc = "Go back down the way you came",   repeat_ = true, binds = {"Alt+Down"}},
 

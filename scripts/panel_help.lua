@@ -30,6 +30,9 @@ local mformula = require("mformula_new")
 local mexpru = require("mexpru")
 local glyphmap = require("glyphmap")
 local char = require("char")
+--[[ The help page asks the parser what names it knows rather than keeping its own copy - see the
+generated lists below. ]]
+local mexpr_ast = require("mexpr_ast")
 
 --[[ content.lua, required on FIRST USE rather than at load.
 
@@ -93,6 +96,21 @@ A body is prose in a small markup, every piece of which is handled further down 
 An INDENTED line is preformatted and survives verbatim; a blank line is a paragraph break; every
 other line is reflowed to the column width (wrap()). Anything not in braces is literal.
 @date 2026-09-08 07:43 ]]
+--[[ The lists in "Names the parser knows" are GENERATED from the parser's own tables, never typed
+out here. A help page that repeats a table by hand is a copy that goes stale the first time the
+table gains a row - and that table gained nine rows in one afternoon.
+@date 2026-09-11 12:40 ]]
+local NAMED_OPS = table.concat(mexpr_ast.named_operators(), ", ")
+
+local BUILTIN_ONE, BUILTIN_TWO
+do
+    local one, two = {}, {}
+    for _, fn in ipairs(mexpr_ast.builtin_functions()) do
+        table.insert(fn.arity == 1 and one or two, fn.name)
+    end
+    BUILTIN_ONE, BUILTIN_TWO = table.concat(one, ", "), table.concat(two, ", ")
+end
+
 local CHAPTERS = {
 {title = "Reading this help", body = [[
 This page explains what the editor does that is not obvious from watching it.
@@ -488,6 +506,54 @@ its limit on top.
 Some glyphs are drawn larger than the text around them on purpose. An integral typed at
 body size is a thin squiggle otherwise; the display sizes are the proportions real
 typesetting uses.
+]]},
+
+{title = "Names the parser knows", body = [[
+A formula is not only drawn, it is READ. {app.ast} and {app.ast_string} show what the
+reader made of the one you are on. The names below are the ones it understands without
+being told about them.
+
+WORDS THAT ARE OPERATORS. Make a one-row stack with {formula.new_stack}, then type the
+letters into it:
+
+]] .. NAMED_OPS .. [[
+
+
+Each of these DECLARES the variable written under it and binds it in what follows, the
+same way a sum does - the `x` under a `min` is that min's own `x`, not the one outside.
+
+@fig \lim _{x\rightarrow 0}x
+
+A limit is written with an arrow, and the arrow is `-` then `>`.
+
+WORDS THAT ARE FUNCTIONS. These APPLY to an argument instead of declaring a variable, and
+they need no definition box. Of one argument:
+
+]] .. BUILTIN_ONE .. [[
+
+
+and of two:
+
+]] .. BUILTIN_TWO .. [[
+
+
+How many arguments is part of the name, so a `gcd` of one argument is a different name and
+does not read. Defining a name yourself that is already in this list REPLACES it.
+
+@fig \sin (2x+1)
+
+LETTERS. Every Greek glyph counts as a letter, so it can be a variable, a name, or the
+thing an operator binds. \sum and \prod are NOT letters - they are operators that happen to
+be drawn as Greek capitals, and \Sigma and \Pi are the letters.
+
+INFINITY is a number like any other, on Alt and the 8 key. Being a number rather than a
+special case is what lets it stand wherever a number can - most usefully as a bound.
+
+@fig \int _{0}^{\infty }x\,dx
+
+THE INTEGRAL IS A PAIR: its `d` is created together with the sign and belongs to it. That
+is what tells the reader where the body stops and which variable is being integrated over,
+so there is no way to write one and forget the variable.
 ]]},
 
 {title = "Fractions and stacks", body = [[

@@ -274,6 +274,19 @@ ignore it, error on it, frac{a}{b}, it's ok, parse it"*.
 **Signs** are a property of the product: `-2x` is `MUL(NUM(-2), REF(x))` (folded into the leading
 numeral) and `-x` is `MUL(NUM(-1), REF(x))`. A sign is a separator only with a term behind it.
 
+**`\infty` is a number, spelled `NUM(1, 0, +1)`** — one over zero. Author, 2026-09-11: *"infty
+should also parse, it's a number like any other, give it a specific value in over 0 in denominator"*.
+It gets no node type, no arithmetic branch and no sign handling of its own: `-\infty` goes through
+the same "negate a leading numeral in place" rule as `-2`, and comes out `NUM(1, 0, -1)`. The debug
+views gloss a zero denominator as `inf`, but only for a numerator of 1 — `0/0` prints raw rather
+than being read as something nobody built.
+
+**Greek glyphs are letters** (`char.greek_letters`), so `\pi` is a free variable, `\mu_{n}` a
+declarable name and `\theta` an integration variable. `\sum` and `\prod` are *not* in that set:
+they are operators that happen to be drawn as Greek capitals, and carry their own descs. Inside a
+quoted name the rule is narrower — ASCII only, since a quoted name packs by concatenating descs and
+`\pi` is several characters with a backslash in them.
+
 **Juxtaposition is multiplication**, which is possible only because a multi-character name has two
 other spellings — quoted, and the operator vertical. `bb` has no reading as one name.
 
@@ -341,11 +354,74 @@ The body is built first and caught afterwards because `\int_0^1 x dx` names its 
 body. A nearer binder of the same name shadows the whole group - subs, sups and body together, one
 scope - not just the body the old shape split off.
 
-**`mexpr_ast` now has a bigop case** (`read_bigop`), for `SUM`/`PROD`/`UNION`/`INTERSECT` only -
-`\int`/`\oint` are refused with a reason, their variable coming from a trailing differential (`dx`)
-that nothing reads yet. It recognizes both forms a row can produce one in: an ordinary supsub whose
-base is one of these glyphs (`\sum_{i=1}^n`, no `\limits`), and the dedicated `bigop` kind
-(`\sum\limits_{...}`) - same meaning, only where the limits are drawn differs.
+**Nine operators are written as WORDS rather than as a glyph** — `lim`, `limsup`, `liminf`, `min`,
+`max`, `sup`, `inf`, `argmin`, `argmax`. They are binders exactly like `\sum`: same group shape, same
+constraint lists, same spawning, same reader. The only difference is how the name is spelled on
+screen — a 1-tall vert holding the letters (`operator_name`) instead of one glyph — so
+`BIGOP_BY_SPELLING` is keyed by either and `read_bigop` never learned about them.
+
+A word operator is not the same thing as `sin`/`log`/`det`, which are also words: those **apply** to
+an argument and key into the definition trie as `sin(),(1)`, while these **declare** a variable in
+their subscript. A declaration still wins over both, since name resolution runs first.
+
+**The 25 built-in functions are INJECTED DECLARATIONS** (`mexpr_ast.builtin_declarations`), added by
+`build` itself so being in scope is a property of the language rather than something a call site can
+forget. They are produced by *parsing* `\sin (x)` through the ordinary name parser, so a built-in
+keys identically to a use of it. Consequences that fall out for free, rather than needing code:
+resolution ranks them by the same specificity rule, the argument goes through the whole expression
+cascade (`sin(2x+1)`), and a user's own declaration of the same text **replaces** the built-in
+instead of colliding with it.
+
+Arity is part of the name, so it is a decision: one argument for all of them except `gcd` and `hom`.
+`\gcd (a)` therefore does not resolve. A bare `\sin` with nothing applied is not an expression.
+
+`\lim_{x \to 0}` needs the arrow, so `TENDS` is a relation like membership — asymmetric, spawning
+only the side that varies. Typing `-` then `>` produces the single `\rightarrow` glyph (`DIGRAPHS`),
+so there is one spelling to recognise.
+
+**They serialize as LaTeX operators**, not as matrices. `char.operator_words` is the list LaTeX
+already names (`\lim`, `\sin`, `\Pr`, …); anything else — `argmin` among them, since LaTeX defines
+no such macro — goes out as `\operatorname{...}`, which is what amsmath provides for exactly this.
+Both spellings read back into the vert, so pasting a limit out of a paper now works. `\operatorname*`
+is read as display placement, the same thing `\limits` says.
+
+*Known cosmetic difference:* LaTeX sets these upright, this app draws them in the same italic letters
+as everything else, so an export looks slightly different from the screen. Kept deliberately —
+drawing them upright means substituting glyphs inside the vert at typing time, which changes what
+`operator_name` reads and what a save contains.
+
+**`mexpr_ast` has two operator cases, and they share nothing but the word.** `read_bigop` handles the
+group shape — `SUM`/`PROD`/`UNION`/`INTERSECT` plus the nine words above; `read_integral` handles
+`\int`/`\oint`. Both recognize either form
+a row can produce an operator in: an ordinary supsub whose base is the glyph (`\sum_{i=1}^n`, no
+`\limits`), and the same node with its sides placed over and under (`\sum\limits_{...}`) - same
+meaning, only where the limits are drawn differs.
+
+**An integral reads its variable from the differential, not from its sub** (🟢 since 2026-09-11).
+`\int` and the `d` that closes it are a BRACKET PAIR (`char.BRACKET_INTEGRAL`), made together at
+typing time, so:
+
+- the body is exactly what lies between the two halves - it ENDS at the `d`, unlike a group
+  operator's body, which swallows the rest of its term;
+- the variable is exactly the unit after the closing half, with its decorations;
+- the sub and sup are VALUES read through `build_expr`, not constraints, and declare nothing. An
+  integral with neither is an ordinary integral: both slots hold an `ast.NULL` (serialized
+  `(null:id)`), which is a real leaf node rather than an empty slot - a nil there makes Lua's `#`
+  stop short and every generic walk over the node silently skip its body.
+
+Nothing is scanned for. That is the whole point of the pair - a forward scan for a `d` cannot tell an
+integrand ending in a variable named `d` from a differential, nor which of two integrals a `d`
+belongs to. Author, 2026-09-10: *"if paired and kept paired, there is no way for someone to miss
+adding the integration variable, which is important"*.
+
+**The pairing survives a save**, because the differential is written `\,d` and read back as the
+closing half - real LaTeX, and the conventional spelling, so the export still renders elsewhere and a
+paper's own `\int f(x)\,dx` now pastes in as a real pair. The mark binds only while an integral is
+open on the reader's bracket stack, so a `\,` typed anywhere else stays the thin space it is.
+Author, 2026-09-11: *"this is only present in the export we forget it and link with the integral"*.
+
+An integral written before that (a bare `xdx`) is **refused with a reason** rather than repaired by
+guessing, and has to be retyped once.
 
 **Each sub/sup slot is one or more constraints.** A single `horiz` is one; a `vert` stack found there
 (already a general, user-buildable primitive - `mformula_new.new_with_vert()`) is one constraint per
@@ -354,28 +430,52 @@ whatever `=`/`<`/`\in`/etc. produces) and kept in the tree, not discarded once i
 known.
 
 **Spawned variables are the sub's free names minus the sup's**, harvested per constraint (both sides
-of an ordinary relation - `i=j` with both undeclared spawns both, together) via a `ctx.free_seen`
-side-channel set at the one place resolution already fails (`read_factor`'s free-letter branch) -
-walking the finished tree cannot tell a free reference from a declared one after the fact, since both
-produce the identical VREF shape.
+of an ordinary relation - `i=j` with both undeclared spawns both, together) via a `ctx.free_order`
+side-channel list, appended at the one place resolution already fails (`read_factor`'s free-letter
+branch) - walking the finished tree cannot tell a free reference from a declared one after the fact,
+since both produce the identical VREF shape.
+
+**A list, and in written order, because the order is part of the tree.** These names become the
+operator's variables in slots 4..4+N, so `\sum_{i=j}` and `\sum_{j=i}` are different trees and
+`ast.to_string` writes the difference. It was a *set* drained with `pairs` until 2026-09-10, and Lua
+randomises its string-hash seed per process, so one formula built `i,j` in one run and `j,i` in the
+next - a nondeterministic tree, under an identity scheme that is exact structural equality. Nothing
+caught it because `test_bigop_nodes.lua` hands `vars` in by hand and so only ever tested the
+constructor; `test_bigop_parse.lua` exists to cover the path that decides the order.
 
 **Membership/inclusion is the one asymmetric case.** `i \in S` has an element side and a set side,
 and only the element side is ever eligible to be spawned - `\sum_{i \in S}(i)` spawning `S` alongside
 `i` (nothing in the sup to subtract `S` against) was found live and fixed the same day
-(`ASYMMETRIC_SPAWN_SIDE`, `mexpr_ast.lua`). Sound because a relation is always the ROOT of a
-constraint's own tree, never nested inside it - `build_relation` scans a row's whole top level for
-every relation before recursing at all, so a second one anywhere is a refused chain rather than a
-nested node, and one inside literal parens has no parser at all (§7's own "a relation inside brackets
-does not split").
+(`ASYMMETRIC_SPAWN_SIDE`, `mexpr_ast.lua`).
 
-**The body must be an explicit bracket group right after the operator.** How far an unparenthesized
-body reaches along a row - `\sum_{i=1}^{n} i + 1` as `SUM(...) + 1` or `SUM(..., i+1)` - is still a
-notation question nobody has answered, so it is refused rather than guessed, the same discipline a
-chained relation already gets. `\sum_{i=1}^{n}(i+1)` parses; `\sum_{i=1}^{n} i + 1` does not.
+**`harvest_eligible` walks the WHOLE constraint tree**, not just its root — wherever a
+membership/inclusion relation appears, at any depth, only its eligible side is descended into from
+there; everything else recurses into all of its children.
 
-🟡 rather than 🟢 for two reasons: the body-extent question above is still open, and the `vert`-stack
-multi-constraint path has been reviewed but not exercised live - there is no LaTeX text for it, only
-direct `mexpru` construction, which nothing has done yet.
+A root-only check was tried first and would work today, since `build_relation` scans a row's whole
+top level before recursing and so cannot produce a nested relation. It was rejected anyway: boolean
+connectives (`\land`/`\lor`/`\lnot`) do not exist yet, and `i \in S \land i \ne j` must still spawn
+only `i` on the day they land. "Recurse into every child" is the default for anything not in the
+table, so a future AND/OR/NOT needs no change here — whereas a root check would need finding again.
+Don't simplify it back.
+
+**The body is the next multiplication-like term, and parentheses are optional.** The operator is a
+factor like any other, and it swallows the REST of its own product term - exactly what
+`build_product` would have read there. Author, 2026-09-11: *"the way it should be managed is as a
+rest of an multiplication, or better as the next term after the supsub(sigma) to be a
+multiplication-like term, paranthesis are an option, but optional"*.
+
+So `\sum_{i=1}^{n} i`, `\sum_{i=1}^{n} i^2` and `\sum_{i=1}^{n} 2i` all parse with no brackets at
+all. A top-level `+`/`-` is not reachable from here in the first place: `build_sum` sits ABOVE
+`build_product` in the cascade and has already split the row into terms before any factor reader
+runs, so `\sum_{i=1}^{n} i + 1` is `SUM(..., i) + 1` - the addition is the sum's SIBLING, not its
+body. Writing the other reading needs the parens that make it one factor, `\sum_{i=1}^{n}(i+1)`,
+which is the only thing brackets are still required for.
+
+🟡 rather than 🟢 for one remaining reason: the `vert`-stack multi-constraint path has been reviewed
+but not exercised live - there is no LaTeX text for it, only direct `mexpru` construction, which
+nothing has done yet. (The body-extent question that used to be the second reason was settled
+2026-09-10; `read_bigop`'s own comment carries the author's wording for it.)
 
 ## 9. Also not built
 
@@ -403,7 +503,8 @@ whatever tree was built.
 | `test_resolve_use.lua` | matching a use against declarations |
 | `test_declaration_rules.lua` | §4 and §5 — which definitions coexist, and ranking |
 | `test_ast_view.lua` | the built tree, end to end, as F4 renders it |
-| `test_bigop_nodes.lua` | §8's node shape and binding |
+| `test_bigop_nodes.lua` | §8's node shape and binding, built directly |
+| `test_bigop_parse.lua` | §8 from a typed row: which names spawn, in which order |
 | `test_decorated_names.lua` | accents and primes as identity; quoted names packed whole |
 | `test_operator_name.lua` | the `sin` vertical |
 | `test_declarations_scope.lua` | which declarations a box can see |

@@ -32,9 +32,18 @@ local char = require("char")
 
 local glyphmap = {}
 
--- a..z, the keys this file is about. Kept as a string so the order is fixed and obvious: the
--- customiser lists them alphabetically, which is the only order anyone would look for a letter in.
-local LETTERS = "abcdefghijklmnopqrstuvwxyz"
+--[[ The keys this file gives a row to. Kept as a string so the order is fixed and obvious: the
+customiser lists them alphabetically, which is the only order anyone would look for a letter in.
+
+MOSTLY LETTERS, and it was only letters until 2026-09-11, when `8` was added to carry infinity on
+its Alt slot (char.greek_alt's own note for why that key). Nothing here ever required a letter - a
+row is an ImGuiKey name and `("8"):upper()` is "8" - so a digit needed no new machinery, only
+admission. Digits keep their `plain` slot nil, so typing one is unaffected: the ordinary character
+path handles it and this file is never consulted.
+
+Appended rather than inserted, because order is the customiser's row order and the saved file's
+line order, and both have to stay stable across runs. ]]
+local LETTERS = "abcdefghijklmnopqrstuvwxyz8"
 
 --[[ ROWS ARE KEYS, NOT LETTERS - and that distinction is the whole point of this file being
 customisable at all.

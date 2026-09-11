@@ -89,6 +89,96 @@ slots can keep testing `> 0`.
 @date 2026-09-08 08:12 ]]
 local DERIVED_SHORTHAND = 1
 local DERIVED_PATTERN   = 2
+
+--[[ The glyph a PARAMETER POSITION is drawn as, in the computed-name row.
+
+A name's parameters have no spelling - `f(x)` and `f(z)` are one name - so writing any letter there
+would show identity the name does not have. A dot shows the POSITION and nothing else, which is
+exactly what a pattern is. Requested live, 2026-09-11: "redraw all the boxes with an bright blue dot
+the size of a dot product (maybe use it) in the place of all free variables, that is equivalent to
+the name when viewed visualy", and the dot product is indeed the right size, so it IS the glyph.
+
+0xAABBGGRR like every colour here, so this is blue with a little green, not orange.
+@date 2026-09-11 02:10 ]]
+local VAR_DOT_COLOR = 0xffffb050
+local VAR_DOT_TEX   = "\\cdot "
+
+--[[ Paints every centred dot in a built row as a parameter dot.
+
+WHY A SEARCH IS SAFE HERE, and it is worth being explicit because it would not be anywhere else:
+this runs on the computed-name row alone, that row is built only from a name that PARSED, and a name
+that parses cannot contain a centred dot - a base is a letter, a digit run, a quoted string or a
+named operator, and an argument is a name, a literal or a number. So every "\\cdot" in this tree is
+one `pattern_latex` put there. Point it at any other row and that stops being true.
+
+Walks by ANCHORS rather than by kind, so it needs no case per node type and cannot fall out of step
+with what the tree can hold.
+@date 2026-09-11 02:10 ]]
+local function color_parameter_dots(node)
+    if not node then
+        return
+    end
+    if node.type == vc.MEXPR_TYPE_SYMBOL then
+        local entry = char.find_by_ncod(node.symb.code)
+        if entry and entry.desc == "\\cdot" then
+            node.color = VAR_DOT_COLOR
+        end
+    end
+    for i = 1, node:anchor_len() do
+        color_parameter_dots(node:anchor_at(i)[1])
+    end
+end
+
+--[[ The two LaTeX strings the derived rows are DRAWN from, taken off the boxes the name is made of.
+
+    base   `\\vec{F}`                    the name alone, for the signature line
+    row    `\\vec{F}_{\\cdot}`             the whole pattern, a dot at each parameter
+
+BOTH COME FROM THE USER'S OWN MEXPR, and that is the entire point. They used to be built from the
+parser's internal name instead - `pattern.name` ("F\\vec") for the first and `pattern.text`
+("F\\vec,sub,(1),end") for the second - which were then handed to from_latex as though they were
+LaTeX. They are not: they are a token walk that happens to look like it. An accent came out as a
+loose glyph AFTER its letter rather than above it, in both rows at once. Reported live, 2026-09-11:
+"the vector is not drawn above the F, but right of it", and then, on where to get it right from:
+"just draw the mexpr already present at the base?".
+
+COMPUTED AT PARSE TIME, not at draw time, because both strings name particular NODES and those nodes
+only exist while the tree that holds them does. `state.pattern` is deliberately held across the
+keystrokes where a name does not parse (sync_arity's own rule), so a draw-time read would be pairing
+a stale node list against a live tree - the substitution would silently miss and the dots would
+vanish while typing. Strings do not go stale.
+@date 2026-09-11 02:10 ]]
+function editor_definition.name_drawings(pat, name_slot)
+    if not pat or not name_slot then
+        return nil, nil
+    end
+
+    --[[ Keyed by the node's `u` table: the same table comes back for the same node every time
+    (mexpru's own bracket-model comment), so it is a real identity key, which a raw mexpr_p is not.
+    A weak mexpr pointer object would serve here too - noted by the author, 2026-09-11, as the other
+    way to get identity out of C++ and worth having later. ]]
+    local subst
+    for _, nodes in ipairs(pat.var_nodes or {}) do
+        for i, node in ipairs(nodes) do
+            subst = subst or {}
+            -- The first box of the position becomes the dot; the rest of it goes away, so a
+            -- multi-box argument collapses to one dot rather than to one dot per box.
+            subst[mexpru.u(node)] = (i == 1) and VAR_DOT_TEX or ""
+        end
+    end
+
+    --[[ THE BASE IS THE NAME WITHOUT ITS ARGUMENTS, and they live in a subscript that may sit
+    either inside or outside the accent - so it is dropped by substituting the supsub for its own
+    base rather than by picking a different node. `pat.base_drop` names it; mexpr_ast's note there
+    says why it cannot simply hand back a smaller node. ]]
+    local base_subst
+    if pat.base_drop then
+        local du = mexpru.u(pat.base_drop)
+        base_subst = {[du] = mformula.nodes_to_latex({du.base})}
+    end
+    local base = pat.base_nodes and mformula.nodes_to_latex(pat.base_nodes, base_subst) or nil
+    return base, mformula.to_latex(name_slot, subst)
+end
 --[[ The arity a definition starts at, before anything has been typed. An empty name slot does not
 parse, so there is nothing to derive from yet, and the box has to show SOMETHING: one parameter is
 the shape a definition usually has, and the first valid name replaces it. ]]
@@ -260,11 +350,14 @@ local function shorthand_latex(state)
     end
 
     --[[ The NAME alone, never the applied pattern: a signature is `F : ...`, not `F(x,y) : ...`.
-    state.pattern.name is what mexpr_ast.parse_name() read. ]]
+    `base_tex` is that name as the LaTeX of the boxes it is made of - see name_drawings. The
+    fallback is `pattern.name`, the parser's token spelling, which draws a decorated name WRONG
+    (that is the bug name_drawings exists for) but is still better than an empty signature for the
+    one case with no boxes to offer. ]]
     --[[ DOUBLE backslashes. These are LaTeX macros being built as Lua string literals, and Lua
     reads `\t` as a tab and `\r` as a carriage return - written singly, the shorthand rendered as
     "N^2 imes R" and "N ightarrow R", the macro names with their first letter eaten. ]]
-    return state.pattern.name .. ":" .. table.concat(parts, "\\times ")
+    return (state.pattern.base_tex or state.pattern.name) .. ":" .. table.concat(parts, "\\times ")
             .. "\\rightarrow " .. ret
 end
 
@@ -277,7 +370,7 @@ Held from the last VALID parse, like the arity: while a name is being typed it d
 blanking the row on every keystroke would make it useless exactly when you are watching it.
 @date 2026-09-08 08:12 ]]
 local function pattern_latex(state)
-    return state.pattern and state.pattern.text or nil
+    return state.pattern and (state.pattern.row_tex or state.pattern.text) or nil
 end
 
 --[[ WHAT THIS BOX DECLARES, for anything outside that needs to resolve a reference to it:
@@ -334,6 +427,10 @@ local function sync_derived(state, fontset)
             row.tex = want[i]
             row.c = want[i] and mformula.from_latex(fontset, mexpru.DEFAULT_SIZE, want[i]) or nil
             row.hit = nil
+            -- Only this row may contain a parameter dot - see color_parameter_dots.
+            if i == DERIVED_PATTERN and row.c then
+                color_parameter_dots(row.c.root)
+            end
         end
     end
 end
@@ -497,6 +594,9 @@ local function sync_arity(state, fontset)
     end
     state.invalid = nil
     state.pattern = pat
+    --[[ While the boxes the parse just walked are still the boxes on screen - see name_drawings for
+    why this cannot wait until the rows are drawn. ]]
+    pat.base_tex, pat.row_tex = editor_definition.name_drawings(pat, name)
 
     local want = pat.arity + 2
     if #state.slots == want then

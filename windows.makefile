@@ -14,6 +14,25 @@ CXX       := cl
 # precise in a cpp_backtrace.h trace.
 CXX_FLAGS := /EHs /await:strict /std:c++20 /Zi /MD /Zc:preprocessor /O2
 CXX_FLAGS += /DVIRT_COMPOSER_ENABLE_LUA_IO=1
+
+# ASAN=1 builds with the address sanitizer: `make clean && make ASAN=1`. OFF by default.
+#
+# WHAT IT BUYS over the page heap alternative, which is the other way to catch the same class:
+# three stacks instead of one - where the bad access happened, where the block was FREED, and
+# where it was allocated. A use-after-free is a question about the second of those, and a plain
+# access-violation stack cannot answer it. It also needs no admin and no registry flag, unlike
+# gflags page heap, which is a per-image setting under HKLM that outlives the run that set it.
+#
+# NEVER MEASURE WITH THIS ON. It puts a redzone around every allocation and poisons freed memory,
+# so every number the /O2 comment above is about becomes meaningless. Same warning the page heap
+# carries, and for the same reason.
+#
+# `make clean` FIRST, always: instrumented and uninstrumented objects must not be linked together,
+# and a partial rebuild will happily do exactly that. /Zi is required and is already above; add
+# /Od here too if an inlined frame reads wrong.
+ifeq (${ASAN},1)
+CXX_FLAGS += /fsanitize=address
+endif
 LIBS	  := /link gdi32.lib glfw3.lib opengl32.lib
 
 IMGUI     := ../imgui/

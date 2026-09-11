@@ -572,15 +572,17 @@ function editor_text.handle_input(state, fontset, sz)
     -- moves ITS cursor there - see mformula.hit_test()'s comment for how "which glyph" is
     -- decided. -----------------------------------------------------------------------
     if state.active_formula then
-        local ctrl_down = keymap.mods()
         local escaped = keymap.pressed("formula.exit")
         -- Ctrl+Left/Right always leave the formula, regardless of where the cursor is inside it -
         -- plain Left/Right staying parked at the formula's own start/end (mformula_new's
         -- move_left/move_right do nothing further once there) is intentional, not something arrow keys
         -- should escape on their own.
-        -- ...but NOT with Shift also held: Ctrl+Shift+Left/Right is the formula's own selection
-        -- gesture (mformula_new's own extend_selection()), so intercepting it here would exit the
-        -- formula on the very first attempt to select inside one.
+        -- ...but NOT with Shift also held: Ctrl+Shift+Left/Right is the formula's own SPRINT
+        -- (mformula_new's sprint_horizontal(); it was the selection gesture until the two were
+        -- swapped 2026-09-10), so intercepting it here would leave the formula on the very first
+        -- attempt to use it. Nothing here has to arrange that any more - `bind_matches` compares
+        -- modifiers EXACTLY unless a bind says "+All", so "Ctrl+Left" simply does not answer to
+        -- Ctrl+Shift+Left. The note stays because the hazard is real if that ever loosens.
         local ctrl_left = keymap.pressed("formula.exit_left")
         local ctrl_right = keymap.pressed("formula.exit_right")
         local ctrl_arrow_exit = ctrl_left or ctrl_right
@@ -1127,7 +1129,7 @@ end
 char_draw's raw font-baseline convention (unlike mexpr_symbol's, which recenters letters on their
 own "middle of a") gives no guarantee the glyph's visual center lands anywhere near the
 surrounding text's. True in particular for "\\int" (see char.size_delta_by_desc's comment):
-cmex10's integral glyph is designed for EXTERNAL vertical centering (the way mexpr_bigop positions
+cmex10's integral glyph is designed for EXTERNAL vertical centering (the way a DISPLAY side positions
 it against its operands), not standalone inline use, so its raw baseline sits far from where plain
 letters expect it - and the gap grows right along with the size boost. Centering the glyph's own
 bounding box on the line's vertical center, instead of trying to align baselines at all, sidesteps

@@ -1137,7 +1137,6 @@ function content.handle_input(state, fontset, pos)
     end
 
     local clicked = vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false)
-    local activating = false
     if clicked and state.last_layout then
         local mpos = vc.ImGui_GetMousePos()
 
@@ -1166,7 +1165,6 @@ function content.handle_input(state, fontset, pos)
             end
         end
         if hit then
-            activating = state.active_index ~= hit
             state.active_index = hit
         elseif state.last_rail_x and math.abs(mpos.x - state.last_rail_x) <= RAIL_CLICK_RADIUS then
             --[[ A press on the rail opens the radial menu instead of inserting a text box outright.
@@ -1184,13 +1182,30 @@ function content.handle_input(state, fontset, pos)
     --[[ `active.editor` rather than just `active`: a formula/definition placeholder CAN become the
     active box by being clicked (it is a box like any other for selection purposes), and it has no
     editor to forward input to. That is what "no controls for now" means in practice - it takes
-    focus and then does nothing with it. ]]
+    focus and then does nothing with it.
+
+    THE CLICK THAT ACTIVATES A BOX IS ALSO THE CLICK THAT PLACES ITS CARET. These three branches
+    were guarded by `not activating`, so a click landing on a box that was not already active
+    selected the box and THREW THE CLICK AWAY - the editor never saw it, and the caret stayed
+    wherever that box had left it. The screen then appeared to jump, because the draw scrolls the
+    caret into view and the caret was not where the click was.
+
+    It reproduced most obviously right after Ctrl+R, since a reloaded state has no active box at
+    all, which makes the FIRST click on anything an activation. Reported live, 2026-09-10: "click on
+    the bottom side of the screen moves the screen something else and the cursor doesn't get placed
+    where I've clicked it".
+
+    Nothing was being protected by the guard. It arrived undocumented with the original port of the
+    editor into Lua and was never explained; the box's chrome (close, wireframe, graph) returns
+    before this point, `active` already names the newly clicked box rather than the old one, and a
+    click on empty space clears the selection instead of reaching here. What is left is exactly the
+    case that should be forwarded. ]]
     local active = state.active_index and state.boxes[state.active_index]
-    if active and active.editor and not activating then
+    if active and active.editor then
         editor.handle_input(active.editor, fontset, state.font_size)
-    elseif active and active.def and not activating then
+    elseif active and active.def then
         editor_definition.handle_input(active.def, fontset, state.font_size)
-    elseif active and active.fml and not activating then
+    elseif active and active.fml then
         --[[ A true return means the box was pasted into: its content was replaced and its parent
         link dropped. Everything derived from it followed from the OLD content, so it goes. ]]
         if editor_formula.handle_input(active.fml, fontset, state.font_size) then
@@ -1227,12 +1242,38 @@ function content.handle_input(state, fontset, pos)
         box just left - draw() has to run once before last_cursor_y means anything again. One
         frame of lag, which is the same bargain scroll_into_view() and the mouse wheel already
         make with last_layout. ]]
+        --[[ A CARET MOVE IS FOLLOWED ONE FRAME LATER, never on the frame it happens.
+
+        `last_cursor_y` is written by draw(), so during handle_input it still describes where the
+        caret WAS. Scrolling to it the moment the caret moves therefore scrolls to the old position
+        - which is invisible for an arrow key, where old and new are one line apart, and violent for
+        a click, where they can be the whole document apart.
+
+        That is what this looked like live, 2026-09-10: a box whose caret sat at its end, off the
+        bottom of the screen; a click near the top of it scrolled the view to the END instead, and
+        then - because the button was still held - the drag branch mapped the unmoved pointer onto
+        the newly scrolled text and dragged out a selection from one to the other. "it jumps my
+        window down, selects a bunch of text and the cursor gets near the unions at the end".
+
+        The rule was already written down for the OTHER case that hits it: `follow_caret` (a box
+        MOVE) is deliberately deferred, "because the caret's screen position then still describes
+        the slot the box just left - draw() has to run once before last_cursor_y means anything
+        again". A caret move needs the same treatment for the same reason.
+
+        SCROLL FIRST, THEN ARM. Reading the flag before setting it is what keeps a held arrow key
+        scrolling every frame: each frame follows the PREVIOUS frame's move against a
+        `last_cursor_y` that has since been redrawn, which is the one-frame bargain this file makes
+        everywhere else. Setting first would leave a continuous move never satisfying its own flag.
+        @date 2026-09-11 00:40 ]]
         local follow = state.follow_caret
-        if moved or follow then
+        if follow then
             scroll_span_into_view(state, pos, active.editor.last_cursor_y,
-                    active.editor.last_cursor_h or 0,
-                    follow and (follow * MOVE_FOLLOW_LEAD) or 0)
+                    active.editor.last_cursor_h or 0, follow * MOVE_FOLLOW_LEAD)
+        elseif ed._scroll_to_caret then
+            scroll_span_into_view(state, pos, active.editor.last_cursor_y,
+                    active.editor.last_cursor_h or 0, 0)
         end
+        ed._scroll_to_caret = moved or nil
         state.follow_caret = nil
     end
 end
@@ -1295,6 +1336,50 @@ local AST_TEXT_COLOR = 0xffd0d0ff
 local AST_LINE_H     = 15
 local AST_WIDTH      = 430
 
+--[[ WHAT EACH PIECE OF AN F5 LINE IS PAINTED. 0xAABBGGRR, like every colour in this file, so the
+literals read back-to-front: 0xff60e060 is a GREEN, 0xff5050ff a RED, 0xffffb050 a BLUE.
+
+    op_sym     the ^, +, *, =, I, S ...             red
+    bind_sym   the # of a declaration, & of a ref   blue
+    var_name   the name a declaration declares      green
+    ref_name   what a reference resolves to         green
+    num_value  what a number cell actually is       yellow
+
+Blue and green are the VARIABLES, red is what is done to them, yellow is a constant - see
+to_string_lines, which is where the roles are assigned and where that reasoning lives. This table
+only says what a role LOOKS like, which is the one part of it that belongs to a debug overlay.
+
+SHARED BY BOTH VIEWS. F4 tags its lines with the same roles (mexpr_ast's `render`), so the two
+debug panels cannot drift into meaning different things by the same colour - asked for 2026-09-11:
+"miror those colors (those for the operator into f4)". ]]
+local AST_INDENT = 16
+
+local AST_ROLE_COLOR = {
+    op_sym    = 0xff5050ff,
+    bind_sym  = 0xffffb050,
+    var_name  = 0xff60e060,
+    ref_name  = 0xff60e060,
+    num_value = 0xff40e0ff,
+}
+
+--[[ Paints one line's coloured pieces left to right, measuring as it goes. Shared by F4 and F5,
+which is the point: one layout, one colour table, two panels. A line with no pieces - the "no
+expression here" and "no tree" messages - is drawn whole in the ordinary text colour.
+@date 2026-09-11 06:00 ]]
+local function draw_ast_line(l, lx, ly)
+    if not l.parts then
+        vc.ImGui_AddText({x = lx, y = ly}, AST_TEXT_COLOR, l.text)
+        return
+    end
+    --[[ Measured rather than padded to columns: the pieces vary in width by a lot (a "(" against a
+    name), and any fixed column would either overlap the long ones or strand the short ones. ]]
+    local px = lx
+    for _, piece in ipairs(l.parts) do
+        vc.ImGui_AddText({x = px, y = ly}, AST_ROLE_COLOR[piece.role] or AST_TEXT_COLOR, piece.text)
+        px = px + vc.ImGui_CalcTextSize(piece.text).x
+    end
+end
+
 local function draw_ast_overlay(state, fontset)
     local container = active_expression(state)
     local lines
@@ -1316,7 +1401,7 @@ local function draw_ast_overlay(state, fontset)
             {x = x + AST_WIDTH, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
     vc.ImGui_AddText({x = x, y = y}, AST_TEXT_COLOR, "F4  parse of the current expression")
     for i, l in ipairs(lines) do
-        vc.ImGui_AddText({x = x + l.depth * 16, y = y + i * AST_LINE_H}, AST_TEXT_COLOR, l.text)
+        draw_ast_line(l, x + l.depth * 16, y + i * AST_LINE_H)
     end
 end
 
@@ -1332,33 +1417,34 @@ typeset output, and `ast.to_string`'s tuples have no natural break points to wra
 Anchored BOTTOM-LEFT, the one corner F3 (top-right) and F4 (bottom-right) leave free.
 @date 2026-09-10 ]]
 local AST_STR_WIDTH = 480
-local AST_STR_WRAP  = 68
-
-local function wrap_text(text, width)
-    local lines = {}
-    local i, len = 1, #text
-    while i <= len do
-        lines[#lines + 1] = text:sub(i, i + width - 1)
-        i = i + width
-    end
-    if #lines == 0 then
-        lines[1] = ""
-    end
-    return lines
-end
 
 local function draw_ast_string_overlay(state, fontset)
     local container = active_expression(state)
     local lines
     if not container then
-        lines = {"no expression here - put the caret in a formula"}
+        lines = {{depth = 0, text = "no expression here - put the caret in a formula"}}
     else
         local decls = content.declarations_before(state, state.active_index)
         local node, err, ns = mexpr_ast.build(fontset, container, decls.order)
         if not node then
-            lines = {"no tree: " .. tostring(err)}
+            lines = {{depth = 0, text = "no tree: " .. tostring(err)}}
         else
-            lines = wrap_text(ast.to_string(ns, node), AST_STR_WRAP)
+            --[[ One node per line, indented by depth, rather than one hard-wrapped run of tuple
+            text. The flat form was unreadable the moment a tree had any depth at all - a wrap could
+            land anywhere, including mid-id - and it hid the very structure the view is consulted
+            for. ast.to_string_lines is the split, and lives beside to_string so the two agree. ]]
+            lines = ast.to_string_lines(ns, node)
+        end
+    end
+
+    --[[ Wide enough for the deepest line, since the tuples no longer wrap to a fixed column.
+    Measured off `text`, which is every piece concatenated - so this stays one measurement however
+    many colours a line ends up in. ]]
+    local width = AST_STR_WIDTH
+    for _, l in ipairs(lines) do
+        local w = l.depth * AST_INDENT + vc.ImGui_CalcTextSize(l.text).x + 24
+        if w > width then
+            width = w
         end
     end
 
@@ -1368,10 +1454,12 @@ local function draw_ast_string_overlay(state, fontset)
     local y = h - (#lines + 2) * AST_LINE_H - 12
 
     vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
-            {x = x + AST_STR_WIDTH, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
+            {x = x + width, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
     vc.ImGui_AddText({x = x, y = y}, AST_TEXT_COLOR, "F5  ast.lua serialization")
     for i, l in ipairs(lines) do
-        vc.ImGui_AddText({x = x, y = y + i * AST_LINE_H}, AST_TEXT_COLOR, l)
+        local lx = x + l.depth * AST_INDENT
+        local ly = y + i * AST_LINE_H
+        draw_ast_line(l, lx, ly)
     end
 end
 

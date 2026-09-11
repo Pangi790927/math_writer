@@ -54,6 +54,30 @@ local function first(c)
     return mexpru.u(c.root).children[1]
 end
 
+--[[ IS THIS A BIG OPERATOR? Since 2026-09-10 that is a question about PLACEMENT, not about a node
+kind. `mexpr_bigop` and `mexpr_supsub` were merged in the C++ - they always built the same node with
+the same three slots and differed only in where the sides were anchored - so every node is a supsub
+now, and what makes one a big operator is that its sides are drawn over and under rather than beside.
+
+Every assertion in this file that used to read `kind == "bigop"` reads this instead. The behaviour
+it pins is unchanged; only the thing that records it moved from a type to a field. ]]
+local function has_display_limits(node)
+    local u = mexpru.u(node)
+    if u.kind ~= "supsub" then
+        return false
+    end
+    local seen = false
+    if u.sup then
+        seen = true
+        if u.sup_place ~= mexpru.PLACE_DISPLAY then return false end
+    end
+    if u.sub then
+        seen = true
+        if u.sub_place ~= mexpru.PLACE_DISPLAY then return false end
+    end
+    return seen
+end
+
 local function cursor_is_empty(c)
     local n = c.cursor_pos:get_obj()
     return n ~= nil and n.type == vc.MEXPR_TYPE_EMPTY_BOX
@@ -70,7 +94,7 @@ function run_test()
 
         mformula.make_bigop(c, fs, "sup")
         local node = first(c)
-        check("Ctrl+Shift+[ turns it into a bigop", mexpru.u(node).kind == "bigop",
+        check("Ctrl+Shift+[ turns it into a bigop", has_display_limits(node),
                 mexpru.u(node).kind)
         check("...with an upper limit", mexpru.u(node).sup ~= nil)
         check("...and no lower one yet", mexpru.u(node).sub == nil)
@@ -86,7 +110,7 @@ function run_test()
         check("Ctrl+Shift+] then fills the lower limit", mexpru.u(node).sub ~= nil)
         check("...keeping the upper one", mexpru.u(node).sup ~= nil)
         check("...without nesting a second bigop",
-                mexpru.u(mexpru.u(node).base).kind ~= "bigop",
+                not has_display_limits(mexpru.u(node).base),
                 mexpru.u(mexpru.u(node).base).kind)
         check("...still one atom in the row", #mexpru.u(c.root).children == 1,
                 #mexpru.u(c.root).children)
@@ -105,7 +129,7 @@ function run_test()
             local c = formula_with_op(fs, "sum")
             mformula.make_bigop(c, fs, slot)
             check("setup: made a bigop with a " .. slot,
-                    mexpru.u(first(c)).kind == "bigop", mexpru.u(first(c)).kind)
+                    has_display_limits(first(c)), mexpru.u(first(c)).kind)
             check("...cursor is in the new empty slot", cursor_is_empty(c))
 
             check("backspace there collapses it",
@@ -246,7 +270,7 @@ function run_test()
                 {B .. "sum " .. B .. "limits^{n}_{i}x", "sum"},
                 {B .. "int " .. B .. "limits^{b}_{a}f", "int"}}) do
             local c = mformula.from_latex(fs, SZ, case[1])
-            check(case[2] .. ": parses as a bigop", mexpru.u(first(c)).kind == "bigop",
+            check(case[2] .. ": parses as a bigop", has_display_limits(first(c)),
                     mexpru.u(first(c)).kind)
             check(case[2] .. ": round-trips unchanged", mformula.to_latex(c) == case[1],
                     mformula.to_latex(c))
@@ -295,7 +319,7 @@ function run_test()
     do
         local src = B .. "mathop{lim}" .. B .. "limits^{n}_{x}"
         local c = mformula.from_latex(fs, SZ, src)
-        check("a \\mathop group parses as a bigop", mexpru.u(first(c)).kind == "bigop",
+        check("a \\mathop group parses as a bigop", has_display_limits(first(c)),
                 mexpru.u(first(c)).kind)
         --[[ It has to come back as ONE atom: the \\limits marker tags the last child parsed, so an
         operator whose letters spread across the row would leave the marker on the "m" alone. ]]
@@ -332,7 +356,7 @@ function run_test()
         mexpru.set_zoom(0)
         mformula.rescale(c, fs)
         check("a bigop is still a bigop after a zoom round trip",
-                mexpru.u(first(c)).kind == "bigop", mexpru.u(first(c)).kind)
+                has_display_limits(first(c)), mexpru.u(first(c)).kind)
         check("...and still serialises the same",
                 mformula.to_latex(c) == B .. "sum " .. B .. "limits^{n}_{i}x",
                 mformula.to_latex(c))

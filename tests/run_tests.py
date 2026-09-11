@@ -130,6 +130,16 @@ def build_harness(force: bool) -> bool:
 
 
 def discover_tests(filter_substr: str | None) -> list[Path]:
+    """The suite, or a substring of it - or ONE file named by path.
+
+    The path form is what `tests/repro/` is for: a file that deliberately crashes the harness
+    cannot live in tests/lua/, because everything there is picked up by the glob and would take
+    the whole suite down with it. Naming it directly keeps it runnable without making it a test.
+    """
+    if filter_substr:
+        direct = Path(filter_substr)
+        if direct.suffix == ".lua" and direct.exists():
+            return [direct]
     tests = sorted(LUA_DIR.glob("*.lua"))
     if filter_substr:
         tests = [t for t in tests if filter_substr in t.name]
@@ -163,9 +173,23 @@ def main():
     parser.add_argument("filter", nargs="?", default=None, help="only run tests whose filename contains this substring")
     parser.add_argument("--no-build", action="store_true", help="skip building/rebuilding the harness")
     parser.add_argument("--rebuild", action="store_true", help="force a full rebuild of the harness")
+    parser.add_argument("--asan", action="store_true",
+                        help="build the harness with the address sanitizer (forces a rebuild)")
     parser.add_argument("--list", action="store_true", help="list discovered tests and exit")
     parser.add_argument("-v", "--verbose", action="store_true", help="print full harness output for every test, not just failures")
     args = parser.parse_args()
+
+    # --asan rebuilds the harness instrumented. A forced rebuild is not optional: the flag
+    # changes code generation, and mixing instrumented objects with stale uninstrumented ones links
+    # without complaint and then misbehaves. Both the compile and the link need it, which is why it
+    # goes into CXX_FLAGS rather than onto one command.
+    #
+    # WHAT IT ANSWERS that a plain crash cannot: a use-after-free reported by ASan carries three
+    # stacks - the bad access, the free, and the allocation. An access violation carries only the
+    # first, and "who freed it" is usually the question worth asking.
+    if args.asan:
+        CXX_FLAGS.append("/fsanitize=address")
+        args.rebuild = True
 
     tests = discover_tests(args.filter)
     if args.list:

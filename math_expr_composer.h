@@ -320,7 +320,7 @@ struct mexpr_t : public vc::object_t {
 
     /*! Non-owning, raw back-pointer to whichever compound node's subobjs this node is currently a
     child of - set by every mexpr_* factory in this file that composes nodes into another (mexpr_
-    merge_h/mexpr_merge_v/mexpr_binexpr/mexpr_unarexpr/mexpr_bigop/mexpr_frac/mexpr_supsub/mexpr_
+    merge_h/mexpr_merge_v/mexpr_binexpr/mexpr_unarexpr/mexpr_frac/mexpr_supsub/mexpr_
     bracket_left/mexpr_bracket_right all set it on each of their own subobjs - checked 2026-09-04,
     an earlier version of this comment claimed several of these didn't yet, stale by the time it was
     read). Deliberately a raw pointer, not a wref_t/weak_ptr - no control-block overhead - so it
@@ -425,21 +425,33 @@ inline float mexpr_draw(vc::ref_t<charc::fontset_t> fs, ImVec2 pos, mexpr_p m, b
         float edge_x);
 inline mexpr_p mexpr_empty(vc::ref_t<charc::fontset_t> fs, float x, float y, float above_bl);
 inline mexpr_p mexpr_symbol(vc::ref_t<charc::fontset_t> fs, char_t sym, bool is_char);
-/*! A big operator with its limits: `op` with `above` over it and `bellow` under it.
-
-`op` is a NODE, not a char, so an operator can be anything that can be built - a sum sign, an
-integral, or the word "lim". `metrics` is passed purely for its size, the same idiom mexpr_frac's
-divline and mexpr_dress's own metrics use: only .size is read from it, to scale the gap between the
-operator and its limits. The code is never looked at.
-
-There is deliberately no operand parameter. What the operator applies to follows it as ordinary
-siblings in the row, which is both how TeX models it and what makes this node exactly a supsub with
-different drawing - three slots, so every walk that already knows a supsub needs nothing new. */
-inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs, mexpr_p op, mexpr_p above,
-        mexpr_p bellow, char_t metrics);
 inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs, mexpr_p above, mexpr_p bellow,
         char_t divline);
-inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs, mexpr_p base, mexpr_p sup, mexpr_p sub);
+/*! Where one of a supsub's two sides is drawn, chosen per side rather than per node. */
+enum mexpr_place_e {
+    MEXPR_PLACE_BESIDE  = 0,    /*!< to the right of the base, raised or lowered - "x^2" */
+    MEXPR_PLACE_DISPLAY = 1,    /*!< centred over or under the base - a big operator's limits */
+};
+/*! A base with a superscript and/or a subscript, each drawn beside it or centred over/under it.
+
+This node used to be two: mexpr_supsub drew both sides beside the base, mexpr_bigop drew both
+centred, and they were separate functions creating the SAME node type with the same three slots.
+The header already said so - "what makes this node exactly a supsub with different drawing" - and
+keeping them apart cost more than it bought: every walk in the Lua layer needed a second case, and
+the ones that were missed lost brackets and rebuilt operators as the wrong kind.
+
+PLACEMENT IS PER SIDE, and that is the point of merging rather than adding a node flag: all four
+combinations are real. A limit under an operator with a power beside it is `sub_place = DISPLAY,
+sup_place = BESIDE`, which two separate node types could only express by nesting one inside the
+other.
+
+`metrics` is read for its size alone - the same idiom mexpr_frac's divline uses - to scale the gap
+between the base and a DISPLAY side. BESIDE ignores it. The code is never looked at.
+
+There is deliberately no operand parameter. What a big operator applies to follows it as ordinary
+siblings in the row, which is how TeX models it and what keeps this node three-slotted. */
+inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs, mexpr_p base, mexpr_p sup, mexpr_p sub,
+        char_t metrics, int sup_place, int sub_place);
 /*! The two bracket halves, each its own independent glyph-like leaf, sized to fit `expr` (see
 mexpr_bracket_side() near their implementation) but never attaching `expr` itself anywhere in the
 returned tree - `expr` is used purely for sizing/centering, the caller places it separately. */
@@ -527,14 +539,11 @@ inline int register_meta(vc::virt_state_t *vs) {
         { "mexpr_symbol", vc::luaw_function_wrapper<mexpr_symbol,
                 vc::ref_t<charc::fontset_t>, char_t, bool> 
         },
-        { "mexpr_bigop", vc::luaw_function_wrapper<mexpr_bigop,
-                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, mexpr_p, char_t>
-        },
         { "mexpr_frac", vc::luaw_function_wrapper<mexpr_frac,
                 vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, char_t>
         },
         { "mexpr_supsub", vc::luaw_function_wrapper<mexpr_supsub,
-                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, mexpr_p>
+                vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_p, mexpr_p, char_t, int, int>
         },
         { "mexpr_bracket_left", vc::luaw_function_wrapper<mexpr_bracket_left,
                 vc::ref_t<charc::fontset_t>, mexpr_p, mexpr_bracket_t>
@@ -828,38 +837,6 @@ inline std::pair<ImVec2, ImVec2> calc_bb(const std::vector<anchor_t>& anchors) {
 inline ImVec2 calc_sz(ImVec2 tl, ImVec2 br) { return ImVec2(br.x - tl.x, br.y - tl.y); }
 inline ImVec2 calc_sz(mexpr_p m)            { return calc_sz(m->tl, m->br); }
 
-inline mexpr_p mexpr_bigop(vc::ref_t<charc::fontset_t> fs,
-        mexpr_p op, mexpr_p above, mexpr_p bellow, char_t metrics)
-{
-    /* OBS: above and bellow don't sit nicely on the integral sign yet - its glyph is designed to be
-       centred externally, unlike the sum. */
-    if (!op)
-        throw vc::except_t("can't use mexpr_bigop without an operator");
-    if (!above)
-        above = mexpr_t::create(MEXPR_TYPE_EMPTY_BOX);
-    if (!bellow)
-        bellow = mexpr_t::create(MEXPR_TYPE_EMPTY_BOX);
-
-    /* Only metrics.size matters here - get_font_mul measures 'a' at that size. See the declaration. */
-    float dst = MEXPR_DISTANCER_BIGO * get_font_mul(fs, metrics);
-    auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
-
-    auto sz_above = calc_sz(above);
-    auto sz_bellow = calc_sz(bellow);
-    auto sz_op = calc_sz(op);
-
-    ret->subobjs = std::vector<anchor_t> {
-        { .obj = op,     .pos = ImVec2(0, 0) },
-        { .obj = above,  .pos = ImVec2( -sz_above.x/2. + sz_op.x/2., op->tl.y - above->br.y - dst) },
-        { .obj = bellow, .pos = ImVec2(-sz_bellow.x/2. + sz_op.x/2., op->br.y - bellow->tl.y + dst) },
-    };
-    for (auto &anch : ret->subobjs)
-        anch.obj->parent = ret.get();
-
-    std::tie(ret->tl, ret->br) = calc_bb(ret->subobjs);
-    return ret;
-}
-
 inline mexpr_p mexpr_frac(vc::ref_t<charc::fontset_t> fs,
         mexpr_p above, mexpr_p bellow, char_t divline)
 {
@@ -920,37 +897,60 @@ The exponent must be at least 2/5 of the base above the base's bottom.
 Mirrored for subscripts.
 */
 inline mexpr_p mexpr_supsub(vc::ref_t<charc::fontset_t> fs,
-        mexpr_p base, mexpr_p sup, mexpr_p sub)
+        mexpr_p base, mexpr_p sup, mexpr_p sub, char_t metrics, int sup_place, int sub_place)
 {
     PROF_SCOPE("cpp.mexpr_supsub");
-    /* OBS: 1. the y placement of sub/sup are chosen at random */
+    /* OBS: 1. the y placement of a BESIDE sub/sup are chosen at random
+            2. a DISPLAY side doesn't sit nicely on the integral sign yet - its glyph is designed
+               to be centred externally, unlike the sum. */
     if (!base)
         throw vc::except_t("can't use mexpr_supsub without a base");
+
+    /* Only metrics.size matters - get_font_mul measures 'a' at that size. See the declaration.
+       Read unconditionally because either side may ask for it, and neither is known yet. */
+    float dst = MEXPR_DISTANCER_BIGO * get_font_mul(fs, metrics);
 
     auto ret = mexpr_t::create(MEXPR_TYPE_INTERNAL);
     auto sz_base = calc_sz(base);
 
     ret->subobjs.push_back(anchor_t{ .obj = base, .pos = ImVec2(0, 0) });
 
+    /* An ABSENT side contributes no anchor at all, rather than an empty box standing in for it.
+       mexpr_bigop used to substitute one, which is what made an empty limit impossible to delete
+       ("inside a bigop-sup and empty I can't delete it") - and it left a big operator with three
+       children where a supsub had one to three, so any walk indexing anchors positionally saw two
+       different shapes for one node type. */
     if (sup) {
         auto sz_sup = calc_sz(sup);
-        float yoff = base->tl.y;
+        if (sup_place == MEXPR_PLACE_DISPLAY) {
+            ret->subobjs.push_back(anchor_t{ .obj = sup,
+                    .pos = ImVec2(-sz_sup.x/2. + sz_base.x/2., base->tl.y - sup->br.y - dst) });
+        }
+        else {
+            float yoff = base->tl.y;
 
-        /* Correction for the case in which the exponent shadows to much of the base */
-        if (base->br.y - (sup->br.y + yoff) < sz_base.y*3./5.)
-            yoff = base->tl.y - sup->br.y + sz_base.y*2./5;
+            /* Correction for the case in which the exponent shadows to much of the base */
+            if (base->br.y - (sup->br.y + yoff) < sz_base.y*3./5.)
+                yoff = base->tl.y - sup->br.y + sz_base.y*2./5;
 
-        ret->subobjs.push_back(anchor_t{ .obj = sup, .pos = ImVec2(base->br.x, yoff) });
+            ret->subobjs.push_back(anchor_t{ .obj = sup, .pos = ImVec2(base->br.x, yoff) });
+        }
     }
 
     if (sub) {
         auto sz_sub = calc_sz(sub);
-        float yoff = base->br.y;
+        if (sub_place == MEXPR_PLACE_DISPLAY) {
+            ret->subobjs.push_back(anchor_t{ .obj = sub,
+                    .pos = ImVec2(-sz_sub.x/2. + sz_base.x/2., base->br.y - sub->tl.y + dst) });
+        }
+        else {
+            float yoff = base->br.y;
 
-        if ((sub->tl.y + yoff) - base->tl.y < sz_base.y*3./5.)
-            yoff = base->br.y - sub->tl.y - sz_base.y*2./5.;
+            if ((sub->tl.y + yoff) - base->tl.y < sz_base.y*3./5.)
+                yoff = base->br.y - sub->tl.y - sz_base.y*2./5.;
 
-        ret->subobjs.push_back(anchor_t{ .obj = sub, .pos = ImVec2(base->br.x, yoff) });
+            ret->subobjs.push_back(anchor_t{ .obj = sub, .pos = ImVec2(base->br.x, yoff) });
+        }
     }
 
     for (auto &anch : ret->subobjs)
@@ -1014,8 +1014,8 @@ inline mexpr_p mexpr_merge_h(vc::ref_t<charc::fontset_t> fs, std::vector<mexpr_p
         /* Place the node's LEFT EDGE at the pen, not its origin.
 
         Almost every node's box starts at its own origin, and for those this is exactly what it
-        always was. A big operator is the exception: mexpr_bigop centres its limits on the operator,
-        so when a limit is WIDER than the operator the node's box starts at a NEGATIVE tl.x - it
+        always was. A DISPLAY side is the exception: mexpr_supsub centres one over or under its
+        base, so when it is WIDER than the base the node's box starts at a NEGATIVE tl.x - it
         legitimately extends left of where it is anchored. Advancing by br.x alone then drew it over
         whatever sat to its left.
 

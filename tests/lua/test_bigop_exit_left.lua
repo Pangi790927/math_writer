@@ -56,7 +56,11 @@ function run_test()
     local kids = mexpru.u(c.root).children
     local integral
     for i = #kids, 1, -1 do
-        if mexpru.u(kids[i]).kind == "bigop" then
+        --[[ A big operator is a supsub whose sides are drawn over and under, since the two node
+        kinds merged on 2026-09-10 - there is no "bigop" kind to look for any more. ]]
+        local ku = mexpru.u(kids[i])
+        if ku.kind == "supsub" and (ku.sup_place == mexpru.PLACE_DISPLAY
+                or ku.sub_place == mexpru.PLACE_DISPLAY) then
             integral = kids[i]
             break
         end

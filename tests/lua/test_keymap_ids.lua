@@ -32,14 +32,26 @@ package.path = package.path .. ";./scripts/?.lua"
 
 local keymap = require("keymap")
 
--- Every script that calls into keymap. See the header on why this is a literal list.
+--[[ Every script that calls into keymap. See the header on why this is a literal list.
+
+THE TWO PANELS WERE MISSING until 2026-09-11, and the omission was invisible while this file only
+checked "is every id asked for a real one" - an unscanned file simply contributed no ids. It became
+visible the moment the reverse direction was asserted: four `help.*` actions looked unwired, and
+were not. That is the header's own warning ("a NEW script that calls keymap and is not added here is
+simply not checked") arriving in practice, and it is worth noting that the alarm which caught it was
+the NEW one - the old direction had been quietly under-scanning them for as long as they existed.
+
+The list is kept sorted so an addition is obvious in a diff. `grep -rl "keymap%.pressed(" scripts/`
+regenerates it. ]]
 local SCRIPTS = {
-    "scripts/main.lua",
     "scripts/content.lua",
-    "scripts/editor_text.lua",
-    "scripts/editor_formula.lua",
     "scripts/editor_definition.lua",
+    "scripts/editor_formula.lua",
+    "scripts/editor_text.lua",
+    "scripts/main.lua",
     "scripts/mformula_new.lua",
+    "scripts/panel_help.lua",
+    "scripts/panel_keymap.lua",
 }
 
 --[[ The keymap entry points that take an action id as their first argument.
@@ -96,10 +108,73 @@ function run_test()
                 .. #SCRIPTS .. " scripts, all ids known")
     end
 
-    --[[ The reverse direction is deliberately NOT asserted. An action with no call site yet is
-    legitimate - it is how a binding gets added to the customiser and the help before the editor
-    code that uses it exists - so "unused action" is not an error, and asserting it would make
-    the registry hostage to the order the work happens in. ]]
+    --[[ ---- THE REVERSE DIRECTION: every action is WIRED to something ----------------------
+
+    This was deliberately not asserted until 2026-09-11, on the reasoning that an action with no
+    call site yet is legitimate - "it is how a binding gets added to the customiser and the help
+    before the editor code that uses it exists" - so making it an error would hold the registry
+    hostage to the order the work happens in.
+
+    THAT REASONING DID NOT SURVIVE CONTACT. Asked for by the author, 2026-09-11: "can you do that
+    for all? make sure they are linked to their places in code?", after Shift+arrow selection and
+    Ctrl+Shift+arrow sprinting were both found dead inside a formula. The registry had them right;
+    mformula_new's call site still computed the OLD modifier meanings by hand and never asked. The
+    ids were referenced, so this file said nothing - but the shape of that bug is exactly "an entry
+    exists and nothing real is behind it", and the cheap half of it is checkable here.
+
+    So: an action with no call site must be listed below, WITH WHERE IT IS HANDLED INSTEAD. Adding
+    a binding before its code now costs one line in HANDLED_ELSEWHERE and its removal afterwards,
+    which is a fair price for the entry never being silently decorative.
+
+    WHAT THIS STILL CANNOT SEE - and it is worth being honest, because it is the half that actually
+    bit: whether the call site does the RIGHT thing with what it asks for. `keymap.pressed` being
+    called somewhere is not proof that its answer is used, or used correctly. Only running the input
+    path would show that, and nothing does. ]]
+    local HANDLED_ELSEWHERE = {
+        --[[ All three are polled in main.cpp with glfwGetKey - the REAL OS keyboard rather than
+        ImGui's state - precisely so they keep working when Lua has thrown and the binding would
+        not fire. They are in the registry to be listed by F1/F2 and to reserve their chords, not
+        to be dispatched from Lua. main.cpp says so at each poll. ]]
+        ["app.quit"]       = "main.cpp, glfwGetKey(GLFW_KEY_Q) + ctrl",
+        ["app.reload"]     = "main.cpp, glfwGetKey(GLFW_KEY_R) + ctrl",
+        ["app.debug_pipe"] = "main.cpp, glfwGetKey(GLFW_KEY_D) + ctrl + shift",
+    }
+
+    local seen = {}
+    for _, path in ipairs(SCRIPTS) do
+        local f = io.open(path, "r")
+        if f then
+            local src = f:read("*a")
+            f:close()
+            for _, fname in ipairs(ID_TAKING) do
+                for id in src:gmatch('keymap%.' .. fname .. '%("([^"]+)"%)') do
+                    seen[id] = true
+                end
+            end
+        end
+    end
+
+    local unwired = {}
+    keymap.each(function(id)
+        if not seen[id] and not HANDLED_ELSEWHERE[id] then
+            unwired[#unwired + 1] = id
+        end
+    end)
+    for _, id in ipairs(unwired) do
+        print("FAIL: action '" .. id .. "' is declared but nothing asks for it - wire it, or add "
+                .. "it to HANDLED_ELSEWHERE saying where it IS handled")
+        ok = false
+    end
+
+    -- And the exception list must not outlive its entries: an id listed there that no longer
+    -- exists is a stale claim about the registry.
+    for id, where in pairs(HANDLED_ELSEWHERE) do
+        if not known[id] then
+            print("FAIL: HANDLED_ELSEWHERE names '" .. id .. "' (" .. where
+                    .. ") but the registry has no such action")
+            ok = false
+        end
+    end
 
     return ok
 end

@@ -155,8 +155,6 @@ end
 in either state, and nothing else may change it at all.
 @date 2026-09-08 08:06 ]]
 function editor_formula.handle_input(state, fontset, sz)
-    local ctrl = keymap.mods()
-
     --[[ PASTE, in either state. Into an empty box it is how content arrives; into a filled one it
     REPLACES the content and drops the parent link, because what is in the box no longer came from
     the box it pointed at - it is a root now (see this file's header).

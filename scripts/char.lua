@@ -131,6 +131,18 @@ relations, two more rules - until 2026-09-09, when every one of them turned out 
 only from main.lua's dead demo and from the deleted mexpr.lua. A glyph wanted by name goes through
 find_by_desc()/find_by_ncod() below, which is where the editors have always got theirs.
 @date 2026-09-09 21:20 ]]
+--[[ THE INTEGRAL PAIR'S bracket type. A Lua string rather than one of vc's numeric
+mexpr_bracket_e values, deliberately: it can never collide with them, and nothing in C++ needs to
+know about it - the pair exists to be MATCHED and CASCADED, which is entirely mexpru's own bracket
+bookkeeping, not the layout layer's.
+
+The integral is not a bracket. It borrows the bracket mechanism because that mechanism already does
+what it needs - one half remembers the other, deleting either takes both, and the counter refuses to
+let them cross - and for no other reason. Author, 2026-09-10: "the idea is not to use the bracket
+functions necesarily, but mexprs with the symbol d and int".
+@date 2026-09-10 23:40 ]]
+capi.BRACKET_INTEGRAL = "integral"
+
 function capi.hline_basic(fontsz) return {size=fontsz, code=221} end
 
 function capi.round_bracket(fontsz)
@@ -251,8 +263,14 @@ function capi.bar_bracket(fontsz)
     }
 end
 
+--[[ Returns nil for a pair that is NOT drawn from the extensible bracket families - the
+integral's, whose two halves are an operator glyph and the letter `d`. Neither grows with what sits
+between them, so resolve_bracket_pairs has nothing to rebuild and leaves both alone.
+@date 2026-09-10 23:40 ]]
 function capi.bracket_opts(bracket_type, fontsz)
-    if bracket_type == vc.MEXPR_BRACKET_SQUARE then
+    if bracket_type == capi.BRACKET_INTEGRAL then
+        return nil
+    elseif bracket_type == vc.MEXPR_BRACKET_SQUARE then
         return capi.square_bracket(fontsz)
     elseif bracket_type == vc.MEXPR_BRACKET_CURLY then
         return capi.curly_bracket(fontsz)
@@ -657,6 +675,71 @@ capi.desc_aliases = {
     ["\\cong"]     = "\\equiv",
 }
 
+--[[ The Greek glyphs that are LETTERS, by desc - the set anything asking "could this stand for a
+variable" needs.
+
+WHY IT IS A LIST AND NOT A RANGE. These sit at ncod 92..136 in the catalog above, contiguously, and
+testing that range would work today and silently rot the first time a glyph is inserted among them.
+The Greek alphabet, by contrast, does not change.
+
+WHY IT IS NOT greek_alt/greek_alt_shift. Those are KEYBOARD defaults - which key produces what - and
+they are the wrong answer twice over: they are customisable, and greek_alt_shift deliberately holds
+three OPERATORS (\int, \sum, \prod) on keys whose Greek capital was not worth having. A letter is a
+property of the glyph, not of the key that happens to type it.
+
+\partial and the arrows are absent on purpose: they are operators and marks, not letters.
+@date 2026-09-11 08:10 ]]
+capi.greek_letters = {
+    ["\\alpha"] = true, ["\\beta"] = true, ["\\gamma"] = true, ["\\delta"] = true, ["\\epsilon"] = true,
+    ["\\zeta"] = true, ["\\eta"] = true, ["\\theta"] = true, ["\\iota"] = true, ["\\kappa"] = true,
+    ["\\lambda"] = true, ["\\mu"] = true, ["\\nu"] = true, ["\\xi"] = true, ["\\pi"] = true,
+    ["\\rho"] = true, ["\\sigma"] = true, ["\\tau"] = true, ["\\upsilon"] = true, ["\\phi"] = true,
+    ["\\chi"] = true, ["\\psi"] = true, ["\\omega"] = true,
+    ["\\Gamma"] = true, ["\\Delta"] = true, ["\\Theta"] = true, ["\\Lambda"] = true, ["\\Xi"] = true,
+    ["\\Pi"] = true, ["\\Sigma"] = true, ["\\Upsilon"] = true, ["\\Phi"] = true, ["\\Psi"] = true,
+    ["\\Omega"] = true,
+}
+
+--[[ OPERATOR WORDS - the names written as LETTERS rather than as a glyph, and the only list of
+them.
+
+`lim`, `sin`, `det`. This app spells one as a 1-TALL VERT holding the letters (mexpr_ast's
+`operator_name` for why a container and not loose letters), which is its own affair - what this
+table is for is LATEX, where each of these has a macro of its own. Without it the writer emitted
+`\\begin{matrix}lim\\end{matrix}` - a one-row MATRIX, which compiles and is nonsense - and the
+reader dropped an incoming `\\lim` on the floor, so a limit pasted from a paper vanished. Both are
+one list away from working, and this is it.
+
+VALUE IS THE MACRO NAME, not `true`, because a few differ from the word: `\\Pr` is capitalised and
+`\\liminf` is one word for what is written `lim inf`. Anything not here is still writable, as
+`\\operatorname{...}` - see node_to_latex - so this table is "which ones LaTeX already names", never
+"which ones are allowed".
+
+THE BINDERS ARE NOT MARKED HERE. Whether `lim` declares a variable and `sin` does not is a question
+about the GRAMMAR, and mexpr_ast owns the answer (BIGOP_BY_SPELLING). This file knows about
+notation, not about meaning, and a second opinion on which is which is exactly the drift worth
+avoiding.
+
+UPRIGHT VS ITALIC, decided 2026-09-11: real LaTeX sets these upright and this app draws them in the
+same italic letters as everything else, so an exported `\\lim` looks slightly different from the
+screen. Kept anyway - author: "I don't really care, if you think the change is really small, you may
+change it". It is not small: drawing them upright means substituting the upright glyphs inside the
+vert at typing time, which changes what operator_name reads and what a save contains. The mismatch
+is cosmetic and falls on the correct side, since upright is what the notation actually wants.
+@date 2026-09-11 11:20 ]]
+capi.operator_words = {
+    -- binders: they take limits above and below
+    lim = "lim", limsup = "limsup", liminf = "liminf",
+    min = "min", max = "max", sup = "sup", inf = "inf",
+    -- functions: they take an argument
+    sin = "sin", cos = "cos", tan = "tan", cot = "cot", sec = "sec", csc = "csc",
+    arcsin = "arcsin", arccos = "arccos", arctan = "arctan",
+    sinh = "sinh", cosh = "cosh", tanh = "tanh", coth = "coth",
+    log = "log", ln = "ln", lg = "lg", exp = "exp",
+    det = "det", dim = "dim", ker = "ker", deg = "deg", arg = "arg",
+    gcd = "gcd", hom = "hom", Pr = "Pr",
+}
+
 --[[ Returns the capi.chars entry whose `desc` matches exactly (e.g. "\\alpha"), or nil.
 Falls back to capi.desc_aliases, so an alternate spelling finds the same glyph.
 @date 2026-09-08 08:50 ]]
@@ -695,6 +778,16 @@ capi.greek_alt = {
     which pairs with Alt+Shift+Q holding the integral for exactly the same "this key is free"
     reason. Both are operators on a letter key, and both are listed in greek_alt_shift's own note. ]]
     q="\\partial",
+
+    --[[ NOT A LETTER KEY AT ALL, and the first entry here that isn't. `8` is the digit whose shape
+    IS the symbol turned on its side, which is the only mnemonic infinity has ever had, and no
+    letter suggests it. Asked for 2026-09-11: "btw infinity sign should be drawn with alt+8" -
+    while writing integrals, where an infinite bound is most of what one is for.
+
+    A digit key can hold a glyph for the same reason `q` can hold an operator: this table is the
+    ALT slot's factory setting, not a Greek alphabet. Plain `8` is untouched - its `plain` slot
+    stays nil, which means "insert the digit" and never consults this file. ]]
+    ["8"]="\\infty",
 }
 
 --[[ Only these have a distinct capital glyph in capi.chars - the rest look identical to their

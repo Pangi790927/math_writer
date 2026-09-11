@@ -76,6 +76,23 @@ nil, so the draw threw once per frame. The whole test suite still passed: the he
 runs the draw path, so nothing caught it. It showed up only as the running app visibly pulsing.
 2026-09-06. ]]
 local innermost_unclosed_open
+
+--[[ The integral whose differential has not been typed yet, or nil.
+
+`d` means "close this" only while one is open, and is an ordinary letter otherwise - so every place
+that asks about typing has to be able to tell which moment it is in.
+@date 2026-09-10 23:40 ]]
+local function pending_integral(container)
+    local open_atom = innermost_unclosed_open(container)
+    if not open_atom then
+        return nil
+    end
+    local br = mexpru.u(open_atom).bracket
+    if br and br.type == char.BRACKET_INTEGRAL then
+        return open_atom
+    end
+    return nil
+end
 -- Translucent, drawn UNDER the glyphs, same idea as editor_text.lua's own plain-text selection.
 local SELECTION_COLOR = 0x553399ff
 --[[ A vert's box and the tick between its cells: muted blue, 0.75 of the way toward the
@@ -185,6 +202,117 @@ puts them back IN through to_baseline_frame() - so the atom reads back at exactl
 An empty atom does not need that conversion the way a symbol does; baking it out is what lets both
 kinds flow through one path instead of the readers asking which kind they hold.
 @date 2026-09-08 09:30 ]]
+--[[ THE TWO WRAPPERS a base can carry, and the one predicate that must never tell them apart.
+
+A big operator carrying limits is a supsub in every way except how it DRAWS: the same base/sup/sub
+slots, so Left/Right step over it as one atom, Up/Down enter its limits, and the cascade and the
+sprint see what they already understand. Only the two places that REBUILD a node look at `kind` to
+choose a constructor.
+
+DEFINED HERE, AT THE TOP, because that is what went wrong before. This predicate was widened to
+cover bigop on 2026-09-08 with a comment saying "this predicate widening needs no other change" -
+and it was true of everything that CALLED it. Five places did not call it: four hand-rolled
+`kind == "supsub"` to compute `target_is_supsub_base`, and make_supsub hand-rolled the size fallback
+because the helper was declared further down the file. A base under a bigop answered `false` at all
+five, so a typed character replaced the row slot instead of the base. A helper that half the file
+cannot reach is not a helper, so both live above every caller now.
+@date 2026-09-10 14:10 ]]
+local function is_supsub(node)
+    return mexpru.u(node).kind == "supsub"
+end
+
+--[[ Is `target` the BASE of the wrapper it sits in, rather than an ordinary sibling in a row?
+
+The question every insert/paste path asks before writing into a slot: replacing a base means
+rebuilding the wrapper around it, while replacing a row slot is an ordinary splice. Both wrapper
+kinds answer the same, which is the whole point.
+
+`parent` is passed rather than read from `target` because callers already hold it - and because
+get_parent() answers differently once a rebuild is in flight (make_supsub's own note).
+@date 2026-09-10 14:10 ]]
+local function is_wrapper_base(target, parent)
+    if not target or not parent then
+        return false
+    end
+    local pu = mexpru.u(parent)
+    return pu ~= nil and pu.kind == "supsub" and mexpru.same(pu.base, target)
+end
+
+--[[ Writes a new side into a wrapper that is already there, REBUILDING IT AS ITS OWN KIND.
+
+The kind is the whole reason this is a function. The sup/sub key used to rebuild whatever it found
+with `mexpru.supsub()` - correct for as long as the only thing it could find was a supsub, and wrong
+the moment a bigop's base started answering is_wrapper_base: pressing sup on a big operator's base
+would have rebuilt the operator as a supsub, silently moving its limits from over-and-under to
+beside it.
+@date 2026-09-10 15:00 ]]
+local function fill_wrapper_slot(container, fontset, wrapper, slot, new_horiz, place)
+    local u = mexpru.u(wrapper)
+    local sup = (slot == "sup") and new_horiz or u.sup
+    local sub_ = (slot == "sub") and new_horiz or u.sub
+    --[[ The side being written gets the placement the key asked for; the other keeps its own, which
+    is what lets one node hold a limit under an operator and a power beside it at once. ]]
+    local sup_place = (slot == "sup") and place or u.sup_place
+    local sub_place = (slot == "sub") and place or u.sub_place
+    local rebuilt = mexpru.supsub(fontset, u.base, sup, sub_, u.sz, sup_place, sub_place)
+    container.root = mexpru.propagate_rebuild(fontset, wrapper, rebuilt)
+end
+
+--[[ THE WRAPPER STACK over whatever atom `node` ultimately decorates: the base at the bottom, and
+the wrappers standing on it, innermost first.
+
+Both directions are walked because `node` can be either end of the same stack - the cursor rests on
+the base while typing, and on the wrapper node itself after leaving a limit.
+@date 2026-09-10 15:00 ]]
+local function wrapper_stack(node)
+    local base = node
+    while is_supsub(base) and mexpru.u(base).base do
+        base = mexpru.u(base).base
+    end
+
+    local chain, n = {}, base
+    while true do
+        local parent = n:get_parent()
+        if not is_wrapper_base(n, parent) then
+            break
+        end
+        chain[#chain + 1] = parent
+        n = parent
+    end
+    return base, chain
+end
+
+--[[ What adding a `slot` ("sup"/"sub") over `node` should do: {action = "fill", wrapper} to write
+into the wrapper already there, {action = "wrap", around} to build one - or nil plus the reason.
+
+BOTH OF THE AUTHOR'S RULES ARE NOW ARITHMETIC RATHER THAN POLICY, and that is what merging the two
+node kinds bought. He asked for "max wrap level is 2" and for the two wrappers to be "mutual
+exclusive on their sup/sub levels" - and once a big operator IS a supsub, with per-side placement
+instead of a kind of its own, there is one node with one sup slot and one sub slot. There is nowhere
+to put a second sup, and no second wrapper to want.
+
+What is left for this function is the ordinary question: is that side free.
+@date 2026-09-10 16:20 ]]
+local function plan_decoration(node, slot)
+    local base, chain = wrapper_stack(node)
+    local wrapper = chain[1]
+    if not wrapper then
+        return {action = "wrap", around = base, base = base}
+    end
+    if mexpru.u(wrapper)[slot] then
+        return nil, "that side of this base is already taken"
+    end
+    return {action = "fill", wrapper = wrapper, base = base}
+end
+
+--[[ The size a decoration hung on `target` should be built at: the target's own, or - when target is
+a bare wrapper node with no size of its own (a resting spot) - its base's.
+@date 2026-09-10 14:10 ]]
+local function wrapper_base_sz(target)
+    return mexpru.u(target).sz
+            or (is_supsub(target) and mexpru.u(mexpru.u(target).base).sz)
+end
+
 local function build_empty_atom(fontset, sz)
     -- sz is LOGICAL (u(_).sz's own meaning, untouched by zoom - mexpru.rescale()'s own comment);
     -- the actual geometry below has to be built at the CURRENT PHYSICAL size (mexpru.physical_sz()
@@ -794,15 +922,37 @@ Exported rather than local so a test can call it without simulating key presses,
 codebase's own convention. It was exported alongside the get_parent_idx ordering fix below, so that
 bug has a regression test against the real function rather than a hand-rolled mirror of it.
 @date 2026-09-08 09:30 ]]
-function mformula_new.make_supsub(container, fontset, slot)
-    local target = container.cursor_pos:get_obj()
-    -- Falls back to base's own sz when target is a bare supsub node itself (resting spot, no u(_).sz
-    -- of its own) - same fallback, same reason, as handle_input()'s own target_sz computation (see
-    -- its comment) - NOT is_supsub() itself (declared further down this file, after this function,
-    -- same forward-reference reason make_frac() uses a raw kind check instead too).
-    local base_sz = mexpru.u(target).sz
-            or (mexpru.u(target).kind == "supsub" and mexpru.u(mexpru.u(target).base).sz)
+function mformula_new.make_supsub(container, fontset, slot, place)
+    --[[ THE WHOLE DECISION LIVES HERE, not half here and half in the key handler. Fill the supsub
+    already standing over this base, build one around it, or refuse - plan_decoration answers all
+    three, and this is the only entry, so a test calling it directly gets exactly what a keypress
+    does. They had already drifted apart once: the handler learned to fill and this did not, so the
+    same key did different things depending on which door it came through.
+
+    `place` is where the side is DRAWN - beside the base, or centred over/under it. It is the only
+    thing that used to require a second node kind. ]]
+    place = place or mexpru.PLACE_BESIDE
+    local plan, why = plan_decoration(container.cursor_pos:get_obj(), slot)
+    if not plan then
+        print("mformula_new: ignoring Ctrl+Shift+=/- - " .. why)
+        return
+    end
+
+    -- Falls back to the base's own sz when the node is a bare wrapper itself (a resting spot, with
+    -- no u(_).sz of its own). Covers a bigop too - it used to say `kind == "supsub"` here and so
+    -- built a decoration on a bigop's base at the wrong scale.
+    local base_sz = wrapper_base_sz(plan.action == "fill" and plan.base or plan.around)
     local sub_sz = math.min(base_sz + SUB_SIZE_DELTA, MAX_SIZE_INDEX)
+
+    if plan.action == "fill" then
+        local new_empty, new_horiz = build_side(fontset, sub_sz)
+        fill_wrapper_slot(container, fontset, plan.wrapper, slot, new_horiz, place)
+        container.cursor_pos = vc.wref_mexpr(new_empty)
+        mark_edited(container)
+        return
+    end
+
+    local target = plan.around
     local original_parent = target:get_parent()
     --[[ Captured HERE, before mexpru.supsub() runs, for the same reason original_parent is:
     supsub() reparents target onto the new node, and get_parent_idx() always scans whatever target's
@@ -816,12 +966,10 @@ function mformula_new.make_supsub(container, fontset, slot)
     local target_idx = target:get_parent_idx()
 
     local new_empty, new_horiz = build_side(fontset, sub_sz)
-    local supsub_node
-    if slot == "sup" then
-        supsub_node = mexpru.supsub(fontset, target, new_horiz, nil)
-    else
-        supsub_node = mexpru.supsub(fontset, target, nil, new_horiz)
-    end
+    local supsub_node = mexpru.supsub(fontset, target,
+            (slot == "sup") and new_horiz or nil,
+            (slot == "sub") and new_horiz or nil,
+            base_sz, place, place)
 
     --[[ original_parent MUST be a horiz, and until 2026-09-07 nobody checked.
 
@@ -1153,7 +1301,47 @@ function mformula_new.try_resolve_command(container, fontset)
         return false
     end
 
-    local entry = char.find_by_desc("\\" .. table.concat(letters))
+    local word = table.concat(letters)
+
+    --[[ AN OPERATOR WORD BECOMES THE 1-TALL VERT IT IS WRITTEN AS - `\\lim` and Space gives `lim`,
+    the same container a stack built by hand gives, which is what the parser reads as an operator
+    name (mexpr_ast's operator_name).
+
+    WITHOUT THIS THERE WAS NO SHORTCUT FOR THEM AT ALL: `\\lim` is not a catalogued GLYPH, so the
+    lookup below found nothing and the command quietly did nothing, leaving the only route as
+    "make a one-row stack, then type the letters into it". Asked 2026-09-11: "I think I can also
+    spawn them by /command?".
+
+    char.operator_words is the same list the LaTeX reader and writer use, so a word typed here, one
+    pasted as `\\lim`, and one loaded from a save all arrive as the identical node. ]]
+    if char.operator_words[word] then
+        local sz = mexpru.u(children[first]).sz
+        local glyphs = {}
+        for k = 1, #word do
+            local e = char.find_by_ascii(word:sub(k, k))
+            if e then
+                local g = mexpru.mexpr_symbol(fontset,
+                        {size = mexpru.physical_sz(sz), code = e.ncod}, true)
+                mexpru.u(g).sz = sz
+                glyphs[#glyphs + 1] = g
+            end
+        end
+        if #glyphs == #word then
+            local vert = mexpru.vert(fontset, {mexpru.horiz(fontset, glyphs, sz)}, sz)
+            mexpru.u(vert).sz = sz
+            for _ = first, last do
+                table.remove(children, first)
+            end
+            table.insert(children, first, vert)
+            local rebuilt = mexpru.horiz(fontset, children, mexpru.u(horiz).sz)
+            container.root = mexpru.propagate_rebuild(fontset, horiz, rebuilt)
+            container.cursor_pos = vc.wref_mexpr(vert)
+            mark_edited(container)
+            return true
+        end
+    end
+
+    local entry = char.find_by_desc("\\" .. word)
     if not entry then
         return false        -- not a name we know: leave the text alone, insert an ordinary space
     end
@@ -1235,70 +1423,33 @@ The capture-before-you-wrap discipline is make_supsub()'s - mexpru.bigop() repar
 builds, so the parent and the index have to be read first.
 @date 2026-09-08 09:30 ]]
 function mformula_new.make_bigop(container, fontset, slot)
-    --[[ Raw kind checks rather than is_horiz()/is_supsub(): those are declared further down this
-    file, and this sits beside make_supsub(), which uses the same workaround for the same reason. ]]
-    local target = container.cursor_pos:get_obj()
-    local tkind = target and mexpru.u(target).kind
-    if not target or tkind == "horiz" then
-        return
-    end
-    --[[ An EMPTY slot cannot take a limit: a limit sits on an operator, and there is no operator
-    here to sit on. Without this guard the empty atom itself became the base of a SECOND bigop,
-    nested inside the first - reported 2026-09-07 as "inside a bigop-sup and empty I can't delete
-    it", which is exactly what that produced. The two nested empties draw identically to one, so
-    the formula looked unchanged while Backspace had to collapse an invisible inner structure
-    first and appeared to do nothing at all.
+    --[[ The limit keys, which are the sup/sub keys with the other placement. This was a separate
+    function over a separate node kind until 2026-09-10; what survives of it is the guard below and
+    the operator's own display form, both of which are about big operators specifically rather than
+    about how a side is drawn.
 
-    The same shape of guard as the sup/sub path's own refusals just below (a supsub's base, an
-    open bracket): refuse, and say why, rather than building something that cannot be undone. ]]
+    A limit needs something to sit on. Without this guard an empty slot became the base of a second
+    wrapper nested inside the first - reported 2026-09-07 as "inside a bigop-sup and empty I can't
+    delete it", the two nested empties drawing identically to one, so the formula looked unchanged
+    while Backspace had an invisible structure to collapse first and appeared to do nothing. ]]
+    local target = container.cursor_pos:get_obj()
     if target.type == vc.MEXPR_TYPE_EMPTY_BOX then
         print("mformula_new: ignoring Ctrl+Shift+[/] in an empty slot - a limit needs an "
                 .. "operator to sit on; type one first")
         return
     end
-    local base_sz = mexpru.u(target).sz
-            or ((tkind == "supsub" or tkind == "bigop") and mexpru.u(mexpru.u(target).base).sz)
-    if not base_sz then
-        return
-    end
-    local sub_sz = math.min(base_sz + SUB_SIZE_DELTA, MAX_SIZE_INDEX)
 
-    -- Already a bigop and the asked-for slot is free: fill it rather than wrapping again.
-    if tkind == "bigop" then
-        local u = mexpru.u(target)
-        if u[slot] then
-            print("mformula_new: ignoring Ctrl+Shift+[/] - that limit already exists")
-            return
+    --[[ An inline union/intersection becomes its display form the moment it takes limits. Done
+    before the decoration, since it replaces the glyph the decoration will sit on. ]]
+    if not is_supsub(target) and not is_wrapper_base(target, target:get_parent()) then
+        local display = to_display_operator(fontset, target)
+        if not mexpru.same(display, target) then
+            container.root = mexpru.propagate_rebuild(fontset, target, display)
+            container.cursor_pos = vc.wref_mexpr(display)
         end
-        local new_empty, new_horiz = build_side(fontset, sub_sz)
-        local rebuilt = mexpru.bigop(fontset, u.base,
-                (slot == "sup") and new_horiz or u.sup,
-                (slot == "sub") and new_horiz or u.sub, u.sz)
-        container.root = mexpru.propagate_rebuild(fontset, target, rebuilt)
-        container.cursor_pos = vc.wref_mexpr(new_empty)
-        mark_edited(container)
-        return
     end
 
-    local original_parent = target:get_parent()
-    local target_idx = target:get_parent_idx()
-    if not original_parent or mexpru.u(original_parent).kind ~= "horiz" then
-        return
-    end
-
-    local new_empty, new_horiz = build_side(fontset, sub_sz)
-    -- An inline union/intersection becomes its display form the moment it takes limits.
-    local operator = to_display_operator(fontset, target)
-    local node = mexpru.bigop(fontset, operator,
-            (slot == "sup") and new_horiz or nil,
-            (slot == "sub") and new_horiz or nil, base_sz)
-
-    local children = mexpru.u(original_parent).children
-    children[target_idx] = node
-    local rebuilt = mexpru.horiz(fontset, children, mexpru.u(original_parent).sz)
-    container.root = mexpru.propagate_rebuild(fontset, original_parent, rebuilt)
-    container.cursor_pos = vc.wref_mexpr(new_empty)
-    mark_edited(container)
+    mformula_new.make_supsub(container, fontset, slot, mexpru.PLACE_DISPLAY)
 end
 
 --[[ A brand-new formula that is one supsub, whose BASE is `base_item` (an editor_text.lua chars entry -
@@ -1408,19 +1559,6 @@ local function is_horiz(node)
     return mexpru.u(node).kind == "horiz"
 end
 
---[[ True for a bigop too, deliberately. A big operator carrying limits is a supsub in every way
-except how it draws: the same base/sup/sub slots, so Left/Right step over it as one atom, Up/Down
-enter its limits, the cascade and the sprint see what they already understand. Only the two places
-that REBUILD a node look at kind to choose a constructor.
-
-Anything reading a slot off the node goes through u.base/u.sup/u.sub, which both kinds carry, so
-this predicate widening needs no other change.
-@date 2026-09-08 09:00 ]]
-local function is_supsub(node)
-    local kind = mexpru.u(node).kind
-    return kind == "supsub" or kind == "bigop"
-end
-
 -- A fraction node: num and den, both horizes, both always present. @date 2026-09-08 09:30
 local function is_frac(node)
     return mexpru.u(node).kind == "frac"
@@ -1514,6 +1652,42 @@ if BAR_BRACKET then
     OPEN_BRACKET_ASCII[BAR_BRACKET] = "|"
 end
 
+-- ')' / ']' / '}' -> bracket type, and back - entangled-bracket closing (try_close_bracket() below).
+local CLOSE_BRACKETS = {
+    [")"] = vc.MEXPR_BRACKET_ROUND, ["]"] = vc.MEXPR_BRACKET_SQUARE, ["}"] = vc.MEXPR_BRACKET_CURLY,
+}
+local CLOSE_BRACKET_ASCII = {
+    [vc.MEXPR_BRACKET_ROUND] = ")", [vc.MEXPR_BRACKET_SQUARE] = "]", [vc.MEXPR_BRACKET_CURLY] = "}",
+}
+-- Same character on both sides - that IS the bar (BAR_BRACKET above).
+if BAR_BRACKET then
+    CLOSE_BRACKET_ASCII[BAR_BRACKET] = "|"
+end
+
+--[[ The catalog entry for one half of a bracket pair.
+
+MOST PAIRS ARE ASCII and are found by character. The integral's are not: its halves are the operator
+glyph and the letter `d`, so its open half is found by DESC. One function rather than three lookups,
+because there are three places that need a half's glyph - opening, closing, and rescaling on zoom -
+and a pair whose glyph one of them cannot find is a pair that half-survives a zoom.
+@date 2026-09-10 23:40 ]]
+local function bracket_entry(bracket_type, is_open)
+    if bracket_type == char.BRACKET_INTEGRAL then
+        if is_open then
+            return char.find_by_desc("\\int")
+        end
+        return char.find_by_ascii("d")
+    end
+    local ascii
+    if is_open then
+        ascii = OPEN_BRACKET_ASCII[bracket_type]
+    else
+        ascii = CLOSE_BRACKET_ASCII[bracket_type]
+    end
+    return ascii and char.find_by_ascii(ascii)
+end
+
+
 --[[ Splices a freshly-built glyph atom (`new_glyph` - ALREADY tagged with whatever it needs, at
 minimum u(_).sz, same as every atom this file builds carries) into the tree at cursor_pos, per this
 file's own model comment's REPLACE/INSERT-AT-START/INSERT-AFTER/bump-old-base-out rules - shared by
@@ -1578,11 +1752,10 @@ No mark_edited() of its own: insert_glyph_at_cursor() already did it.
 local function insert_compound_at_cursor(container, fontset, node, target_sz, cursor_to)
     local target = container.cursor_pos:get_obj()
     local tp = target:get_parent()
-    local tp_u = tp and mexpru.u(tp)
     insert_glyph_at_cursor(container, fontset, target, tp,
             mexpru.u(target).kind == "horiz",
             target.type == vc.MEXPR_TYPE_EMPTY_BOX,
-            tp_u ~= nil and tp_u.kind == "supsub" and mexpru.same(tp_u.base, target),
+            is_wrapper_base(target, tp),
             target_sz, node)
     container.cursor_pos = vc.wref_mexpr(cursor_to)
 end
@@ -1619,28 +1792,24 @@ purple cursor (PENDING_BRACKET_CURSOR_COLOR) instead of the ordinary CURSOR_COLO
 @date 2026-09-08 09:00 ]]
 local function open_bracket(container, fontset, target, target_parent, target_is_horiz,
         target_is_empty, target_is_supsub_base, target_sz, bracket_type)
-    local entry = char.find_by_ascii(OPEN_BRACKET_ASCII[bracket_type])
-    -- target_sz is LOGICAL - mapped to PHYSICAL only for the real construction call below, same as
-    -- every other glyph this file builds (mexpru.rescale()'s own comment).
-    local new_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(target_sz), code = entry.ncod}, true)
+    local entry = bracket_entry(bracket_type, true)
+    --[[ target_sz is LOGICAL - mapped to PHYSICAL only for the real construction call below, same as
+    every other glyph this file builds (mexpru.rescale()'s own comment). The desc's own size boost is
+    applied on top, which matters for exactly one bracket half so far: `\int` is drawn a few levels
+    up from the text around it (char.size_delta_by_desc), and an integral opened without it came out
+    the height of a letter. u(_).sz stays the surrounding NOMINAL level either way. ]]
+    local delta = char.size_delta_by_desc[entry.desc]
+    local glyph_sz = target_sz
+    if delta then
+        glyph_sz = math.max(1, math.min(target_sz + delta, MAX_SIZE_INDEX))
+    end
+    local new_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
     mexpru.u(new_glyph).sz = target_sz
     mexpru.u(new_glyph).bracket = {is_open = true, type = bracket_type}
 
     insert_glyph_at_cursor(container, fontset, target, target_parent, target_is_horiz,
             target_is_empty, target_is_supsub_base, target_sz, new_glyph)
 
-end
-
--- ')' / ']' / '}' -> bracket type, and back - entangled-bracket closing (try_close_bracket() below).
-local CLOSE_BRACKETS = {
-    [")"] = vc.MEXPR_BRACKET_ROUND, ["]"] = vc.MEXPR_BRACKET_SQUARE, ["}"] = vc.MEXPR_BRACKET_CURLY,
-}
-local CLOSE_BRACKET_ASCII = {
-    [vc.MEXPR_BRACKET_ROUND] = ")", [vc.MEXPR_BRACKET_SQUARE] = "]", [vc.MEXPR_BRACKET_CURLY] = "}",
-}
--- Same character on both sides - that IS the bar (BAR_BRACKET above).
-if BAR_BRACKET then
-    CLOSE_BRACKET_ASCII[BAR_BRACKET] = "|"
 end
 
 --[[ The innermost still-unclosed open bracket to the LEFT of the cursor, or nil.
@@ -1704,6 +1873,11 @@ end
 
 -- Exported for tests: this is the whole of the bracket-nesting rule, and worth pinning directly.
 mformula_new.innermost_unclosed_open = innermost_unclosed_open
+--[[ Exported for testability only, the same convention make_supsub()/try_digraph() already follow:
+the integral's open and close cannot be reached from a test any other way, since both live behind
+the character queue and one of them behind an Alt chord. ]]
+mformula_new.pending_integral = pending_integral
+mformula_new.open_bracket = open_bracket
 
 --[[ THE definition of where a still-PENDING bracket may close - one source of truth, shared by
 try_close_bracket() (which refuses anything outside it) and by the arrow-key cursor confinement
@@ -1840,7 +2014,7 @@ local function try_close_bracket(container, fontset, bracket_type)
 
     local children = mexpru.u(open_horiz).children
     local close_sz = mexpru.u(open_atom).sz
-    local close_entry = char.find_by_ascii(CLOSE_BRACKET_ASCII[bracket_type])
+    local close_entry = bracket_entry(bracket_type, false)
     -- close_sz is LOGICAL - mapped to PHYSICAL only for the real construction call (same reasoning
     -- as open_bracket()'s own new_glyph construction just above).
     local close_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(close_sz), code = close_entry.ncod}, true)
@@ -1909,6 +2083,20 @@ local function try_close_bracket(container, fontset, bracket_type)
     -- out of the list.
     container.cursor_pos = vc.wref_mexpr(close_idx and children[close_idx] or close_glyph)
     mark_edited(container)
+    --[[ TRUE, AND IT IS LOAD-BEARING. Every `return false` above means "I did not close"; this is
+    the only path that did, and it said nothing - so the one caller that ASKS (the bar key, which
+    is a single shortcut for both opening and closing) read a successful close as a refusal and went
+    on to open a bracket instead.
+
+    That was a hard crash, not a cosmetic wart. The open path is handed `target`/`target_parent`,
+    captured before this function ran; propagate_rebuild has just replaced the whole tree, so those
+    handles name freed nodes. Touching one faults - proved 2026-09-11 by tracing the live app:
+    `tostring(target_parent)` was the last thing to run before an 0xC0000005. Reported as
+    "ctrl+shift+\ and closing it with ctrl+shift+\ crashed the app".
+
+    The doc comment on the bar handler already claimed this - "it now says so with a return value" -
+    which is how the caller came to be written against a contract the function never kept. ]]
+    return true
 end
 
 --[[ Rebuilds `node` and everything beneath it at the current global zoom. Every u(_).sz stays
@@ -1928,6 +2116,7 @@ Returns (new_node, mapped_cursor): the new node standing in for `cursor_target`,
 branch never met it. Deterministic rather than a nearest-fit guess - the walk mirrors the original,
 so the node built at the step that replaced cursor_target IS its new home, however deep.
 @date 2026-09-08 09:00 ]]
+mformula_new.try_close_bracket = try_close_bracket
 local function rescale_node(fontset, node, cursor_target)
     local u = mexpru.u(node)
     local logical = u.sz
@@ -1944,17 +2133,16 @@ local function rescale_node(fontset, node, cursor_target)
         -- above were rebuilt peerless on purpose; this is what re-links them (mexpru.lua).
         mexpru.transfer_bracket_peers(u.children, new_children)
         new_node = mexpru.horiz(fontset, new_children, logical)
-    elseif u.kind == "supsub" or u.kind == "bigop" then
+    elseif u.kind == "supsub" then
         local new_base, m1 = rescale_node(fontset, u.base, cursor_target)
         local new_sup, new_sub, m2, m3
         if u.sup then new_sup, m2 = rescale_node(fontset, u.sup, cursor_target) end
         if u.sub then new_sub, m3 = rescale_node(fontset, u.sub, cursor_target) end
-        -- Same slots, different constructor - the one place the two kinds diverge.
-        if u.kind == "bigop" then
-            new_node = mexpru.bigop(fontset, new_base, new_sup, new_sub, logical)
-        else
-            new_node = mexpru.supsub(fontset, new_base, new_sup, new_sub)
-        end
+        --[[ Rebuilt at the ZOOM's logical size, so `resupsub` cannot be used here - it keeps the
+        node's own. The placements still have to travel, and forgetting them is what would move a
+        limit out from under its operator on a zoom. ]]
+        new_node = mexpru.supsub(fontset, new_base, new_sup, new_sub, logical,
+                u.sup_place, u.sub_place)
         mapped = m1 or m2 or m3
     elseif u.kind == "frac" then
         local new_num, m1 = rescale_node(fontset, u.num, cursor_target)
@@ -1976,10 +2164,20 @@ local function rescale_node(fontset, node, cursor_target)
         new_node = mexpru.redress(fontset, new_target, u, logical)
         mapped = m
     elseif u.bracket then
-        local ascii = u.bracket.is_open and OPEN_BRACKET_ASCII[u.bracket.type]
-                or CLOSE_BRACKET_ASCII[u.bracket.type]
-        local entry = char.find_by_ascii(ascii)
-        new_node = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(logical), code = entry.ncod}, true)
+        --[[ Through bracket_entry, not the ascii tables directly: the integral's halves have no
+        ASCII spelling on the open side, so reading the table gave nil and rebuilding one on a zoom
+        died on it. Every half is found the same way now, wherever it is found.
+
+        The size boost rides along for the same reason it does when the half is first typed - `\int`
+        is drawn several levels up from the text around it, and a zoom that re-derived it without
+        the boost would shrink it to letter height. ]]
+        local entry = bracket_entry(u.bracket.type, u.bracket.is_open)
+        local delta = char.size_delta_by_desc[entry.desc]
+        local glyph_sz = logical
+        if delta then
+            glyph_sz = math.max(1, math.min(logical + delta, MAX_SIZE_INDEX))
+        end
+        new_node = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
         mexpru.u(new_node).bracket = {is_open = u.bracket.is_open, type = u.bracket.type}
         mexpru.u(new_node).sz = logical
     elseif node.type == vc.MEXPR_TYPE_EMPTY_BOX then
@@ -2157,7 +2355,7 @@ exit_horiz_leftward = function(container, horiz)
     local hp_u = mexpru.u(horiz_parent)
     -- A kind comparison rather than is_supsub(), only because is_supsub is declared further down
     -- this file - the two mean the same thing here.
-    if hp_u.kind == "supsub" or hp_u.kind == "bigop" then
+    if hp_u.kind == "supsub" then
         container.cursor_pos = vc.wref_mexpr(hp_u.base)
     elseif hp_u.kind == "frac" or hp_u.kind == "vert" then
         -- Both have no base to reach toward, so leaving one leftward means leaving the WHOLE
@@ -2385,29 +2583,45 @@ local function collapsible_supsub(container)
     if not (in_sup or in_sub) then
         return nil
     end
-    --[[ Two outcomes, not one.
+    --[[ Two outcomes, and which one is decided by whether the OTHER side EXISTS - not by whether
+    it happens to be empty.
 
-    BOTH slots untyped -> the whole spawn is undone and the base is left ("collapse").
+    THIS SLOT MUST ALREADY BE UNTYPED, always. Backspacing the "B" out of "x^{B}" clears the B and
+    leaves the superscript standing; a second press, on the now-empty slot, is what removes the
+    structure. That has been the rule from the start and is unchanged.
 
-    Only THIS slot untyped, while the other one holds something -> just this side is removed
-    ("drop"). That case used to return nil, i.e. Backspace did nothing at all, and it is what
-    reached the user as "I can't delete it": add a limit above a sum that already has a limit
-    below, change your mind, and there was no way back - the empty slot could not be removed
-    because its sibling had content, and it could not be typed away because it was already empty.
-    A loaded formula hit the same wall from the other side: open a saved sum whose limits are both
-    filled, clear one, and the now-empty slot was stuck for the same reason.
+    Given that, the side the cursor is in is removed ("drop") whenever the node has another side at
+    all, and the whole node is undone ("collapse") only when it does not. Collapse is the
+    single-sided case: undoing the spawn that made the node, which is what make_supsub leaves
+    behind and what Backspace there should reverse.
 
-    The original rule survives inside the collapse case, and it still matters there: both slots
-    must ALREADY be untyped when the key is pressed, so backspacing the "B" out of "x^{B}" clears
-    the B and leaves the superscript, rather than taking the whole thing in one keystroke. ]]
-    local this_slot = in_sup and "sup" or "sub"
-    if slot_is_untyped(u.sup) and slot_is_untyped(u.sub) then
+    IT USED TO ASK WHETHER BOTH SIDES WERE UNTYPED, which took an EMPTY sibling along with the one
+    being deleted. That was invisible while a node's two sides could only be spawned together, and
+    became wrong once each side could be added by its own keypress: put a limit under an operator,
+    add an empty power beside it, delete the power - and the limit went too. Reported live,
+    2026-09-10: "deleting sup also deletes bsub, not ok".
+
+    The case this rule was ALSO written for still works, and is the reason "drop" exists at all:
+    add a limit above a sum that already has one below, change your mind, and the empty slot can be
+    removed on its own. That used to return nil - Backspace did nothing - which reached the user as
+    "I can't delete it". ]]
+    --[[ Spelled out rather than with `in_sup and X or Y`: that idiom returns Y when X is nil, and
+    a side being nil is exactly the case this has to distinguish. A one-sided node read as
+    two-sided, and refused to collapse. ]]
+    local this_slot, this_side, other_side
+    if in_sup then
+        this_slot, this_side, other_side = "sup", u.sup, u.sub
+    else
+        this_slot, this_side, other_side = "sub", u.sub, u.sup
+    end
+
+    if not slot_is_untyped(this_side) then
+        return nil
+    end
+    if other_side == nil then
         return supsub, "collapse", this_slot
     end
-    if slot_is_untyped(in_sup and u.sup or u.sub) then
-        return supsub, "drop", this_slot
-    end
-    return nil
+    return supsub, "drop", this_slot
 end
 
 --[[ Backspace in a sup/sub that was never typed into: undo the whole spawn, leaving just the base.
@@ -2447,14 +2661,18 @@ function mformula_new.collapse_empty_supsub(container, fontset)
         through the same constructor that made it, so a bigop stays a bigop (limits above/below)
         and a supsub stays a supsub (beside) - passing one through the other's constructor would
         silently move the surviving limit to the wrong place. ]]
-        local new_sup = (side == "sup") and nil or u.sup
-        local new_sub = (side == "sub") and nil or u.sub
-        local rebuilt
-        if u.kind == "bigop" then
-            rebuilt = mexpru.bigop(fontset, base, new_sup, new_sub, u.sz)
+        --[[ Spelled out, because `(side == "sup") and nil or u.sup` does NOT clear the side: the
+        `and` yields nil and the `or` then falls straight through to u.sup, putting it back. Written
+        that way this branch rebuilt an identical node and reported success, so "remove just this
+        side" has never actually removed one - and no test saw it, because they all asserted that
+        the OTHER side survived and never that this one was gone. ]]
+        local new_sup, new_sub = u.sup, u.sub
+        if side == "sup" then
+            new_sup = nil
         else
-            rebuilt = mexpru.supsub(fontset, base, new_sup, new_sub)
+            new_sub = nil
         end
+        local rebuilt = mexpru.resupsub(fontset, u, base, new_sup, new_sub)
         container.root = mexpru.propagate_rebuild(fontset, supsub, rebuilt)
         --[[ Take the base back OUT of the rebuilt node rather than reusing the handle captured
         before it. The constructor may or may not adopt the node it was handed, and the rebuild
@@ -3249,11 +3467,10 @@ local function replace_selection_before_insert(container, fontset, target, targe
     end
     local t = container.cursor_pos:get_obj()
     local tp = t:get_parent()
-    local tp_u = tp and mexpru.u(tp)
     return t, tp,
             mexpru.u(t).kind == "horiz",
             t.type == vc.MEXPR_TYPE_EMPTY_BOX,
-            tp_u ~= nil and tp_u.kind == "supsub" and mexpru.same(tp_u.base, t)
+            is_wrapper_base(t, tp)
 end
 
 -- Exported for testability only (same reason make_supsub()/make_frac() are - handle_input() itself
@@ -3320,11 +3537,15 @@ local function sprint_horizontal(container, dir)
     return false        -- already at the edge: let the plain move carry us out of the slot
 end
 
---[[ All four arrows - plain, Alt-reversed, or Shift-sprinted - behind the pending-bracket
+--[[ All four arrows - plain, Alt-reversed, selecting or sprinting - behind the pending-bracket
 confinement every cursor move goes through (cursor_pos_forbidden()'s own comment). Returns true when
 a key was actually consumed. Left/Right take no Alt variant (a plain reciprocal chain, nothing to
-reverse); Up/Down take no Shift variant (see sprint_horizontal()).
-@date 2026-09-08 09:00 ]]
+reverse); Up/Down take neither of the other two (see sprint_horizontal(), and the SELECTION note
+below on why a selection cannot leave its row).
+
+`sprint` and `selecting` say WHICH GESTURE this is, and the caller reads them off the keymap rather
+than off the modifier keys - see the call site for what happened when it did otherwise.
+@date 2026-09-11 07:40 ]]
 local function handle_arrows(container, alt, sprint, selecting)
     local function go(move)
         local before = container.cursor_pos
@@ -3338,9 +3559,9 @@ local function handle_arrows(container, alt, sprint, selecting)
         end
     end
 
-    -- Ctrl+Shift+Left/Right EXTENDS instead of moving. Only horizontally: a selection may never
-    -- leave its row (see the SELECTION comment above), so Up/Down keep their plain meaning and
-    -- simply drop the selection like any other move.
+    -- Shift+Left/Right EXTENDS instead of moving. Only horizontally: a selection may never leave
+    -- its row (see the SELECTION comment above), so Up/Down keep their plain meaning and simply
+    -- drop the selection like any other move.
     if selecting then
         if keymap.pressed("math.select_left") then
             go(function(c) extend_selection(c, -1) end)
@@ -3419,9 +3640,8 @@ local function cursor_state(container)
            target_parent,
            (mexpru.u(target).kind == "horiz"),
            (target.type == vc.MEXPR_TYPE_EMPTY_BOX),
-           (target_parent ~= nil and mexpru.u(target_parent).kind == "supsub"
-                   and mexpru.same(mexpru.u(target_parent).base, target)),
-           mexpru.u(target).sz or (is_supsub(target) and mexpru.u(mexpru.u(target).base).sz)
+           is_wrapper_base(target, target_parent),
+           wrapper_base_sz(target)
 end
 
 --[[ ONE FRAME of input for this formula, and the only entry point the editors use: every key, the
@@ -3469,25 +3689,8 @@ function mformula_new.handle_input(container, fontset, sz)
         local sup_pressed = keymap.pressed("math.sup")
         local sub_pressed = keymap.pressed("math.sub")
         if sup_pressed or sub_pressed then
-            if target_is_supsub_base then
-                local supsub_node = target_parent
-                local u = mexpru.u(supsub_node)
-                if (sup_pressed and u.sup) or (sub_pressed and u.sub) then
-                    print("mformula_new: ignoring Ctrl+Shift+=/- on a supsub's own base - that side already exists")
-                else
-                    local sub_sz = math.min(target_sz + SUB_SIZE_DELTA, MAX_SIZE_INDEX)
-                    local new_empty, new_horiz = build_side(fontset, sub_sz)
-                    local rebuilt_supsub
-                    if sup_pressed then
-                        rebuilt_supsub = mexpru.supsub(fontset, u.base, new_horiz, u.sub)
-                    else
-                        rebuilt_supsub = mexpru.supsub(fontset, u.base, u.sup, new_horiz)
-                    end
-                    container.root = mexpru.propagate_rebuild(fontset, supsub_node, rebuilt_supsub)
-                    container.cursor_pos = vc.wref_mexpr(new_empty)
-                    mark_edited(container)
-                end
-            elseif mexpru.u(target).bracket and mexpru.u(target).bracket.is_open then
+            if mexpru.u(target).bracket and mexpru.u(target).bracket.is_open
+                    and mexpru.u(target).bracket.type ~= char.BRACKET_INTEGRAL then
                 --[[ An OPEN bracket never becomes a supsub's base - a CLOSE one is a different
                 matter entirely and is explicitly allowed (see below).
 
@@ -3507,6 +3710,9 @@ function mformula_new.handle_input(container, fontset, sz)
                 print("mformula_new: ignoring Ctrl+Shift+=/- on an OPEN bracket - an exponent "
                         .. "belongs on the closing bracket of a group, never the opening one")
             else
+                --[[ One call for every case. Whether this base already carries a wrapper, and
+                whether that wrapper's side is free, is make_supsub's own question now - the branch
+                that used to answer it here is gone, along with the drift it caused. ]]
                 mformula_new.make_supsub(container, fontset, sup_pressed and "sup" or "sub")
             end
             return
@@ -3576,12 +3782,10 @@ function mformula_new.handle_input(container, fontset, sz)
         for _, node in ipairs(incoming) do
             local t = container.cursor_pos:get_obj()
             local tp = t:get_parent()
-            local t_parent_u = tp and mexpru.u(tp)
             insert_glyph_at_cursor(container, fontset, t, tp,
                     mexpru.u(t).kind == "horiz",
                     t.type == vc.MEXPR_TYPE_EMPTY_BOX,
-                    t_parent_u ~= nil and t_parent_u.kind == "supsub"
-                            and mexpru.same(t_parent_u.base, t),
+                    is_wrapper_base(t, tp),
                     target_sz, node)
         end
         return
@@ -3731,8 +3935,55 @@ function mformula_new.handle_input(container, fontset, sz)
     -- Arrows, before the Alt branch below: that branch returns unconditionally (Alt is otherwise
     -- entirely about Greek letters), which used to make every Alt+arrow a dead key. Handled here in
     -- one place for both, so plain and Alt-reversed movement can't drift apart.
-    if handle_arrows(container, alt_down, shift_down and not ctrl_down,
-            ctrl_down and shift_down) then
+    --[[ THE TWO FLAGS ARE ASKED OF THE KEYMAP, NOT OF THE MODIFIER KEYS.
+
+    They were computed here as `shift and not ctrl` and `ctrl and shift`, which was a second copy of
+    what the bindings already say - and the two drifted the moment the bindings were swapped
+    (2026-09-10, "holding shift selects, ctrl+shift jumps on left,right arrows"). keymap.lua took
+    the new meaning, this line kept the old one, and the result was that inside a formula Shift+Left
+    quietly moved instead of selecting and Ctrl+Shift+Left moved instead of sprinting: `selecting`
+    was false for Shift, so the select branch was never reached, and `sprint` was false for
+    Ctrl+Shift, so the sprint branch fell through to the plain move. Reported 2026-09-11: "the shift
+    held does not select in the formula and ctrl+shift doesn't sprint +arrows left right".
+
+    Reading the actions instead makes that impossible, and it is also what the keymap registry is
+    FOR - these bindings are customisable, and a hardcoded chord here would ignore a rebinding while
+    the action right below it honoured one. Both directions are asked because the flags are about
+    the GESTURE, not about which arrow: handle_arrows uses `selecting` for Up/Down too, where it
+    means "do not drop what is selected". ]]
+    if handle_arrows(container, alt_down,
+            keymap.pressed("math.sprint_left") or keymap.pressed("math.sprint_right"),
+            keymap.pressed("math.select_left") or keymap.pressed("math.select_right")) then
+        return
+    end
+
+    --[[ WHILE AN INTEGRAL IS PENDING, THE ONLY THING THAT TYPES IS `d`.
+
+    Author, 2026-09-10: "dissallow writing anything while the integral is pending, only d, so you
+    need to close it first, not direcly there, where you want, but nothing else in the meantime".
+    Arrows are above this line, so you can still walk to wherever the differential belongs; nothing
+    between here and the character queue can insert or restructure anything.
+
+    DELETION IS THE ONE EXCEPTION, and it has to be: a pending pair with no way to type and no way
+    to delete would be a trap with no exit. Backspace on the `\int` removes it and the formula is
+    ordinary again.
+
+    THIS IS ALSO WHAT MAKES SUP/SUB ON THE OPEN HALF SAFE. try_close_bracket resolves its open
+    atom's parent expecting a plain horiz, and an open bracket wrapped in a supsub breaks that -
+    the live "a+a(^A" report, stuck and un-closeable. A pending integral cannot acquire a supsub at
+    all, because the key that would build one cannot be pressed while it is pending.
+    @date 2026-09-10 23:40 ]]
+    if pending_integral(container)
+            and not (keymap.pressed("text.backspace") or keymap.pressed("text.delete")) then
+        for _, cp in ipairs(vc.ImGui_input_queue_chars()) do
+            if cp == 100 then       -- 'd'
+                --[[ A refusal stays a refusal: if the cursor is somewhere the pair may not close
+                from, the `d` is NOT typed instead. Nothing else is accepted here, so leaving a
+                stray letter behind would be the one way to write while pending. ]]
+                try_close_bracket(container, fontset, char.BRACKET_INTEGRAL)
+                return
+            end
+        end
         return
     end
 
@@ -3812,6 +4063,18 @@ function mformula_new.handle_input(container, fontset, sz)
                     entry = char.find_by_ascii(shift_down and letter:upper() or letter)
                 end
                 if entry then
+                    --[[ AN INTEGRAL IS OPENED, NOT INSERTED. `\int` is the open half of a pair whose
+                    close is the `d` of its differential, so typing it starts a pending bracket
+                    exactly as `(` does - and the `d` that eventually closes it is what tells the
+                    parser where the body ends and which variable is being integrated over. Author,
+                    2026-09-10: "( is /int and ) is d". ]]
+                    if entry.desc == "\\int" and not target_is_supsub_base then
+                        open_bracket(container, fontset, target, target_parent, target_is_horiz,
+                                target_is_empty, target_is_supsub_base, target_sz,
+                                char.BRACKET_INTEGRAL)
+                        handled = true
+                        return
+                    end
                     local delta = char.size_delta_by_desc[entry.desc]
                     local glyph_sz = delta and math.max(1, math.min(target_sz + delta, MAX_SIZE_INDEX)) or target_sz
                     local new_glyph = mexpru.mexpr_symbol(fontset,

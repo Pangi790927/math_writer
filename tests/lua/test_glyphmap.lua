@@ -77,11 +77,21 @@ function run_test()
     ok = check(moved == false, "moving onto an occupied key must be refused, not merged") and ok
     ok = check(type(reason) == "string" and reason ~= "", "and must say why") and ok
 
-    -- The row count is the invariant behind all of the above: no operation may create or lose one.
+    --[[ The row count is the invariant behind all of the above: no operation may create or lose
+    one. MEASURED, not written down as 26.
+
+    It was 26 until 2026-09-11, when a digit key was given a row (glyphmap's own LETTERS comment -
+    `8` carries infinity on its Alt slot). The alarm this check exists to raise is "an operation
+    duplicated or dropped a row", and a literal count could not tell that apart from "the default
+    set changed on purpose" - it fired for the second while claiming the first. Taking the baseline
+    from a clean reset asks the real question, and keeps asking it whatever the default set becomes.
+
+    What is deliberately NOT asserted here is which keys have rows. That belongs with the defaults,
+    not with the move/reset machinery this file is about. ]]
     glyphmap.reset()
-    local n = 0
-    glyphmap.each(function() n = n + 1 end)
-    ok = check(n == 26, "expected 26 rows after a full reset, got " .. n) and ok
+    local baseline = 0
+    glyphmap.each(function() baseline = baseline + 1 end)
+    ok = check(baseline > 0, "a reset must leave rows behind, got " .. baseline) and ok
 
     -- 4. A saved map round-trips, including a row that has only MOVED.
     glyphmap.rekey(A, "ImGuiKey_F13")
@@ -93,7 +103,8 @@ function run_test()
             "the moved row must come back on the key it was saved on") and ok
     local n2 = 0
     glyphmap.each(function() n2 = n2 + 1 end)
-    ok = check(n2 == 26, "loading must not duplicate a moved row; got " .. n2 .. " rows") and ok
+    ok = check(n2 == baseline, "loading must not duplicate a moved row; got " .. n2
+            .. " rows against a baseline of " .. baseline) and ok
 
     glyphmap.reset()
     if ok then

@@ -288,9 +288,9 @@ local function demo_draw()
     local int_c = char.integral(math.max(sz-5, 1))
     local sum_c = char.bigsum(math.max(sz-5, 1))
     local int = vc.mexpr_merge_h(fontset, {
-            vc.mexpr_bigop(fontset, vc.mexpr_symbol(fontset, int_c, false), a, b, int_c), a_b_c_d})
+            vc.mexpr_supsub(fontset, vc.mexpr_symbol(fontset, int_c, false), a, b, int_c, 1, 1), a_b_c_d})
     local sum = vc.mexpr_merge_h(fontset, {
-            vc.mexpr_bigop(fontset, vc.mexpr_symbol(fontset, sum_c, false), a, b, sum_c), a_b_c_d})
+            vc.mexpr_supsub(fontset, vc.mexpr_symbol(fontset, sum_c, false), a, b, sum_c, 1, 1), a_b_c_d})
     local brack1 = vc.mexpr_bracket(fontset, int, char.round_bracket(sz))
     local brack2 = vc.mexpr_bracket(fontset, sum, char.round_bracket(sz))
     local sum_brack = vc.mexpr_binexpr(fontset, brack1, char.plus(sz), brack2)
@@ -310,9 +310,9 @@ local function demo_draw()
     -- local intsym = vc.mexpr_symbol(fontset, char.integral(sz), false)
     local sum_c2, int_c2 = char.bigsum(sz-5), char.integral(sz-5)
     local sum = vc.mexpr_merge_h(fontset, {
-            vc.mexpr_bigop(fontset, vc.mexpr_symbol(fontset, sum_c2, false), b, g, sum_c2), a})
+            vc.mexpr_supsub(fontset, vc.mexpr_symbol(fontset, sum_c2, false), b, g, sum_c2, 1, 1), a})
     local int = vc.mexpr_merge_h(fontset, {
-            vc.mexpr_bigop(fontset, vc.mexpr_symbol(fontset, int_c2, false), b, g, int_c2), a})
+            vc.mexpr_supsub(fontset, vc.mexpr_symbol(fontset, int_c2, false), b, g, int_c2, 1, 1), a})
     local exp = vc.mexpr_supsub(fontset, a, _a, _b)
     local exp2 = vc.mexpr_supsub(fontset, a, _b, nil)
     local unar_op = vc.mexpr_unarexpr(fontset, char.minus(sz), exp)

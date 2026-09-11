@@ -52,7 +52,52 @@ local input_recorder = {}
 -- must not overwrite the record of what the developer was doing in the real app.
 local DATA_PREFIX = (vc.app_data_prefix and vc.app_data_prefix()) or ""
 local LOG_PATH = DATA_PREFIX .. "input_history.log"
-local OLD_LOG_PATH = DATA_PREFIX .. "input_history.old.log"
+
+--[[ How much history is kept, and why it is kept by SIZE rather than per run.
+
+Ctrl+R rebuilds the whole Lua state, so init() runs again - and there is no way from in here to tell
+that apart from a real process start, because anything Lua could have remembered was destroyed with
+the state. The old code rotated one-deep on every init, which meant two reloads erased everything
+before them. That is the worst possible moment to forget: a debugging session is mostly reloads, and
+the question being asked is always "what did I do a few minutes ago".
+
+So nothing rotates on a restart at all. Each run APPENDS, marked with its own line, and the file
+rolls over only when it gets big - keeping GENERATIONS of them. Reported live, 2026-09-10, after
+three attempts to catch a bug this way came back with nothing but the Ctrl+R that erased them.
+@date 2026-09-11 00:50 ]]
+local MAX_LOG_BYTES = 256 * 1024
+local GENERATIONS   = 5
+
+local function gen_path(n)
+    if n == 0 then
+        return LOG_PATH
+    end
+    return DATA_PREFIX .. string.format("input_history.%d.log", n)
+end
+
+--[[ Rolls .4 off the end, shifts each older generation down, and starts a fresh live log.
+
+Copy-and-truncate rather than rename: os.rename is available, but the writer thread may still hold
+the live log open, and moving a file from under it is a different kind of problem on each platform.
+Copying is slower and happens once per 256KB. ]]
+local function roll_generations()
+    for n = GENERATIONS - 1, 1, -1 do
+        local src = io.open(gen_path(n - 1), "rb")
+        if src then
+            local text = src:read("*a")
+            src:close()
+            local dst = io.open(gen_path(n), "wb")
+            if dst then
+                dst:write(text)
+                dst:close()
+            end
+        end
+    end
+    local truncate = io.open(LOG_PATH, "wb")
+    if truncate then
+        truncate:close()
+    end
+end
 
 local log_open = false
 local frame = 0
@@ -126,36 +171,36 @@ local function flush_repeat()
     last_err, last_err_count = nil, 0
 end
 
---[[ Rotates the previous session's log to input_history.old.log (overwriting whatever was there
-before - same one-deep rotation ../utils's own DBG()/logfile.log convention uses) and opens a fresh
-one for this session. Called once, from main.lua's test_init().
-@date 2026-09-08 08:45 ]]
+--[[ Opens the log for this run, APPENDING to whatever the previous run left there.
+
+Called from main.lua's test_init(), which runs on a real start and on every Ctrl+R alike - see
+MAX_LOG_BYTES for why that makes rotating here the wrong thing, and what replaced it.
+@date 2026-09-11 00:50 ]]
 function input_recorder.init()
+    --[[ Rolled only when it has grown past the cap - see MAX_LOG_BYTES. A run never discards the
+    run before it, which is the whole point: Ctrl+R is indistinguishable from a restart in here, and
+    treating every init as a fresh session is what threw away the evidence this file exists to
+    keep. ]]
     local prev = io.open(LOG_PATH, "rb")
     if prev then
-        local text = prev:read("*a")
+        local size = prev:seek("end")
         prev:close()
-        local dst = io.open(OLD_LOG_PATH, "wb")
-        if dst then
-            dst:write(text)
-            dst:close()
+        if size and size > MAX_LOG_BYTES then
+            roll_generations()
         end
-    end
-    --[[ Truncate here, in Lua, then hand the path to the writer thread, which opens it for APPEND.
-    Two steps rather than one because the rotation above has to finish reading the old file before
-    anything reopens it, and because "start a fresh log" is this module's decision, not the writer's
-    - alog_open() appending is what lets it be reopened later without losing what came before. ]]
-    local truncate = io.open(LOG_PATH, "wb")
-    if truncate then
-        truncate:close()
     end
     --[[ async_log_composer.h is registered by main.cpp but not by the test harness, which registers
     only charc/mexpr - so vc.alog_open is nil there and calling it would be an error rather than a
     quiet no-op. Nothing under the harness loads this module today; the guard is so that stays a
     non-event if something ever does. Same reasoning as prof.lua's own stub block. ]]
+    --[[ Opened for APPEND by the writer, which is what carries a previous run's lines across.
+    Nothing truncates here any more; roll_generations() is the only thing that ever empties it. ]]
     log_open = (vc.alog_open ~= nil) and vc.alog_open(LOG_PATH) or false
     frame = 0
-    write_line("=== session start ===")
+    --[[ "run", not "session": this line is written on a Ctrl+R exactly as on a real start, because
+    from in here the two are the same event. Frame numbers restart with it, so a reader can tell one
+    run from the next by the counter going backwards. ]]
+    write_line("=== run start ===")
 end
 
 --[[ Stops the writer. Called from main.lua's test_shutdown(), with main.cpp calling it again as a
