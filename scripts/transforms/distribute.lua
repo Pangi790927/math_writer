@@ -260,7 +260,19 @@ local function apply(ctx)
     that table rather than one somebody assembled with the right-looking key. ]]
     PARAMS_SHAPE.check(ctx.params, "params")
     local add = ast.node_of(ns, ctx.params.add)
-    check(add and add.type == ast.ADD, "distribute needs a sum")
+    --[[ TWO FAILURES, TWO MECHANISMS, which the one line here used to answer with one sentence.
+
+    node_of gives nil when the id names nothing in THIS namespace - an option run against a tree it
+    was not built against. That is a caller that paired them wrong, not a gesture that does not
+    apply, so it goes through the SEAL and raises, naming the type it wanted; `add and ...` was a
+    hand-rolled nil guard standing in for exactly that. A node that IS here and simply is not a sum
+    is the ordinary refusal, and keeps the sentence a user reads in the menu.
+
+    "distribute needs a sum" was the answer to both, so a stale option reported itself as a gesture
+    landing in the wrong place - true of the second case and a lie about the first.
+    @date 2026-09-13 01:20 ]]
+    ast.check_node(add, "params.add")
+    check(add.type == ast.ADD, "distribute needs a sum")
 
     local parents = ctx.parents()
     local mul = parents[add.id]
