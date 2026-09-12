@@ -1,3 +1,40 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+
+draw_formula(container: mformula.container, fontset: fontset, sz: size, origin: {x,y}, opts: table)
+             -> {box, markers}
+    Puts one formula on screen with everything around it - highlight,
+    position graph, slot markers - in the one order they may be drawn in.
+    `origin.y` is the BASELINE. See `opts` at the function itself.
+
+formula_click_rect(box: mformula_new.box, markers: {marker}) -> l, r, t, b
+    The rect a click must land in to count as inside this formula, as
+    offsets from the draw origin. Covers the markers, not just the glyphs.
+
+point_in_box(pos: {x,y}, hb: hitbox)    -> boolean
+    A screen point against a drawn box. Inclusive on both edges, and
+    false rather than an error when the box was never drawn.
+
+formula_hit_test(container: mformula.container, fontset: fontset, sz: size, click: {x,y},
+                 draw_x: number, draw_y: number, wrap_edge: number, extend: boolean) -> nothing
+    Places the caret from a click, or extends a selection from a drag.
+    Moves the container's cursor itself.
+
+formula_node_at(container: mformula.container, fontset: fontset, sz: size, click: {x,y},
+                draw_x: number, draw_y: number, wrap_edge: number) -> mexpr node | nil
+    WHICH GLYPH the point is over. Touches neither cursor nor selection,
+    and nil is a real answer.
+
+edit_bracket(container: mformula.container, fontset: fontset, sz: size) -> changed
+    One frame of input. True when the TREE changed, not when the cursor
+    merely moved - the seam an owner's undo hangs off.
+
+--- internal, not on the module table --------------------------------------------------------------
+    DRAW_OPTS      every option draw_formula understands; a caller's key is checked
+                   against it, since opts arrives already built
+    in_formula_frame
+@date 2026-09-12 01:25
+================================================================================================= ]]
+
 --[[
 editor.lua - THE SHARED HALF of the editors: everything needed to render and drive ONE formula
 sitting inside a box.
@@ -31,8 +68,11 @@ CONVENTIONS worth stating once, because both callers get them wrong otherwise:
 @date 2026-09-08 08:01
 ]]
 
+
 local vc = require("virt_composer")
 local mformula = require("mformula_new")
+local mexpru = require("mexpru")
+local sealed = require("sealed")
 
 local editor = {}
 
@@ -41,6 +81,23 @@ tuned against the text editor's background; they live here now so all three edit
 rather than drifting apart. @date 2026-09-08 08:01 ]]
 local CURSOR_TRACK_COLOR = 0x8055cc55
 local EMPTY_SLOT_COLOR   = 0xff888844
+
+--[[ THE `opts` A DRAW TAKES - every option draw_formula understands, and nothing else.
+
+Declared through sealed.lua and checked with `check_keys` rather than `wrap`: `opts` arrives already
+built, as a table literal at each of the four call sites, so every key - misspelt ones included - is
+present before a seal could fire on it. See sealed.check_keys for why that is a property of Lua
+rather than a choice.
+
+A misspelt option is not a harmless no-op: `active` misspelt makes a formula silently uneditable,
+`wrap_edge` misspelt silently stops it wrapping.
+@date 2026-09-12 15:30 ]]
+local DRAW_OPTS = sealed.declare("editor", "draw opts", {
+    active         = "this is the formula being edited - gates the caret, highlight, graph, markers",
+    show_wireframe = "forwarded to mformula.draw: mexpr's own debug bounding boxes",
+    show_graph     = "the reachable-position graph; ignored unless `active`",
+    wrap_edge      = "ABSOLUTE right edge for wrapping, or nil for no wrap",
+})
 
 --[[ Draws one formula, with everything that goes around it, and returns what the caller needs to
 route clicks into it:
@@ -62,7 +119,15 @@ None of it can move inside mformula.draw(), because anything drawn in there is a
 the graph.
 @date 2026-09-08 08:01 ]]
 function editor.draw_formula(container, fontset, sz, origin, opts)
+    --[[ Checked here because nothing below does: mformula's cursor_box, reachable_graph,
+    slot_markers and draw all take the container and none of them checks it. ]]
+    mexpru.check_container(container)
+    assert(type(origin) == "table" and type(origin.x) == "number" and type(origin.y) == "number",
+            "draw_formula needs an origin {x, y} - and y is the BASELINE, not the top")
+
+    DRAW_OPTS.check_keys(opts, "opts")
     opts = opts or {}
+
     local x, y = origin.x, origin.y
     -- ABSOLUTE -> RELATIVE, once, here. See this file's header.
     local wrap_width = opts.wrap_edge and (opts.wrap_edge - x)
@@ -74,8 +139,8 @@ function editor.draw_formula(container, fontset, sz, origin, opts)
         Active formula only: a soft pulse under every box's caret at once reads as clutter, and
         only one of them is where you are actually typing. ]]
         for _, hl in ipairs(mformula.cursor_box(container, fontset, sz, wrap_width)) do
-            vc.ImGui_AddRectFilled({x = x + hl.x, y = y + hl.y},
-                    {x = x + hl.x + hl.w, y = y + hl.y + hl.h}, hl.color, hl.rounding)
+            vc.ImGui_AddRectFilled({x = x + hl.x, y = y + hl.y}, {x = x + hl.x + hl.w,
+                    y = y + hl.y + hl.h}, hl.color, hl.rounding)
         end
 
         if opts.show_graph then
@@ -128,13 +193,13 @@ function editor.draw_formula(container, fontset, sz, origin, opts)
         typing") read the same way instead of only the empty one showing anything. ]]
         markers = mformula.slot_markers(container, fontset, sz)
         for _, mk in ipairs(markers) do
-            vc.ImGui_AddRect({x = x + mk.x, y = y + mk.y},
-                    {x = x + mk.x + mk.w, y = y + mk.y + mk.h}, EMPTY_SLOT_COLOR, 2, 1)
+            vc.ImGui_AddRect({x = x + mk.x, y = y + mk.y}, {x = x + mk.x + mk.w,
+                    y = y + mk.y + mk.h}, EMPTY_SLOT_COLOR, 2, 1)
         end
     end
 
-    local box = mformula.draw(container, fontset, {x = x, y = y}, sz,
-            opts.active, opts.show_wireframe, opts.wrap_edge)
+    local box = mformula.draw(container, fontset, {x = x, y = y}, sz, opts.active,
+            opts.show_wireframe, opts.wrap_edge)
 
     return {box = box, markers = markers}
 end
@@ -148,6 +213,10 @@ a marker poking past the border reads as "outside" and deactivates the formula i
 hit-testing into it.
 @date 2026-09-08 08:01 ]]
 function editor.formula_click_rect(box, markers)
+    --[[ `markers` stays nil-tolerant: a formula that is not the active one is drawn without them,
+    and every caller would otherwise guard for that itself. `box` is required - it is what the rect
+    is derived from. ]]
+    mformula.check_box(box)
     local l, r, t, b = 0, box.width, box.top, box.bottom
     if markers then
         for _, mk in ipairs(markers) do
@@ -173,8 +242,18 @@ formula belongs to it. Nil-tolerant because a box that has not been drawn yet ha
 every caller would otherwise guard for that itself.
 @date 2026-09-11 21:40 ]]
 function editor.point_in_box(pos, hb)
-    return (hb and pos) ~= nil
-            and pos.x >= hb.x and pos.x <= hb.x + hb.w
+    --[[ NO TYPE CHECK HERE, deliberately, and it is the one function in this file with none. Both
+    arguments are plain rectangles - `{x, y}` and `{x, y, w, h}` - assembled at half a dozen call
+    sites and never a declared container, so there is nothing to check against that would not be
+    invented on the spot. Nil is a real argument for either: a box that has not been drawn yet has
+    no rectangle, and answering false is the whole reason this is nil-tolerant.
+
+    Written out rather than as `(hb and pos) ~= nil`, which said the same thing and read as a
+    mistake. ]]
+    if not hb or not pos then
+        return false
+    end
+    return pos.x >= hb.x and pos.x <= hb.x + hb.w
             and pos.y >= hb.y and pos.y <= hb.y + hb.h
 end
 
@@ -216,7 +295,8 @@ opposed to the cursor merely moving (arrows, a click). `container.version` is bu
 tree edit, which is exactly that signal, so no caller has to re-derive "was this an edit".
 
 The seam for undo: each owner decides what a step means for it. editor_text.lua snapshots its
-whole char stream; a definition box has no equivalent yet, and what one should be is still open. ]]
+whole char stream; a definition box has no equivalent yet, and what one should be is still open.
+@date 2026-09-08 08:01 ]]
 function editor.edit_bracket(container, fontset, sz)
     local pre_version = container.version
     mformula.handle_input(container, fontset, sz)

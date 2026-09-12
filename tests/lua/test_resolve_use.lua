@@ -42,7 +42,12 @@ local function decl(fs, latex)
     if not pat then
         error("test needs '" .. latex .. "' to declare")
     end
-    return {text = pat.text, name = pat.name, arity = pat.arity, tokens = pat.tokens}
+    --[[ Through mexpr_ast.new_decl since 2026-09-12: a declaration is a sealed type now, and
+    resolve_use checks each element of the list it walks. A bare table carrying the same four
+    fields is no longer one - which is the point, since what the parser walks has to BE what the
+    document produced. ]]
+    return mexpr_ast.new_decl{text = pat.text, name = pat.name, arity = pat.arity,
+            tokens = pat.tokens}
 end
 
 local function use(fs, latex)

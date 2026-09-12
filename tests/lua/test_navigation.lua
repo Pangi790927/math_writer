@@ -52,7 +52,7 @@ function run_test()
         local P, Q, R = glyph("P"), glyph("Q"), glyph("R")
         local root = h({P, Q, R})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(Q)}
+        local c = mexpru.new_container(root, Q)
 
         mformula_new.move_right(c)
         at(c, R, "P1: right from Q -> R")
@@ -77,7 +77,7 @@ function run_test()
         local Y = glyph("Y")
         local root = h({Y, S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(Y)}
+        local c = mexpru.new_container(root, Y)
 
         -- Right from Y onto S dives into base (x), not landing on S itself.
         mformula_new.move_right(c)
@@ -120,7 +120,7 @@ function run_test()
         local S = mexpru.supsub(fs, x, supAB, nil)
         local root = h({S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(S)}
+        local c = mexpru.new_container(root, S)
 
         -- S: up -> end of sup (B).
         mformula_new.move_up(c)
@@ -151,7 +151,7 @@ function run_test()
         local S = mexpru.supsub(fs, x, supA, subM)
         local root = h({S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(x)}
+        local c = mexpru.new_container(root, x)
 
         mformula_new.move_up(c)
         at(c, supA, "P4: base up -> sup's own horiz (not A)")
@@ -174,7 +174,7 @@ function run_test()
         local y = glyph("y")
         local root = h({y, S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(x)}
+        local c = mexpru.new_container(root, x)
 
         mformula_new.move_down(c)
         at(c, x, "P5a: base x with no sub, down -> walks up, no parent supsub -> lands back on x")
@@ -208,7 +208,7 @@ function run_test()
         local y = glyph("y")
         local root = h({y, S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(m)}
+        local c = mexpru.new_container(root, m)
 
         mformula_new.move_down(c)
         at(c, x, "P5b: m (deep in a sub-of-sub chain), down -> climbs all the way to x's own base")
@@ -224,7 +224,10 @@ function run_test()
         local P, Q = glyph("P"), glyph("Q")
         local root = h({P, Q})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(Q)}
+        --[[ Through the creator since 2026-09-12: a container is a sealed type now and the
+        cursor_* functions check they were handed one, so a bare table carrying the two
+        fields is no longer a container. ]]
+        local c = mexpru.new_container(root, Q)
 
         mformula_new.cursor_to_start(c)
         at(c, root, "cursor_to_start() lands on root itself (position 0)")

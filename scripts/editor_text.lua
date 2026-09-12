@@ -1,3 +1,50 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+new()                                   -> state_text
+to_text(state_text: editor_text.state_text) / from_text(state_text: editor_text.state_text,
+        text: string, fontset: fontset)
+rescale(state_text: editor_text.state_text, fontset: fontset) -> nothing
+    A text box: a flat stream of characters with FORMULAS EMBEDDED in
+    it. The stream is this file's half; each embed is an mformula
+    container driven through editor.lua.
+
+THE FRAME
+draw(state_text: editor_text.state_text, fontset: fontset, pos: {x,y}, sz: size,
+     width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean)
+     -> height
+handle_input(state_text: editor_text.state_text, fontset: fontset, sz: size) -> changed
+nearest_position(state_text: editor_text.state_text, mpos: {x,y}) -> index
+formula_at(state_text: editor_text.state_text, pos: {x,y}, only: node|nil) -> {container, hb} | nil
+    `only` restricts the search to ONE formula - "did this click land
+    inside the formula that currently has input", as against "which
+    formula is here". Both questions are asked in this file.
+
+ENTERING AND LEAVING A FORMULA
+begin_formula_edit(state_text: editor_text.state_text) -> nothing
+commit_formula_edit(state_text: editor_text.state_text, cursor_path: path) -> nothing
+    A formula edit is ONE undo step, not one per keystroke: begin
+    takes a baseline, commit turns it into a step if the tree moved.
+
+UNDO
+push_undo(state_text: editor_text.state_text, coalesce_key: string)
+undo(state_text: editor_text.state_text) / redo(state_text: editor_text.state_text)
+    The whole char stream is snapshotted, formulas included - which is
+    why undo lives here and not in editor.lua, where a definition box
+    has no stream to snapshot.
+
+LAYOUT, EXPORTED FOR TESTS ONLY
+formula_line_fit(m: metrics, width_limit: number, used: number, run_width: number) -> boolean
+run_moves_down(width_limit: number, used: number, run_width: number) -> boolean
+measure_runs(state_text: editor_text.state_text, fontset: fontset, sz: size) -> {run}
+wrapped_formula_x(width_limit: number, run_width: number) -> number
+FORMULA_WRAP_ROWS                       constant
+    The passes that call these live inside draw(), which needs a real
+    ImGui frame - the same convention mformula_new's make_supsub uses.
+
+--- internal, not on the module table --------------------------------------------------------------
+    the char stream, the wrapping passes and the embed layout
+@date 2026-09-12 04:10
+================================================================================================= ]]
+
 --[[
 editor_text.lua - THE FLAT TEXT EDITOR. Renamed from editor.lua 2026-09-06, when `editor.lua`
 became the shared half: the formula HOST that both this file and editor_definition.lua need (the
@@ -9,17 +56,18 @@ real glyph metrics, so there is no need to route plain text through the mexpr_* 
 get working layout. (It began as a port of the C++ comment box the project grew out of, deleted
 2026-09-06 along with the rest of old/ - nothing there is followable any more.)
 
-Model: state.chars is a flat array of items, each either {code=<ncod>} (a glyph) or
-{newline=true} (a hard line break). state.cursor_pos is an index 0..#state.chars: cursor_pos == N
+Model: state_text.chars is a flat array of items, each either {code=<ncod>} (a glyph) or
+{newline=true} (a hard line break). state_text.cursor_pos is an index 0..#state_text.chars: cursor_pos == N
 means the cursor sits immediately before chars[N+1] (or at the very end, if N == #chars).
 
-state.selection_anchor, when set, is a second such index - the selection covers chars[lo+1..hi]
+state_text.selection_anchor, when set, is a second such index - the selection covers chars[lo+1..hi]
 where lo/hi are min/max(selection_anchor, cursor_pos). selection_anchor == cursor_pos (or nil)
 means no selection.
 
-A chars item can also be {formula=<mformula state>} - an embedded structured expression
+A chars item can also be {formula=<mformula state_text>} - an embedded structured expression
 (mformula_new.lua), inline in the flow like one wide glyph. `formula.new` inserts one at the cursor
-and enters it; clicking one enters it (state.active_formula). While a formula is active, ALL input
+and enters it; clicking one enters it (state_text.active_formula). While a formula is active,
+        ALL input
 goes to it exclusively (`formula.exit`, or a click outside it, leaves), which is what keeps the
 arrow keys unambiguous: outside a formula they mean what they always meant (Up/Down = change line),
 inside one mformula_new reinterprets them (Up/Down = into the superscript/subscript).
@@ -32,7 +80,8 @@ local char = require("char")
 local mexpru = require("mexpru")
 local mformula = require("mformula_new")
 local prof = require("prof")
-local editor = require("editor")  -- the shared formula host; see its header
+local editor = require("editor")
+local sealed = require("sealed")  -- the shared formula host; see its header
 local keymap = require("keymap")
 local glyphmap = require("glyphmap")
 
@@ -47,8 +96,112 @@ local MAX_SIZE_INDEX = mexpru.MAX_SIZE_INDEX
 -- Model
 -- #################################################################################################
 
+--[[ THE `state_text` CONTAINER - one text box. Declared through sealed.lua; see that file for the
+rule.
+
+SEVEN FIELDS WERE NEVER IN new() when this was written - _fontset, _suppress_chars, _undo_baseline,
+blink_key, font_size, formula_dragging, version. They were created on first write elsewhere in the
+file and nothing named them anywhere. Declared here, still starting nil.
+
+THE UNDERSCORE PREFIX marks a field this file alone touches; it is not enforced, and it is kept
+because those four read as scratch at their call sites, which is what they are.
+@date 2026-09-12 06:20 ]]
+local STATE_FIELDS = {
+    chars              = "the flat character stream; a formula is one entry carrying a container",
+    cursor_pos         = "index into `chars`; 0 is before everything",
+    selection_anchor   = "the far end of a selection, or nil",
+    version            = "bumped by every real edit - what a caller watches to see a change",
+
+    mouse_selecting    = "true while a click-drag selection is in progress",
+    mouse_click_origin = "where the drag started, for deciding what it selected",
+    formula_dragging   = "the embedded formula a drag is currently inside, or nil",
+
+    last_positions     = "filled by draw(), read by handle_input() next frame",
+    last_cursor_y      = "absolute screen y of the caret, for content.lua's scroll-into-view",
+    last_cursor_h      = "its height - plain text's, or the active formula's own",
+    last_formula_boxes = "the embeds the last draw left behind; every hit test is against these",
+    active_formula     = "the embedded formula that currently has input, or nil",
+
+    undo_stack         = "{chars, cursor_pos, selection_anchor}[], oldest first",
+    redo_stack         = "what undo popped",
+    undo_coalesce_key  = "lets consecutive same-kind edits merge into ONE undo step",
+    _undo_baseline     = "the snapshot begin_formula_edit() opened; commit turns it into a step",
+
+    frame              = "this box's own frame counter",
+    blink_key          = "what the caret's blink phase is keyed on, so it restarts on a move",
+    font_size          = "a char.lua size-table INDEX, not a pixel size",
+    _fontset           = "stashed by handle_input for the paths that need one and are not given it",
+    _suppress_chars    = "a depth count: while positive, typed characters are swallowed",
+
+    --[[ WRITTEN BY content.lua, NOT BY THIS FILE, which is why they were missed when this list was
+    first written from a scan of this file alone: the scroll-into-view logic lives with the document
+    because only the document knows where the box is on screen, but the state it keeps per box has
+    to live on the box. Found 2026-09-12 by the seal itself, on the author's real document. ]]
+    _cursor_sig_a      = "part of the caret's position signature, for spotting that it moved",
+    _cursor_sig_b      = "the second part",
+    _cursor_sig_c      = "the third; nil until the first frame that has one",
+    _scroll_to_caret   = "set when the caret moved, so the next draw scrolls it into view",
+}
+local STATE_SHAPE = sealed.declare("editor_text", "state_text", STATE_FIELDS)
+
+--[[ THE `item` CONTAINER - one entry in the character stream, and the thing `chars` is a list of.
+
+THREE KINDS, ONE TABLE, and which kind it is shows in which field is set: a glyph carries `code`, a
+hard line break carries `newline`, a formula embed carries `formula`. That is why the field list
+below reads as an either/or rather than as a record - there is no `kind` field, and adding one would
+mean two ways to ask the same question.
+
+IT DOES NOT LEAVE THIS FILE, and that is now true rather than merely mostly true. It used to: the
+Ctrl+Shift+=/- path handed a whole item to `mformula_new.new_from_base`, which read `size_off` and
+`code` off it - a module the text editor is built ON, knowing the shape of a text item. That module
+takes its own `base_glyph` as of 2026-09-12 and this file converts at the call, so the declaration
+below is a statement about this file alone.
+
+WHAT EARNS IT A SEAL WITHOUT CROSSING FILES: eleven inline literals wrote it and nothing said what
+one could hold, so the field list was whatever the eleven happened to agree on. It is also the spine
+of the stream - every glyph, break and embed in a text box is one of these - and it survives a round
+trip through `deep_copy` into an undo snapshot and back into the editor, which is a longer life than
+most tables here get. `new_item` below is the one creator now, and it uses `check_keys` rather than
+the seal alone because the literal arrives fully built - see that function.
+@date 2026-09-13 00:10 ]]
+local ITEM_FIELDS = {
+    code     = "the glyph's ncod (char.lua's catalogue code). A GLYPH item.",
+    size_off = "steps of per-glyph size boost, negative = bigger; only on a glyph, usually absent",
+    newline  = "true on a HARD LINE BREAK item, which carries nothing else",
+    formula  = "the mformula.container of an EMBEDDED formula. A FORMULA item.",
+}
+local ITEM_SHAPE = sealed.declare("editor_text", "item", ITEM_FIELDS)
+
+--[[ The one creator for a `chars` entry.
+
+Core: every item in the stream is built here, so the declaration above is the whole truth about what
+one may hold. It takes the table the caller already writes rather than named arguments, because the
+three kinds share no argument list and a creator per kind would be three creators.
+
+Detail: CHECK_KEYS, NOT JUST THE SEAL. The literal arrives fully built, and both metamethods fire
+only while a key is absent - so `{cdoe = ncod}` would be sealed with the typo already inside it and
+read back as an item with no code. Same split the transform spec needed.
+
+Params: `t` the literal, {code=} or {newline=true} or {formula=}. Returns it, sealed, so the call
+can stand inside a table.insert.
+@date 2026-09-12 23:10 ]]
+local function new_item(t)
+    ITEM_SHAPE.check_keys(t, "item")
+    return ITEM_SHAPE.wrap(t)
+end
+
+--[[ A fresh, empty text box.
+
+Core: the state_text is a FLAT CHARACTER STREAM (`chars`) with a cursor index into it. A formula is one
+entry in that stream carrying its own mformula container, which is what lets text and mathematics
+share one caret and one undo history.
+
+Detail: several fields are filled in by draw() and read by handle_input() on the NEXT frame -
+`last_positions`, `last_cursor_y`, `last_cursor_h`. Every hit test here is therefore against what
+was last drawn, which is correct: that is what the user actually clicked on.
+@date 2026-09-12 04:15 ]]
 function editor_text.new()
-    return {
+    return STATE_SHAPE.wrap{
         chars = {},
         cursor_pos = 0,
         selection_anchor = nil,
@@ -58,8 +211,8 @@ function editor_text.new()
         last_cursor_y = nil,    -- filled in by draw(): absolute screen y of the caret right now
         last_cursor_h = nil,    -- (plain text or an active formula's own - see draw()'s comment),
                                  -- read by content.lua to keep it scrolled into view
-        last_formula_boxes = nil, -- filled in by draw(): {x,y,w,h,formula=<mformula state>}[]
-        active_formula = nil,   -- the mformula state currently owning input, if any
+        last_formula_boxes = nil, -- filled in by draw(): {x,y,w,h,formula=<mformula state_text>}[]
+        active_formula = nil,   -- the mformula state_text currently owning input, if any
         frame = 0,              -- os.clock() isn't available (virt_composer sandboxes os/io by
                                  -- default), so the caret blinks on a frame count instead of wall time
         undo_stack = {},        -- {chars=, cursor_pos=, selection_anchor=}[], oldest first - see
@@ -96,42 +249,42 @@ end
 
 --[[ Returns lo, hi (0-indexed cursor positions, lo < hi) covering the selected chars, or nil if
 there is no active (non-empty) selection. @date 2026-09-08 08:20 ]]
-local function selection_range(state)
-    local a = state.selection_anchor
-    if not a or a == state.cursor_pos then
+local function selection_range(state_text)
+    local a = state_text.selection_anchor
+    if not a or a == state_text.cursor_pos then
         return nil, nil
     end
-    if a < state.cursor_pos then
-        return a, state.cursor_pos
+    if a < state_text.cursor_pos then
+        return a, state_text.cursor_pos
     end
-    return state.cursor_pos, a
+    return state_text.cursor_pos, a
 end
 
 --[[ Deletes the active selection (if any), moves the cursor to its start, and clears it.
 @return true if there was a selection to delete. @date 2026-09-08 08:20 ]]
-local function delete_selection(state)
-    local lo, hi = selection_range(state)
+local function delete_selection(state_text)
+    local lo, hi = selection_range(state_text)
     if not lo then
         return false
     end
     for i = hi, lo + 1, -1 do
-        table.remove(state.chars, i)
+        table.remove(state_text.chars, i)
     end
-    state.cursor_pos = lo
-    state.selection_anchor = nil
+    state_text.cursor_pos = lo
+    state_text.selection_anchor = nil
     return true
 end
 
 --[[ Called at the start of every cursor-moving key handler: with `extend` (Shift held), starts a
 selection at the current cursor if one isn't already active; otherwise drops any selection.
 @date 2026-09-08 08:20 ]]
-local function update_selection_for_move(state, extend)
+local function update_selection_for_move(state_text, extend)
     if extend then
-        if not state.selection_anchor then
-            state.selection_anchor = state.cursor_pos
+        if not state_text.selection_anchor then
+            state_text.selection_anchor = state_text.cursor_pos
         end
     else
-        state.selection_anchor = nil
+        state_text.selection_anchor = nil
     end
 end
 
@@ -141,10 +294,10 @@ span (mformula.to_latex() - see its own comment for exactly what it covers). A l
 typed as plain text is backslash-escaped so insert_text() can always tell it apart from a $$ span
 or one of ITS escapes on the way back in.
 @date 2026-09-08 08:20 ]]
-local function selection_to_text(state, lo, hi)
+local function selection_to_text(state_text, lo, hi)
     local parts = {}
     for i = lo + 1, hi do
-        local item = state.chars[i]
+        local item = state_text.chars[i]
         if item.newline then
             parts[#parts+1] = "\n"
         elseif item.formula then
@@ -171,7 +324,7 @@ end
 greek/symbol fallback, undone), "\$"/"\\" unescape back to a literal "$"/"\", and anything else
 unmapped - an unrecognized macro included - is skipped, the same leniency plain paste always had.
 @date 2026-09-08 08:20 ]]
-local function insert_text(state, text, fontset)
+local function insert_text(state_text, text, fontset)
     local i = 1
     while i <= #text do
         local c = text:sub(i, i)
@@ -183,12 +336,12 @@ local function insert_text(state, text, fontset)
             -- mexpru.DEFAULT_SIZE, not a live outer size - the same reasoning as the
             -- `formula.new` branch in handle_input (mexpru.DEFAULT_SIZE's own comment).
             local formula = mformula.from_latex(fontset, mexpru.DEFAULT_SIZE, inner)
-            table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
-            state.cursor_pos = state.cursor_pos + 1
+            table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{formula = formula})
+            state_text.cursor_pos = state_text.cursor_pos + 1
             i = close and (close + 2) or (#text + 1)
         elseif c == '\n' then
-            table.insert(state.chars, state.cursor_pos + 1, {newline=true})
-            state.cursor_pos = state.cursor_pos + 1
+            table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{newline=true})
+            state_text.cursor_pos = state_text.cursor_pos + 1
             i = i + 1
         elseif c == '\r' then
             i = i + 1
@@ -202,9 +355,9 @@ local function insert_text(state, text, fontset)
                 end
                 local entry = char.find_by_desc("\\" .. text:sub(start, j - 1))
                 if entry then
-                    table.insert(state.chars, state.cursor_pos + 1,
-                            {code=entry.ncod, size_off=char.size_delta_by_desc[entry.desc]})
-                    state.cursor_pos = state.cursor_pos + 1
+                    table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{code=entry.ncod,
+                            size_off=char.size_delta(entry.desc)})
+                    state_text.cursor_pos = state_text.cursor_pos + 1
                 end
                 -- selection_to_text() always emits one trailing space after a macro name -
                 -- consume it so round-tripping our own output doesn't leave a stray space behind.
@@ -212,8 +365,8 @@ local function insert_text(state, text, fontset)
             elseif nc == '$' or nc == '\\' then
                 local entry = char.find_by_ascii(nc)
                 if entry then
-                    table.insert(state.chars, state.cursor_pos + 1, {code=entry.ncod})
-                    state.cursor_pos = state.cursor_pos + 1
+                    table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{code=entry.ncod})
+                    state_text.cursor_pos = state_text.cursor_pos + 1
                 end
                 i = i + 2
             else
@@ -222,8 +375,8 @@ local function insert_text(state, text, fontset)
         else
             local entry = char.find_by_ascii(c)
             if entry then
-                table.insert(state.chars, state.cursor_pos + 1, {code=entry.ncod})
-                state.cursor_pos = state.cursor_pos + 1
+                table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{code=entry.ncod})
+                state_text.cursor_pos = state_text.cursor_pos + 1
             end
             i = i + 1
         end
@@ -235,39 +388,42 @@ format is exactly this, one per box, so a save is indistinguishable from "select
 load from "select all, delete, paste" (undo history included, since it goes through the same
 push_undo() call sites paste already does).
 @date 2026-09-08 08:20 ]]
-function editor_text.to_text(state)
-    return selection_to_text(state, 0, #state.chars)
+function editor_text.to_text(state_text)
+    STATE_SHAPE.check(state_text)
+    return selection_to_text(state_text, 0, #state_text.chars)
 end
 
 --[[ Replaces the ENTIRE buffer with `text` (insert_text()'s own $$.../escape handling included) -
 content.lua's own load, and this file's own undo/redo's restore path (see undo_or_redo()) both
-go through wholesale state.chars replacement already; this is that same operation exposed for a
+go through wholesale state_text.chars replacement already; this is that same operation exposed for a
 fresh (or about to be cleared) editor_text.new() instead of a snapshot table. Does NOT go through
-push_undo() itself - loading a save file replaces the state a box STARTS with, there's nothing
+push_undo() itself - loading a save file replaces the state_text a box STARTS with, there's nothing
 before it to undo back to.
 @date 2026-09-08 08:20 ]]
-function editor_text.from_text(state, text, fontset)
-    state.chars = {}
-    state.cursor_pos = 0
-    state.selection_anchor = nil
-    insert_text(state, text, fontset)
+function editor_text.from_text(state_text, text, fontset)
+    STATE_SHAPE.check(state_text)
+    state_text.chars = {}
+    state_text.cursor_pos = 0
+    state_text.selection_anchor = nil
+    insert_text(state_text, text, fontset)
 end
 
---[[ Rescales every formula embed in state.chars at the CURRENT global zoom (mexpru.set_zoom(), set
+--[[ Rescales every formula embed in state_text.chars at the CURRENT global zoom (mexpru.set_zoom(), set
 by content.lua just before calling this) - content.lua's own Ctrl+MouseWheel handler calls this for
 every box any time the zoom actually changes, so already-typed formula content visibly
 catches up (mformula_new.rescale()'s own comment - plain text needs no equivalent call here, it's
 never baked into anything, always measured/drawn fresh from the live `sz` passed to draw() itself).
 @date 2026-09-08 08:20 ]]
-function editor_text.rescale(state, fontset)
-    for _, item in ipairs(state.chars) do
+function editor_text.rescale(state_text, fontset)
+    STATE_SHAPE.check(state_text)
+    for _, item in ipairs(state_text.chars) do
         if item.formula then
             mformula.rescale(item.formula, fontset)
         end
     end
 end
 
---[[ Nearest recorded glyph-gap position (index into state.chars) to a screen point, using the
+--[[ Nearest recorded glyph-gap position (index into state_text.chars) to a screen point, using the
 positions the previous frame's draw() recorded. Used by both click-to-place and drag-to-select.
 
 LINE FIRST, THEN COLUMN, and strictly in that order - never one blended distance. Pick the line
@@ -290,15 +446,15 @@ works and should work inside formulas".
 Line identity is compared with ==, which is exact rather than lucky: every position on one line is
 handed the same `line_top` upvalue by draw(), so they carry bit-identical numbers.
 @date 2026-09-09 23:05 ]]
-local function nearest_position(state, mpos)
-    if not state.last_positions then
+local function nearest_position(state_text, mpos)
+    if not state_text.last_positions then
         return nil
     end
 
     -- 1. THE LINE. Distance to the band, so anywhere inside a tall line scores zero and ties are
     -- broken by the topmost - never by how far along the line the pointer happens to be.
     local best_y, best_dy = nil, math.huge
-    for _, p in ipairs(state.last_positions) do
+    for _, p in ipairs(state_text.last_positions) do
         local dy = 0
         if mpos.y < p.y0 then
             dy = p.y0 - mpos.y
@@ -312,7 +468,7 @@ local function nearest_position(state, mpos)
 
     -- 2. THE COLUMN, among that line's own gaps and no others.
     local best_i, best_dx = nil, math.huge
-    for _, p in ipairs(state.last_positions) do
+    for _, p in ipairs(state_text.last_positions) do
         if p.y == best_y then
             local dx = math.abs(p.x - mpos.x)
             if dx < best_dx then
@@ -365,7 +521,19 @@ local function deep_copy(t, seen)
             copy[k] = deep_copy(v, seen)
         end
     end
-    return copy
+    --[[ THE COPY OF A SEALED CONTAINER IS STILL THAT CONTAINER. Without this the metatable was
+    dropped and a snapshot held a formula that had every field of an mformula.container and was not
+    one - which worked only for as long as nothing asked. Found 2026-09-12, when mformula_new's
+    public functions started checking: undo restores these tables straight back into the editor, so
+    the plain copy was on its way to every function that takes a container.
+
+    Set at the END, not before the loop: __newindex fires on an absent key, so sealing first would
+    route every copied field through the check on its way in. They came off a table that was already
+    sealed, so they have been through it once already.
+
+    nil for a plain table, which setmetatable accepts, so this stays a no-op for everything that was
+    not sealed to begin with. ]]
+    return setmetatable(copy, getmetatable(t))
 end
 
 --[[ deep_copy() alone is NOT enough for a formula embed: it copies Lua tables but passes userdata
@@ -374,16 +542,17 @@ propagate_rebuild() then cuts out from under it (mformula_new.clone()'s own comm
 item therefore gets a real, independent copy here, which is exactly what undo_or_redo() below
 already claims to be restoring.
 
-`fontset` comes off state._fontset, stashed by handle_input each frame: snapshot() is reached from
+`fontset` comes off state_text._fontset,
+        stashed by handle_input each frame: snapshot() is reached from
 a dozen push_undo() call sites that have no reason to know about fonts, and deep_copy() skips
 "_"-prefixed keys, so parking it there costs nothing and can't leak into a snapshot.
 @date 2026-09-08 08:20 ]]
-local function snapshot(state)
-    local chars = deep_copy(state.chars)
-    if state._fontset then
+local function snapshot(state_text)
+    local chars = deep_copy(state_text.chars)
+    if state_text._fontset then
         for _, item in ipairs(chars) do
             if item.formula then
-                item.formula = mformula.clone(item.formula, state._fontset)
+                item.formula = mformula.clone(item.formula, state_text._fontset)
             end
         end
     end
@@ -394,9 +563,9 @@ local function snapshot(state)
     formula, I want it to stay there"). The formula's own internal cursor rides along on its clone,
     which mformula.clone() maps across for exactly this reason. ]]
     local active_idx
-    if state.active_formula then
-        for i, item in ipairs(state.chars) do
-            if item.formula == state.active_formula then
+    if state_text.active_formula then
+        for i, item in ipairs(state_text.chars) do
+            if item.formula == state_text.active_formula then
                 active_idx = i
                 break
             end
@@ -404,8 +573,8 @@ local function snapshot(state)
     end
     return {
         chars = chars,
-        cursor_pos = state.cursor_pos,
-        selection_anchor = state.selection_anchor,
+        cursor_pos = state_text.cursor_pos,
+        selection_anchor = state_text.selection_anchor,
         active_formula_idx = active_idx,
     }
 end
@@ -419,28 +588,29 @@ every keystroke inside a formula is its own step). Any real edit clears the redo
 valid for redoing exactly what was just undone, not a copy of the past made stale by a genuinely
 new edit branching off from it.
 @date 2026-09-08 08:20 ]]
-local function commit_undo(state, snap, coalesce_key)
+local function commit_undo(state_text, snap, coalesce_key)
     -- Any real edit outdates the cached pre-edit snapshot (see its own comment in handle_input) -
     -- invalidated here rather than at each call site, since this is the one place every edit passes
     -- through.
-    state._undo_baseline = nil
-    if coalesce_key and coalesce_key == state.undo_coalesce_key then
+    state_text._undo_baseline = nil
+    if coalesce_key and coalesce_key == state_text.undo_coalesce_key then
         return
     end
-    table.insert(state.undo_stack, snap)
-    if #state.undo_stack > UNDO_STACK_LIMIT then
-        table.remove(state.undo_stack, 1)
+    table.insert(state_text.undo_stack, snap)
+    if #state_text.undo_stack > UNDO_STACK_LIMIT then
+        table.remove(state_text.undo_stack, 1)
     end
-    state.redo_stack = {}
-    state.undo_coalesce_key = coalesce_key
+    state_text.redo_stack = {}
+    state_text.undo_coalesce_key = coalesce_key
 end
 
---[[ Convenience for the common case: snapshot state right now, then commit it. The one call site
+--[[ Convenience for the common case: snapshot state_text right now, then commit it. The one call site
 that needs to know whether an edit actually happened BEFORE deciding to commit (the active-formula
-case in handle_input, keyed off mformula's own state.version) builds the snapshot up front instead
+case in handle_input,
+        keyed off mformula's own state_text.version) builds the snapshot up front instead
 and calls commit_undo() directly.
 @date 2026-09-08 08:20 ]]
-local function push_undo(state, coalesce_key)
+local function push_undo(state_text, coalesce_key)
     --[[ Every mutating action in this file funnels through here, which makes it the one place worth
     tagging the frame from (prof.lua / perf_composer.h). A spike frame's report then reads
     "events: edit:backspace" instead of leaving the cause to be inferred from the timings - which is
@@ -448,7 +618,7 @@ local function push_undo(state, coalesce_key)
     coalesce_key already names the action for undo's own purposes; nil means one of the structural
     edits that never coalesces. ]]
     prof.event("edit:" .. (coalesce_key or "structural"))
-    commit_undo(state, snapshot(state), coalesce_key)
+    commit_undo(state_text, snapshot(state_text), coalesce_key)
 end
 
 --[[ One step of `edit.undo` / `edit.redo`. Restores the formula that owned input too, by the index
@@ -458,20 +628,20 @@ reused, but the item at that index is the same formula and undoing an edit made 
 leave you still inside it. Falls back to plain editing when that index holds no formula any more
 (the undone edit deleted it, say). A no-op when the relevant stack is empty.
 @date 2026-09-08 08:20 ]]
-local function undo_or_redo(state, is_redo)
-    local from_stack = is_redo and state.redo_stack or state.undo_stack
-    local to_stack = is_redo and state.undo_stack or state.redo_stack
+local function undo_or_redo(state_text, is_redo)
+    local from_stack = is_redo and state_text.redo_stack or state_text.undo_stack
+    local to_stack = is_redo and state_text.undo_stack or state_text.redo_stack
     local snap = table.remove(from_stack)
     if not snap then
         return
     end
-    table.insert(to_stack, snapshot(state))
+    table.insert(to_stack, snapshot(state_text))
 
     --[[ UNDO RESTORES CONTENT, NOT MODE. Whether a formula currently owns input is left exactly as
     it was, and only WHICH formula is taken from the snapshot.
 
     Reported live 2026-09-07: "undo from text after putting a hat jumps the cursor around". Applying
-    an accent inside a formula snapshots a state in which that formula was active; leaving it and
+    an accent inside a formula snapshots a state_text in which that formula was active; leaving it and
     pressing Ctrl+Z out in the text then restored that flag too, and the caret teleported from where
     you were typing into the middle of the formula. Undoing while you are STILL inside a formula has
     the opposite requirement - being ejected into the text on every undo would be just as wrong - so
@@ -480,18 +650,18 @@ local function undo_or_redo(state, is_redo)
     (An older comment on this function claimed it "always exits back to plain editing on restore".
     It never did - the line below has always taken the flag from the snapshot. The comment was
     describing an intent the code did not have.) ]]
-    local was_in_formula = state.active_formula ~= nil
-    state.chars = snap.chars
-    state.cursor_pos = snap.cursor_pos
-    state.selection_anchor = snap.selection_anchor
+    local was_in_formula = state_text.active_formula ~= nil
+    state_text.chars = snap.chars
+    state_text.cursor_pos = snap.cursor_pos
+    state_text.selection_anchor = snap.selection_anchor
     if was_in_formula then
-        local restored = snap.active_formula_idx and state.chars[snap.active_formula_idx]
-        state.active_formula = restored and restored.formula or nil
+        local restored = snap.active_formula_idx and state_text.chars[snap.active_formula_idx]
+        state_text.active_formula = restored and restored.formula or nil
     else
-        state.active_formula = nil
+        state_text.active_formula = nil
     end
-    state.undo_coalesce_key = nil
-    state._undo_baseline = nil      -- the state just changed wholesale; any cached one is stale
+    state_text.undo_coalesce_key = nil
+    state_text._undo_baseline = nil      -- the state_text just changed wholesale; any cached one is stale
 end
 
 --[[ The two halves of one frame of editing INSIDE a formula, called by handle_input() around
@@ -508,15 +678,30 @@ version, so the caret position inside a cached baseline goes stale immediately. 
 freshly-captured path onto the baseline before recording it, so Ctrl+Z restores the tree AND puts
 the caret back where the undone edit started, not where the previous one left it.
 @date 2026-09-08 08:20 ]]
-function editor_text.begin_formula_edit(state)
-    if not state._undo_baseline then
-        state._undo_baseline = snapshot(state)
+function editor_text.begin_formula_edit(state_text)
+    STATE_SHAPE.check(state_text)
+    if not state_text._undo_baseline then
+        state_text._undo_baseline = snapshot(state_text)
     end
-    return mformula.cursor_path(state.active_formula)
+    return mformula.cursor_path(state_text.active_formula)
 end
 
-function editor_text.commit_formula_edit(state, cursor_path)
-    local snap = state._undo_baseline
+--[[ Closes the undo step that begin_formula_edit opened.
+
+Core - ONE FORMULA EDIT IS ONE UNDO STEP, not one per keystroke. begin takes a baseline snapshot and
+this turns it into a step, so undoing after typing inside a formula returns to before you entered it
+rather than unpicking it character by character.
+
+Params: `cursor_path` is where the caret was in the formula, restored onto the SNAPSHOT's copy of it
+- the snapshot holds different node objects, so a raw cursor reference would point into the live
+tree and the undone state_text would open with the caret somewhere it never was.
+
+Does nothing when no baseline is open, which is the ordinary case for anything that was not a
+formula edit.
+@date 2026-09-12 04:15 ]]
+function editor_text.commit_formula_edit(state_text, cursor_path)
+    STATE_SHAPE.check(state_text)
+    local snap = state_text._undo_baseline
     if not snap then
         return
     end
@@ -525,7 +710,7 @@ function editor_text.commit_formula_edit(state, cursor_path)
     if snap_item and snap_item.formula then
         mformula.cursor_from_path(snap_item.formula, cursor_path)
     end
-    commit_undo(state, snap, nil)
+    commit_undo(state_text, snap, nil)
 end
 
 --[[ Exported for tests only (the convention mformula_new's make_supsub()/make_frac() already use).
@@ -533,8 +718,16 @@ handle_input()'s own Ctrl+Z branch is the real entry point, and it needs real ke
 that wants to undo something has to reach the machinery directly.
 @date 2026-09-08 08:20 ]]
 editor_text.push_undo = push_undo
-function editor_text.undo(state) undo_or_redo(state, false) end
-function editor_text.redo(state) undo_or_redo(state, true) end
+--[[ Steps the undo history back, and forward.
+
+THE WHOLE CHAR STREAM IS SNAPSHOTTED, formulas included, which is why undo lives in this file rather
+than in editor.lua: a definition box has no stream to snapshot, so what a step even IS differs per
+owner. A formula edit counts as one step - see commit_formula_edit above.
+@date 2026-09-12 04:15 ]]
+function editor_text.undo(state_text) undo_or_redo(state_text, false) end
+--[[ The same history, stepped forward. Cleared by any new edit, so a branch is never re-entered.
+@date 2026-09-12 04:15 ]]
+function editor_text.redo(state_text) undo_or_redo(state_text, true) end
 
 --[[ The formula embed under a screen point, as {container, hb}, or nil.
 
@@ -545,8 +738,9 @@ WHAT A POINTER CAN LAND ON in this box, asked once. The boxes come from the last
 click land inside the formula that currently has input" rather than "which formula is here". Both
 questions are asked in this file and they used to be two copies of the same loop.
 @date 2026-09-11 21:40 ]]
-function editor_text.formula_at(state, pos, only)
-    for _, fb in ipairs(state.last_formula_boxes or {}) do
+function editor_text.formula_at(state_text, pos, only)
+    STATE_SHAPE.check(state_text)
+    for _, fb in ipairs(state_text.last_formula_boxes or {}) do
         if (not only or fb.formula == only) and editor.point_in_box(pos, fb) then
             return {container = fb.formula, hb = fb}
         end
@@ -562,10 +756,11 @@ end
 before: hit-testing a click against an active formula's own drawn geometry (mformula.hit_test()
 has to rebuild/measure rows to know where they land on screen, same as draw() does).
 @date 2026-09-08 08:20 ]]
-function editor_text.handle_input(state, fontset, sz)
+function editor_text.handle_input(state_text, fontset, sz)
+    STATE_SHAPE.check(state_text)
     -- Parked for snapshot()'s benefit (see its own comment) - "_"-prefixed, so deep_copy() never
     -- carries it into a snapshot.
-    state._fontset = fontset
+    state_text._fontset = fontset
     -- Ctrl+Z/Ctrl+Shift+Z: checked first, ahead of even the active-formula dispatch below, so
     -- undo/redo works the same way regardless of whether a formula currently owns input - see
     -- undo_or_redo()'s own comment on why it restores content without changing modes.
@@ -573,11 +768,11 @@ function editor_text.handle_input(state, fontset, sz)
     -- rebindable, and redo is checked FIRST because it is the more specific of the two - with
     -- exact matching they cannot both match, but the order makes that independent of the rule.
     if keymap.pressed("edit.redo") then
-        undo_or_redo(state, true)
+        undo_or_redo(state_text, true)
         return
     end
     if keymap.pressed("edit.undo") then
-        undo_or_redo(state, false)
+        undo_or_redo(state_text, false)
         return
     end
 
@@ -589,7 +784,7 @@ function editor_text.handle_input(state, fontset, sz)
     -- normally again. A click INSIDE it, instead, hit-tests into the formula's own geometry and
     -- moves ITS cursor there - see mformula.hit_test()'s comment for how "which glyph" is
     -- decided. -----------------------------------------------------------------------
-    if state.active_formula then
+    if state_text.active_formula then
         local escaped = keymap.pressed("formula.exit")
         -- Ctrl+Left/Right always leave the formula, regardless of where the cursor is inside it -
         -- plain Left/Right staying parked at the formula's own start/end (mformula_new's
@@ -606,8 +801,8 @@ function editor_text.handle_input(state, fontset, sz)
         local ctrl_arrow_exit = ctrl_left or ctrl_right
         local clicked_outside, clicked_inside_fb = false, nil
         if vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false) then
-            local target = editor_text.formula_at(state, vc.ImGui_GetMousePos(),
-                    state.active_formula)
+            local target = editor_text.formula_at(state_text, vc.ImGui_GetMousePos(),
+                    state_text.active_formula)
             clicked_inside_fb = target and target.hb
             clicked_outside = not clicked_inside_fb
         end
@@ -619,14 +814,14 @@ function editor_text.handle_input(state, fontset, sz)
             -- key leaves you stranded at that same spot. Ctrl+Left/Right on exit should always
             -- continue moving in the pressed direction, same as they would outside a formula.
             if ctrl_left or ctrl_right then
-                for i, it in ipairs(state.chars) do
-                    if it.formula == state.active_formula then
-                        state.cursor_pos = ctrl_left and (i - 1) or i
+                for i, it in ipairs(state_text.chars) do
+                    if it.formula == state_text.active_formula then
+                        state_text.cursor_pos = ctrl_left and (i - 1) or i
                         break
                     end
                 end
             end
-            state.active_formula = nil
+            state_text.active_formula = nil
             -- Must return here: without it, this same Ctrl+Left/Right keypress falls through to
             -- the plain arrow-key handling below and gets processed a SECOND time in this same
             -- call (IsKeyPressed isn't "consumed" by reading it once) - it would word-skip an
@@ -638,29 +833,30 @@ function editor_text.handle_input(state, fontset, sz)
             --[[ A fresh click places the caret; HOLDING the button and moving drags a selection out
             of it (mformula's own hit_test(extend) keeps the anchor and moves only the far end,
             clamped to the row the drag started in). Tracked with the same click/hold/release shape
-            state.mouse_selecting already uses for plain text, just aimed at the active formula. ]]
-            local dragging_here = state.formula_dragging
+            state_text.mouse_selecting already uses for plain text,
+                    just aimed at the active formula. ]]
+            local dragging_here = state_text.formula_dragging
                     and vc.ImGui_IsMouseDown("ImGuiMouseButton_Left")
             if clicked_inside_fb or dragging_here then
-                local fb = clicked_inside_fb or state.formula_dragging
+                local fb = clicked_inside_fb or state_text.formula_dragging
                 local mpos = vc.ImGui_GetMousePos()
                 -- The host owns the ABSOLUTE-wrap_edge -> RELATIVE-wrap_width conversion and the
                 -- screen -> draw-origin conversion, and mutates cursor_pos directly (the same
                 -- convention move_*() uses) rather than returning a position to assign.
-                editor.formula_hit_test(state.active_formula, fontset, sz, mpos,
-                        fb.draw_x, fb.draw_y, fb.wrap_edge,
+                editor.formula_hit_test(state_text.active_formula, fontset, sz, mpos, fb.draw_x,
+                        fb.draw_y, fb.wrap_edge,
                         dragging_here and not clicked_inside_fb)
-                state.formula_dragging = fb
+                state_text.formula_dragging = fb
             end
             if not vc.ImGui_IsMouseDown("ImGuiMouseButton_Left") then
-                state.formula_dragging = nil
+                state_text.formula_dragging = nil
             end
             -- One undo step per keystroke INSIDE a formula (not coalesced, unlike plain typing
             -- outside one) - but only when this keystroke actually changed the tree, not for pure
             -- cursor movement (Left/Right/Up/Down, or the click above) - mformula's own
-            -- state.version (bumped by every real tree edit) is exactly that signal, so there's
+            -- state_text.version (bumped by every real tree edit) is exactly that signal, so there's
             -- no need to re-derive "was this an edit" by hand here.
-            --[[ The pre-edit snapshot is CACHED (state._undo_baseline), not rebuilt each frame.
+            --[[ The pre-edit snapshot is CACHED (state_text._undo_baseline), not rebuilt each frame.
             An undo step has to be captured before the edit that it undoes, but this branch runs on
             every frame a formula is active - so taking one unconditionally meant snapshotting
             continuously, ~60 times a second, to throw all but a handful away.
@@ -670,18 +866,19 @@ function editor_text.handle_input(state, fontset, sz)
             full structural rebuild of every formula, every frame, and the editor visibly lagged.
             Reported live: "it lags a lot".
 
-            A baseline stays valid until something actually changes the state, so it is invalidated
+            A baseline stays valid until something actually changes the state_text,
+                    so it is invalidated
             in commit_undo() and undo_or_redo() - the two places that ever do. The cost is back to
             about one clone per edit instead of one per frame. ]]
-            local formula = state.active_formula
+            local formula = state_text.active_formula
             -- The caret path has to be taken BEFORE the edit - afterwards it has already moved with
             -- it. See editor_text.begin_formula_edit()'s comment for why it isn't read off the baseline.
-            local pre_cursor_path = editor_text.begin_formula_edit(state)
+            local pre_cursor_path = editor_text.begin_formula_edit(state_text)
             -- edit_bracket() runs the frame's input and reports whether the TREE changed, as
             -- opposed to the cursor merely moving - which is exactly the condition an undo step
             -- should be taken on, and is why the version bookkeeping now lives in the host.
             if editor.edit_bracket(formula, fontset, sz) then
-                editor_text.commit_formula_edit(state, pre_cursor_path)
+                editor_text.commit_formula_edit(state_text, pre_cursor_path)
             end
             return
         end
@@ -692,27 +889,27 @@ function editor_text.handle_input(state, fontset, sz)
     -- bigger than the text around them; omitted from the item table entirely otherwise, so a
     -- normal glyph is just {code=}.
     local function insert_ncod(ncod, size_off)
-        table.insert(state.chars, state.cursor_pos + 1, {code=ncod, size_off=size_off})
-        state.cursor_pos = state.cursor_pos + 1
+        table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{code=ncod, size_off=size_off})
+        state_text.cursor_pos = state_text.cursor_pos + 1
     end
 
-    -- Still needed as raw state for the Alt+letter Greek family and the selection-extending
+    -- Still needed as raw state_text for the Alt+letter Greek family and the selection-extending
     -- arrows, which are whole families of keys rather than single actions.
     local is_ctrl, is_shift, is_alt = keymap.mods()
 
     -- Ctrl+M: insert a new formula embed at the cursor and enter it straight away. -------------
     if keymap.pressed("formula.new") then
-        push_undo(state, nil)
+        push_undo(state_text, nil)
         -- mexpru.DEFAULT_SIZE (a fixed LOGICAL baseline), NOT the live `sz` - `sz` is content.lua's
-        -- CURRENT, possibly-already-zoomed state.font_size; baking that in directly here would
+        -- CURRENT, possibly-already-zoomed state_text.font_size; baking that in directly here would
         -- double-count the zoom the moment mexpru.physical_sz() maps it again (2026-09-04's Ctrl+
         -- MouseWheel zoom - see mexpru.DEFAULT_SIZE's own comment). A brand-new formula still
         -- renders at the CURRENT zoom immediately either way - physical_sz() applies it fresh at
         -- construction regardless of which logical baseline was used.
         local formula = mformula.new(fontset, mexpru.DEFAULT_SIZE)
-        table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
-        state.cursor_pos = state.cursor_pos + 1
-        state.active_formula = formula
+        table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{formula = formula})
+        state_text.cursor_pos = state_text.cursor_pos + 1
+        state_text.active_formula = formula
         return
     end
 
@@ -720,12 +917,12 @@ function editor_text.handle_input(state, fontset, sz)
     -- it - mirrors Ctrl+M above, just starting with a frac instead of a blank formula (see
     -- mformula.new_with_frac()'s own comment for why it doesn't wrap anything). -------------
     if keymap.pressed("formula.new_frac") then
-        push_undo(state, nil)
+        push_undo(state_text, nil)
         -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M just above.
         local formula = mformula.new_with_frac(fontset, mexpru.DEFAULT_SIZE)
-        table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
-        state.cursor_pos = state.cursor_pos + 1
-        state.active_formula = formula
+        table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{formula = formula})
+        state_text.cursor_pos = state_text.cursor_pos + 1
+        state_text.active_formula = formula
         return
     end
 
@@ -736,12 +933,12 @@ function editor_text.handle_input(state, fontset, sz)
     -- handled in the block below - the `not is_shift` guard here is what keeps the two apart, the
     -- same split mformula_new.handle_input() makes for these keys INSIDE a formula. -------------
     if keymap.pressed("formula.new_stack") then
-        push_undo(state, nil)
+        push_undo(state_text, nil)
         -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M/Ctrl+/ above.
         local formula = mformula.new_with_vert(fontset, mexpru.DEFAULT_SIZE)
-        table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
-        state.cursor_pos = state.cursor_pos + 1
-        state.active_formula = formula
+        table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{formula = formula})
+        state_text.cursor_pos = state_text.cursor_pos + 1
+        state_text.active_formula = formula
         return
     end
 
@@ -759,21 +956,28 @@ function editor_text.handle_input(state, fontset, sz)
             slot = "sup"
         end
         if slot then
-            push_undo(state, nil)
-            state.selection_anchor = nil
+            push_undo(state_text, nil)
+            state_text.selection_anchor = nil
             local base_item = nil
-            local prev = state.cursor_pos > 0 and state.chars[state.cursor_pos]
+            local prev = state_text.cursor_pos > 0 and state_text.chars[state_text.cursor_pos]
             if prev and not prev.newline and not prev.formula then
                 base_item = prev
-                table.remove(state.chars, state.cursor_pos)
-                state.cursor_pos = state.cursor_pos - 1
+                table.remove(state_text.chars, state_text.cursor_pos)
+                state_text.cursor_pos = state_text.cursor_pos - 1
             end
             -- mexpru.DEFAULT_SIZE, not the live `sz` - same reasoning as Ctrl+M/Ctrl+/ above: a
-            -- fixed LOGICAL baseline, never content.lua's already-zoomed state.font_size.
-            local formula = mformula.new_from_base(fontset, mexpru.DEFAULT_SIZE, base_item, slot)
-            table.insert(state.chars, state.cursor_pos + 1, {formula = formula})
-            state.cursor_pos = state.cursor_pos + 1
-            state.active_formula = formula
+            -- fixed LOGICAL baseline, never content.lua's already-zoomed state_text.font_size.
+            --[[ TRANSLATED AT THE BOUNDARY, 2026-09-12: mformula_new used to take this chars item
+            whole and read two fields off it, which made the formula module depend on the shape of a
+            text item - and unable to check it, since the require only goes the other way. It takes
+            its own `base_glyph` now, and converting to it is this file's job because this is the
+            file that knows what an item holds. ]]
+            local base = base_item
+                    and mformula.base_glyph(base_item.code, base_item.size_off) or nil
+            local formula = mformula.new_from_base(fontset, mexpru.DEFAULT_SIZE, base, slot)
+            table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{formula = formula})
+            state_text.cursor_pos = state_text.cursor_pos + 1
+            state_text.active_formula = formula
             return
         end
     end
@@ -781,29 +985,29 @@ function editor_text.handle_input(state, fontset, sz)
     -- Ctrl+A/C/X/V: select all, copy, cut, paste -----------------------------------------------
     do
         if keymap.pressed("edit.select_all") then
-            state.selection_anchor = 0
-            state.cursor_pos = #state.chars
+            state_text.selection_anchor = 0
+            state_text.cursor_pos = #state_text.chars
         end
         local copy = keymap.pressed("edit.copy")
         local cut = keymap.pressed("edit.cut")
         if copy or cut then
-            local lo, hi = selection_range(state)
+            local lo, hi = selection_range(state_text)
             if lo then
-                vc.ImGui_SetClipboardText(selection_to_text(state, lo, hi))
+                vc.ImGui_SetClipboardText(selection_to_text(state_text, lo, hi))
                 if cut then
-                    push_undo(state, nil)
-                    delete_selection(state)
+                    push_undo(state_text, nil)
+                    delete_selection(state_text)
                 end
             end
         end
         if keymap.pressed("edit.paste") then
             local text = vc.ImGui_GetClipboardText()
-            if selection_range(state) or (text and #text > 0) then
-                push_undo(state, nil)
+            if selection_range(state_text) or (text and #text > 0) then
+                push_undo(state_text, nil)
             end
-            delete_selection(state)
+            delete_selection(state_text)
             if text then
-                insert_text(state, text, fontset)
+                insert_text(state_text, text, fontset)
             end
         end
     end
@@ -815,8 +1019,8 @@ function editor_text.handle_input(state, fontset, sz)
     in the customiser. Consequence, flagged rather than hidden: Ctrl+Space now inserts a space,
     where before it did nothing. Nothing else binds Ctrl+Space. ]]
     if keymap.pressed("text.space") then
-        push_undo(state, "type")
-        delete_selection(state)
+        push_undo(state_text, "type")
+        delete_selection(state_text)
         insert_ncod(char.find_by_ascii(" ").ncod)
     end
 
@@ -852,9 +1056,9 @@ function editor_text.handle_input(state, fontset, sz)
                     entry = char.find_by_ascii(is_shift and letter:upper() or letter)
                 end
                 if entry then
-                    push_undo(state, "type")
-                    delete_selection(state)
-                    insert_ncod(entry.ncod, char.size_delta_by_desc[entry.desc])
+                    push_undo(state_text, "type")
+                    delete_selection(state_text)
+                    insert_ncod(entry.ncod, char.size_delta(entry.desc))
                     -- One key per press: without this the walk carries on and a second row bound
                     -- to the same key would insert twice.
                     handled = true
@@ -883,9 +1087,9 @@ function editor_text.handle_input(state, fontset, sz)
             if vc.ImGui_IsKeyPressed(keymap.key_of(key_name), true) then
                 local entry = glyphmap.entry(key_name, false, false)
                 if entry then
-                    push_undo(state, "type")
-                    delete_selection(state)
-                    insert_ncod(entry.ncod, char.size_delta_by_desc[entry.desc])
+                    push_undo(state_text, "type")
+                    delete_selection(state_text)
+                    insert_ncod(entry.ncod, char.size_delta(entry.desc))
                     --[[ COUNT the character this key is about to produce, do not skip a frame.
 
                     The first attempt suppressed the queue for the frame the key fired in, which is
@@ -897,7 +1101,7 @@ function editor_text.handle_input(state, fontset, sz)
                     A count is exact where a frame window is a guess: one override fires, one
                     character is swallowed, whenever it turns up. Nothing typed afterwards is at
                     risk, which a two-frame window could not promise. ]]
-                    state._suppress_chars = (state._suppress_chars or 0) + 1
+                    state_text._suppress_chars = (state_text._suppress_chars or 0) + 1
                     overridden = true
                 end
             end
@@ -907,15 +1111,15 @@ function editor_text.handle_input(state, fontset, sz)
         for _, cp in ipairs(codepoints) do
             -- > 32, not >= : space is handled explicitly above (the char queue doesn't always
             -- carry it), so skip it here to avoid inserting it twice on a frame where it does.
-            if cp > 32 and cp < 256 and (state._suppress_chars or 0) > 0 then
+            if cp > 32 and cp < 256 and (state_text._suppress_chars or 0) > 0 then
                 -- This character belongs to a key an override already handled. Swallow exactly
                 -- one per override, whichever frame it arrives in.
-                state._suppress_chars = state._suppress_chars - 1
+                state_text._suppress_chars = state_text._suppress_chars - 1
             elseif cp > 32 and cp < 256 then
                 local entry = char.find_by_ascii(string.char(cp))
                 if entry then
-                    push_undo(state, "type")
-                    delete_selection(state)
+                    push_undo(state_text, "type")
+                    delete_selection(state_text)
                     insert_ncod(entry.ncod)
                 end
             end
@@ -927,29 +1131,29 @@ function editor_text.handle_input(state, fontset, sz)
         -- Consecutive backspaces coalesce into one undo step (deleting a whole word this way
         -- comes back in one Ctrl+Z), but not with typing before them - a plain key mismatch
         -- against "type" already ensures that, no extra bookkeeping needed.
-        if selection_range(state) or state.cursor_pos > 0 then
-            push_undo(state, "backspace")
+        if selection_range(state_text) or state_text.cursor_pos > 0 then
+            push_undo(state_text, "backspace")
         end
-        if not delete_selection(state) and state.cursor_pos > 0 then
-            table.remove(state.chars, state.cursor_pos)
-            state.cursor_pos = state.cursor_pos - 1
+        if not delete_selection(state_text) and state_text.cursor_pos > 0 then
+            table.remove(state_text.chars, state_text.cursor_pos)
+            state_text.cursor_pos = state_text.cursor_pos - 1
         end
     end
     if keymap.pressed("text.delete") then
-        if selection_range(state) or state.cursor_pos < #state.chars then
-            push_undo(state, "delete")
+        if selection_range(state_text) or state_text.cursor_pos < #state_text.chars then
+            push_undo(state_text, "delete")
         end
-        if not delete_selection(state) and state.cursor_pos < #state.chars then
-            table.remove(state.chars, state.cursor_pos + 1)
+        if not delete_selection(state_text) and state_text.cursor_pos < #state_text.chars then
+            table.remove(state_text.chars, state_text.cursor_pos + 1)
         end
     end
 
     -- Enter ----------------------------------------------------------------------------------------
     if keymap.pressed("text.newline") then
-        push_undo(state, nil)
-        delete_selection(state)
-        table.insert(state.chars, state.cursor_pos + 1, {newline=true})
-        state.cursor_pos = state.cursor_pos + 1
+        push_undo(state_text, nil)
+        delete_selection(state_text)
+        table.insert(state_text.chars, state_text.cursor_pos + 1, new_item{newline=true})
+        state_text.cursor_pos = state_text.cursor_pos + 1
     end
 
     -- Left/Right, with Ctrl word-skip (the whitespace-then-alnum scan carried over from the C++
@@ -958,111 +1162,111 @@ function editor_text.handle_input(state, fontset, sz)
     -- same as most editors, instead of moving one char from the current cursor. -----------------
     if keymap.pressed("nav.left") or keymap.pressed("nav.select_left")
             or keymap.pressed("nav.word_left") or keymap.pressed("nav.select_word_left") then
-        local lo = selection_range(state)
-        local adjacent_formula = state.cursor_pos > 0 and state.chars[state.cursor_pos].formula
+        local lo = selection_range(state_text)
+        local adjacent_formula = state_text.cursor_pos > 0 and state_text.chars[state_text.cursor_pos].formula
         if lo and not is_shift then
-            state.cursor_pos = lo
-            state.selection_anchor = nil
+            state_text.cursor_pos = lo
+            state_text.selection_anchor = nil
         elseif is_ctrl and not is_shift and adjacent_formula then
             -- Ctrl+Left right after a formula enters it (at its own end, since we're arriving
             -- from its right side) instead of word-skipping straight over it as a single unit -
             -- the symmetric counterpart to Ctrl+Left/Right already leaving a formula FROM inside
             -- (see mformula's own handle_input caller in this file).
-            state.selection_anchor = nil
-            state.active_formula = adjacent_formula
-            mformula.cursor_to_end(state.active_formula)
+            state_text.selection_anchor = nil
+            state_text.active_formula = adjacent_formula
+            mformula.cursor_to_end(state_text.active_formula)
         else
-            update_selection_for_move(state, is_shift)
-            local function on_ws()    return is_whitespace(state.chars[state.cursor_pos]) end
-            local function on_alnum() return is_alnum(state.chars[state.cursor_pos]) end
-            local function move()     if state.cursor_pos > 0 then state.cursor_pos = state.cursor_pos - 1 end end
+            update_selection_for_move(state_text, is_shift)
+            local function on_ws()    return is_whitespace(state_text.chars[state_text.cursor_pos]) end
+            local function on_alnum() return is_alnum(state_text.chars[state_text.cursor_pos]) end
+            local function move()     if state_text.cursor_pos > 0 then state_text.cursor_pos = state_text.cursor_pos - 1 end end
             if not is_ctrl then
                 move()
             else
-                while state.cursor_pos ~= 0 and on_ws() do move() end
+                while state_text.cursor_pos ~= 0 and on_ws() do move() end
                 repeat
                     move()
-                until state.cursor_pos == 0 or not on_alnum()
+                until state_text.cursor_pos == 0 or not on_alnum()
             end
         end
     end
     if keymap.pressed("nav.right") or keymap.pressed("nav.select_right")
             or keymap.pressed("nav.word_right") or keymap.pressed("nav.select_word_right") then
-        local _, hi = selection_range(state)
-        local adjacent_formula = state.cursor_pos < #state.chars and state.chars[state.cursor_pos+1].formula
+        local _, hi = selection_range(state_text)
+        local adjacent_formula = state_text.cursor_pos < #state_text.chars and state_text.chars[state_text.cursor_pos+1].formula
         if hi and not is_shift then
-            state.cursor_pos = hi
-            state.selection_anchor = nil
+            state_text.cursor_pos = hi
+            state_text.selection_anchor = nil
         elseif is_ctrl and not is_shift and adjacent_formula then
             -- Mirror of the Left case above: Ctrl+Right right before a formula enters it at its
             -- own start.
-            state.selection_anchor = nil
-            state.active_formula = adjacent_formula
-            mformula.cursor_to_start(state.active_formula)
+            state_text.selection_anchor = nil
+            state_text.active_formula = adjacent_formula
+            mformula.cursor_to_start(state_text.active_formula)
         else
-            update_selection_for_move(state, is_shift)
-            local function on_ws()    return is_whitespace(state.chars[state.cursor_pos+1]) end
-            local function on_alnum() return is_alnum(state.chars[state.cursor_pos+1]) end
-            local function move()     if state.cursor_pos < #state.chars then state.cursor_pos = state.cursor_pos + 1 end end
+            update_selection_for_move(state_text, is_shift)
+            local function on_ws()    return is_whitespace(state_text.chars[state_text.cursor_pos+1]) end
+            local function on_alnum() return is_alnum(state_text.chars[state_text.cursor_pos+1]) end
+            local function move()     if state_text.cursor_pos < #state_text.chars then state_text.cursor_pos = state_text.cursor_pos + 1 end end
             if not is_ctrl then
                 move()
             else
-                while state.cursor_pos ~= #state.chars and on_ws() do move() end
+                while state_text.cursor_pos ~= #state_text.chars and on_ws() do move() end
                 repeat
                     move()
-                until state.cursor_pos == #state.chars or not on_alnum()
+                until state_text.cursor_pos == #state_text.chars or not on_alnum()
             end
         end
     end
 
     -- Home/End (not in old, cheap to add) -----------------------------------------------------------
     if keymap.pressed("nav.home") or keymap.pressed("nav.select_home") then
-        update_selection_for_move(state, is_shift)
-        while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
-            state.cursor_pos = state.cursor_pos - 1
+        update_selection_for_move(state_text, is_shift)
+        while state_text.cursor_pos ~= 0 and not is_newline(state_text.chars[state_text.cursor_pos]) do
+            state_text.cursor_pos = state_text.cursor_pos - 1
         end
     end
     if keymap.pressed("nav.end") or keymap.pressed("nav.select_end") then
-        update_selection_for_move(state, is_shift)
-        while state.cursor_pos ~= #state.chars and not is_newline(state.chars[state.cursor_pos+1]) do
-            state.cursor_pos = state.cursor_pos + 1
+        update_selection_for_move(state_text, is_shift)
+        while state_text.cursor_pos ~= #state_text.chars and not is_newline(state_text.chars[state_text.cursor_pos+1]) do
+            state_text.cursor_pos = state_text.cursor_pos + 1
         end
     end
 
     -- Up/Down: preserve column distance across the nearest newline markers (the C++ comment box's
     -- own algorithm) ------------------------------------------------------------------------------
     if keymap.pressed("nav.up") or keymap.pressed("nav.select_up") then
-        update_selection_for_move(state, is_shift)
+        update_selection_for_move(state_text, is_shift)
         local dist = 0
-        while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
-            state.cursor_pos = state.cursor_pos - 1
+        while state_text.cursor_pos ~= 0 and not is_newline(state_text.chars[state_text.cursor_pos]) do
+            state_text.cursor_pos = state_text.cursor_pos - 1
             dist = dist + 1
         end
-        if state.cursor_pos ~= 0 and is_newline(state.chars[state.cursor_pos]) then
-            state.cursor_pos = state.cursor_pos - 1
+        if state_text.cursor_pos ~= 0 and is_newline(state_text.chars[state_text.cursor_pos]) then
+            state_text.cursor_pos = state_text.cursor_pos - 1
         end
         local maxdist = 0
-        while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
-            state.cursor_pos = state.cursor_pos - 1
+        while state_text.cursor_pos ~= 0 and not is_newline(state_text.chars[state_text.cursor_pos]) do
+            state_text.cursor_pos = state_text.cursor_pos - 1
             maxdist = maxdist + 1
         end
-        state.cursor_pos = state.cursor_pos + math.min(dist, maxdist)
+        state_text.cursor_pos = state_text.cursor_pos + math.min(dist, maxdist)
     end
     if keymap.pressed("nav.down") or keymap.pressed("nav.select_down") then
-        update_selection_for_move(state, is_shift)
+        update_selection_for_move(state_text, is_shift)
         local dist = 0
-        while state.cursor_pos ~= 0 and not is_newline(state.chars[state.cursor_pos]) do
-            state.cursor_pos = state.cursor_pos - 1
+        while state_text.cursor_pos ~= 0 and not is_newline(state_text.chars[state_text.cursor_pos]) do
+            state_text.cursor_pos = state_text.cursor_pos - 1
             dist = dist + 1
         end
-        while state.cursor_pos ~= #state.chars and not is_newline(state.chars[state.cursor_pos+1]) do
-            state.cursor_pos = state.cursor_pos + 1
+        while state_text.cursor_pos ~= #state_text.chars and not is_newline(state_text.chars[state_text.cursor_pos+1]) do
+            state_text.cursor_pos = state_text.cursor_pos + 1
         end
-        if state.cursor_pos ~= #state.chars then
-            state.cursor_pos = state.cursor_pos + 1
+        if state_text.cursor_pos ~= #state_text.chars then
+            state_text.cursor_pos = state_text.cursor_pos + 1
         end
-        while dist > 0 and state.cursor_pos ~= #state.chars and not is_newline(state.chars[state.cursor_pos+1]) do
-            state.cursor_pos = state.cursor_pos + 1
+        while dist > 0 and state_text.cursor_pos ~= #state_text.chars and not is_newline(state_text.chars[state_text.cursor_pos+1]) do
+            state_text.cursor_pos = state_text.cursor_pos + 1
             dist = dist - 1
         end
     end
@@ -1076,38 +1280,38 @@ function editor_text.handle_input(state, fontset, sz)
     local clicked = vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false)
     local down = vc.ImGui_IsMouseDown("ImGuiMouseButton_Left")
     if clicked then
-        local target = editor_text.formula_at(state, vc.ImGui_GetMousePos())
+        local target = editor_text.formula_at(state_text, vc.ImGui_GetMousePos())
         if target then
             -- Entering a formula, like re-activating a content.lua box, shouldn't also do
             -- the normal click-places-cursor thing - it just brings it into edit mode.
-            state.active_formula = target.container
+            state_text.active_formula = target.container
             return
         end
     end
     if clicked then
-        local nearest = nearest_position(state, vc.ImGui_GetMousePos())
+        local nearest = nearest_position(state_text, vc.ImGui_GetMousePos())
         if nearest then
             if is_shift then
-                if not state.selection_anchor then
-                    state.selection_anchor = state.cursor_pos
+                if not state_text.selection_anchor then
+                    state_text.selection_anchor = state_text.cursor_pos
                 end
             else
-                state.selection_anchor = nil
+                state_text.selection_anchor = nil
             end
-            state.cursor_pos = nearest
-            state.mouse_click_origin = nearest
-            state.mouse_selecting = true
+            state_text.cursor_pos = nearest
+            state_text.mouse_click_origin = nearest
+            state_text.mouse_selecting = true
         end
-    elseif down and state.mouse_selecting then
-        local nearest = nearest_position(state, vc.ImGui_GetMousePos())
-        if nearest and nearest ~= state.cursor_pos then
-            if not state.selection_anchor then
-                state.selection_anchor = state.mouse_click_origin
+    elseif down and state_text.mouse_selecting then
+        local nearest = nearest_position(state_text, vc.ImGui_GetMousePos())
+        if nearest and nearest ~= state_text.cursor_pos then
+            if not state_text.selection_anchor then
+                state_text.selection_anchor = state_text.mouse_click_origin
             end
-            state.cursor_pos = nearest
+            state_text.cursor_pos = nearest
         end
     elseif not down then
-        state.mouse_selecting = false
+        state_text.mouse_selecting = false
     end
 end
 
@@ -1283,7 +1487,7 @@ local function formula_line_fit(m, width_limit, used, run_width)
 end
 
 --[[ How wide is everything that has to stay whole on one line, measured ONCE for both of draw()'s
-passes. Keyed by the item's own index in state.chars, set only on the item that STARTS a run:
+passes. Keyed by the item's own index in state_text.chars, set only on the item that STARTS a run:
 
   a formula - its natural width plus both margins, i.e. exactly what lx/x advance by.
   a word    - a maximal run of items with no whitespace, no newline and no formula in it, summed
@@ -1302,10 +1506,10 @@ column they are granted, for the height. Against the profiler's own lua.ce.total
 it ever stops being noise, this natural measure can be reused whenever the formula turns out to
 fit its column, because content_extent() returns the same numbers in that case.
 @date 2026-09-09 21:51 ]]
-local function measure_runs(state, fontset, sz)
-    local runs, i, n = {}, 1, #state.chars
+local function measure_runs(state_text, fontset, sz)
+    local runs, i, n = {}, 1, #state_text.chars
     while i <= n do
-        local item = state.chars[i]
+        local item = state_text.chars[i]
         if item.newline or is_whitespace(item) then
             i = i + 1
         elseif item.formula then
@@ -1314,7 +1518,7 @@ local function measure_runs(state, fontset, sz)
         else
             local start, total = i, 0
             while i <= n do
-                local it = state.chars[i]
+                local it = state_text.chars[i]
                 if it.newline or it.formula or is_whitespace(it) then
                     break
                 end
@@ -1341,7 +1545,7 @@ local FORMULA_ACTIVE_BORDER_COLOR = 0xff00ffff
 -- used them, so all three editors share one look instead of drifting apart. Their local copies
 -- here went with them; nothing in this file draws either any more. -- @date 2026-09-08 08:20
 
---[[ Draws state onto the current ImGui window, starting at `pos`, using font size `sz`,
+--[[ Draws state_text onto the current ImGui window, starting at `pos`, using font size `sz`,
 soft-wrapping lines wider than `width_limit` (pass nil/false to disable soft-wrap). The blinking
 caret is only drawn when `show_cursor` is true (or omitted) - a caller managing several editors
 (e.g. content.lua's boxes) should pass false for every editor that isn't the active one.
@@ -1355,14 +1559,16 @@ reasoning as show_wireframe, content.lua's own graph-toggle button flips it on.
 widest any single line's own content actually reached (relative to pos.x - may exceed width_limit,
 see max_x's own comment below) - lets a caller (e.g. content.lua's boxes) size itself to fit both.
 @date 2026-09-08 08:20 ]]
-function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, show_wireframe, show_graph)
+function editor_text.draw(state_text, fontset, pos, sz, width_limit, show_cursor, show_wireframe,
+        show_graph)
+    STATE_SHAPE.check(state_text)
     if show_cursor == nil then
         show_cursor = true
     end
     local m = get_metrics(fontset, sz)
     -- Every formula's and every word's own width, measured once and read by BOTH passes below so
     -- they cannot disagree about which line one lands on - see measure_runs' own comment.
-    local runs = measure_runs(state, fontset, sz)
+    local runs = measure_runs(state_text, fontset, sz)
 
     -- Pass 1 (measure only, nothing drawn): a normal line spans [baseline_shift, baseline_shift
     -- + line_height] relative to its own baseline. Find how far past that envelope the tallest
@@ -1375,8 +1581,8 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
     do
         local line_idx = 1
         local lx = 0
-        for i = 0, #state.chars do
-            local item = state.chars[i+1]
+        for i = 0, #state_text.chars do
+            local item = state_text.chars[i+1]
             if item then
                 if item.newline then
                     line_idx = line_idx + 1
@@ -1416,7 +1622,7 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
 
                     Markers exist for the ACTIVE formula only (editor.draw_formula computes them
                     inside its active-only block), so only that one pays for slot_markers here. ]]
-                    local markers = (item.formula == state.active_formula)
+                    local markers = (item.formula == state_text.active_formula)
                             and mformula.slot_markers(item.formula, fontset, sz) or nil
                     local _, _, rect_t, rect_b = editor.formula_click_rect(box, markers)
                     local extra_top = math.max(0,
@@ -1441,10 +1647,11 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
                     local item_sz = fontset:char_get_sz({size=eff_sz, code=item.code})
                     if item.size_off then
                         local yshift = boosted_glyph_yshift(m, item_sz)
-                        line_extra_top[line_idx] = math.max(line_extra_top[line_idx],
-                                math.max(0, m.baseline_shift - (item_sz.tr.y + yshift)))
+                        line_extra_top[line_idx] = math.max(line_extra_top[line_idx], math.max(0,
+                                m.baseline_shift - (item_sz.tr.y + yshift)))
                         line_extra_bottom[line_idx] = math.max(line_extra_bottom[line_idx],
-                                math.max(0, (item_sz.bl.y + yshift) - (m.baseline_shift + m.line_height)))
+                                math.max(0,
+                                        (item_sz.bl.y + yshift) - (m.baseline_shift + m.line_height)))
                     end
                     --[[ Two checks, in this order, and both are needed. The first moves a
                     whole WORD down when it would fit better there (run_moves_down); runs[i+1] is
@@ -1497,8 +1704,8 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
         y = line_top - m.baseline_shift
     end
 
-    for i = 0, #state.chars do
-        local item = state.chars[i+1]
+    for i = 0, #state_text.chars do
+        local item = state_text.chars[i+1]
         local item_sz = nil
         local eff_sz = sz
         --[[ The column this formula is granted, taken from the SAME call that decides whether it
@@ -1555,7 +1762,7 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
             y0 = line_top - (line_extra_top[line_idx] or 0),
             y1 = line_top + m.line_height + (line_extra_bottom[line_idx] or 0),
         }
-        if i == state.cursor_pos then
+        if i == state_text.cursor_pos then
             cursor_screen_pos = {x=x, y=line_top}
         end
 
@@ -1567,7 +1774,7 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
                 -- the margin box below is sized exactly to this frame's actual bounding box, so
                 -- it always hugs the formula's current content, growing/shrinking live as it's
                 -- edited, the same way content.lua's boxes fit editor_text.lua's text.
-                local is_active_formula = (item.formula == state.active_formula)
+                local is_active_formula = (item.formula == state_text.active_formula)
                 local margin = FORMULA_MARGIN
                 -- Content starts a margin's width in from `x` (where the preceding text/box
                 -- border ended) - so the border (drawn at content_x - margin, i.e. back at `x`
@@ -1630,8 +1837,8 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
 
                 wrap_edge is passed ABSOLUTE, as it is computed here; the host does the conversion
                 to the RELATIVE width cursor_box()/hit_test() want. ]]
-                local drawn = editor.draw_formula(item.formula, fontset, sz,
-                        {x = content_x, y = y}, {
+                local drawn = editor.draw_formula(item.formula, fontset, sz, {x = content_x,
+                        y = y}, {
                             active = is_active_formula,
                             show_wireframe = show_wireframe,
                             show_graph = show_graph,
@@ -1683,19 +1890,19 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
         max_x = math.max(max_x, x)
     end
 
-    state.last_positions = positions
-    state.last_formula_boxes = formula_boxes
+    state_text.last_positions = positions
+    state_text.last_formula_boxes = formula_boxes
 
     -- Restart the blink cycle whenever the caret moves (or the buffer changes under it) so it is ON
     -- immediately and you can see where it landed, rather than possibly arriving mid-dark-phase.
     -- Same reasoning, and the same one-place-catches-every-path approach, as mformula_new.draw()'s
     -- own blink reset - see its comment.
-    local blink_key = state.cursor_pos .. "/" .. #state.chars
-    if state.blink_key ~= blink_key then
-        state.blink_key = blink_key
-        state.frame = 0
+    local blink_key = state_text.cursor_pos .. "/" .. #state_text.chars
+    if state_text.blink_key ~= blink_key then
+        state_text.blink_key = blink_key
+        state_text.frame = 0
     end
-    state.frame = state.frame + 1
+    state_text.frame = state_text.frame + 1
 
     -- Where the caret ACTUALLY is right now, screen-space, regardless of which of the two carets
     -- (this editor's own, or an active formula's - only one is ever showing at a time, see
@@ -1704,19 +1911,19 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
     -- continuously, since typing/arrow-key movement/a formula growing can all move the caret
     -- without any of those already having scrolled for it. nil when there's nothing to track yet
     -- (an empty box with no active formula has no caret at all).
-    if state.active_formula then
-        state.last_cursor_y, state.last_cursor_h = formula_cursor_top, formula_cursor_h
+    if state_text.active_formula then
+        state_text.last_cursor_y, state_text.last_cursor_h = formula_cursor_top, formula_cursor_h
     elseif cursor_screen_pos then
-        state.last_cursor_y, state.last_cursor_h = cursor_screen_pos.y, m.line_height
+        state_text.last_cursor_y, state_text.last_cursor_h = cursor_screen_pos.y, m.line_height
     else
-        state.last_cursor_y, state.last_cursor_h = nil, nil
+        state_text.last_cursor_y, state_text.last_cursor_h = nil, nil
     end
 
     -- Selection highlight: one translucent rect per glyph cell (so it naturally handles
     -- multi-line selections), drawn on top of the text just drawn above.
-    if state.selection_anchor and state.selection_anchor ~= state.cursor_pos then
-        local lo = math.min(state.selection_anchor, state.cursor_pos)
-        local hi = math.max(state.selection_anchor, state.cursor_pos)
+    if state_text.selection_anchor and state_text.selection_anchor ~= state_text.cursor_pos then
+        local lo = math.min(state_text.selection_anchor, state_text.cursor_pos)
+        local hi = math.max(state_text.selection_anchor, state_text.cursor_pos)
         for i = lo, hi - 1 do
             local cell_start = positions[i+1]
             local cell_end = positions[i+2]
@@ -1734,8 +1941,8 @@ function editor_text.draw(state, fontset, pos, sz, width_limit, show_cursor, sho
     -- blinker the C++ comment box drew, now that AddLine is exposed to Lua.
     -- (~30 frames/half-period, roughly a 0.5s blink at 60fps.) Suppressed while a formula embed
     -- is active - its own caret (drawn above, inside mformula.draw) is the one that should show.
-    if show_cursor and not state.active_formula and cursor_screen_pos
-            and (math.floor(state.frame / 30) % 2 == 0) then
+    if show_cursor and not state_text.active_formula and cursor_screen_pos
+            and (math.floor(state_text.frame / 30) % 2 == 0) then
         -- cursor_screen_pos.y is the TOP of the current line (line_top), so the caret spans
         -- downward across it, not upward into the line above.
         vc.ImGui_AddLine(

@@ -61,7 +61,7 @@ function run_test()
     local children = mexpru.u(root).children
     local open_final, A_final, close_final = children[1], children[2], children[3]
 
-    local container = {root = root, cursor_pos = vc.wref_mexpr(close_final), version = 0}
+    local container = mexpru.new_container(root, close_final, 0)
     mformula_new.make_supsub(container, fs, "sup")
     -- Type "b" into the fresh sup slot.
     local sup_empty = container.cursor_pos:get_obj()

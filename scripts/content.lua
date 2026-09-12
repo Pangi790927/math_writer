@@ -1,3 +1,53 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+new()                                   -> state_doc
+deserialize(text: string, fontset: fontset) -> state_doc | nil, reason
+serialize(state_doc: content.state_doc) -> text
+    A document. THE SAVE FORMAT is every box in order, each as
+    "<kind> <byte length>
+<that many bytes>", so a box's own text can
+    contain anything without escaping.
+
+BOXES
+insert_box(state_doc: content.state_doc, index: number, kind: string) -> index
+add_box(state_doc: content.state_doc, kind: string) -> index
+remove_box(state_doc: content.state_doc, i: number) -> nothing
+move_box(state_doc: content.state_doc, i: number, dir) -> nothing
+    Each fixes up active_index so the caret stays on the same LOGICAL
+    box rather than the same slot.
+box_kinds()                             -> {kind, ...}
+    In the order the radial menu offers them.
+
+DERIVATION
+derive_identity(state_doc: content.state_doc, i: number) -> index
+prune_descendants(state_doc: content.state_doc, id: id) -> nothing
+    A derived box and everything derived from it, however deep - the
+    whole subtree, not one level.
+declarations_before(state_doc: content.state_doc, index: number) -> {order, by_text}
+    Every name declared ABOVE a box, which is what it may resolve a
+    reference against.
+
+FRAME
+draw(state_doc: content.state_doc, fontset: fontset, pos: {x,y}, opts: table) -> nothing
+handle_input(state_doc: content.state_doc, fontset: fontset, pos: {x,y}) -> nothing
+    The panels swallow the frame first; then box routing, the radial
+    menu and the right-click transform menu.
+customiser_open(state_doc: content.state_doc) -> boolean
+FOR THE HELP PAGE
+draw_box_chrome(box_x, box_y, box_w, box_h, kind: string, is_active, rail_x)
+draw_demo_radial(cx, cy, hover)         -> nothing
+radial_extent()                         -> extent
+    The same chrome and the same menu, drawn at an arbitrary point so
+    F1 shows the real thing rather than a picture of it.
+
+--- internal, not on the module table --------------------------------------------------------------
+    new_shell()    THE ONE creator for the document `state_doc`, and where its seal is
+                   attached; STATE_FIELDS beside it declares the shape
+    declarations_before() is public above and is THE ONE creator of the `decls`
+    container every parse and gesture downstream receives
+    the rail, the transform menu, the AST overlays and box layout
+@date 2026-09-12 03:45
+================================================================================================= ]]
+
 --[[
 content.lua - THE DOCUMENT: a stack of boxes hanging off a rail, and the shell that manages them.
 
@@ -21,6 +71,7 @@ local editor = require("editor_text")
 local prof = require("prof")
 local char = require("char")
 local mexpru = require("mexpru")
+local sealed = require("sealed")
 --[[ One editor module per box kind. content.lua knows only that each exposes the same shape -
 new/draw/handle_input/rescale/to_text/from_text - and never what any of them does inside. ]]
 local editor_definition = require("editor_definition")
@@ -60,12 +111,12 @@ local BOX_WIDTH   = 760
 -- formula/definition placeholder, which has no content to measure at all.
 local EMPTY_BOX_HEIGHT = 50
 local NODE_RADIUS = 6
--- state.font_size (below, new_shell()) starts here - a char.lua m_font_sizes table index (1 =
+-- state_doc.font_size (below, new_shell()) starts here - a char.lua m_font_sizes table index (1 =
 -- biggest/360pt, 18 = smallest/8pt - see that table's own comment), not a pixel size. mexpru's own
 -- DEFAULT_SIZE (36pt) - the same nominal size this used to be a plain constant at before Ctrl+
--- MouseWheel zoom made it live, adjustable state instead - single source of truth
+-- MouseWheel zoom made it live, adjustable state_doc instead - single source of truth
 -- since editor_text.lua's own brand-new-formula construction (formula.new, paste) needs that value
--- (mexpru.DEFAULT_SIZE's own comment: a fixed LOGICAL baseline, not this live state.font_size).
+-- (mexpru.DEFAULT_SIZE's own comment: a fixed LOGICAL baseline, not this live state_doc.font_size).
 local DEFAULT_FONT_SIZE = mexpru.DEFAULT_SIZE
 local MIN_FONT_SIZE, MAX_FONT_SIZE = 1, mexpru.MAX_SIZE_INDEX -- char.lua's own table bounds
 local CLOSE_SIZE  = 16   -- close ("x") button, sits just above each box's top-right corner
@@ -216,10 +267,55 @@ local PROF_SPIKE_MS   = 8.0
 
 --[[ The empty shell shared by content.new() (which adds one empty box on top of this) and
 content.deserialize() (which populates `boxes` itself instead) - kept in one place so the two
-can't drift apart on what a freshly-built state actually looks like.
+can't drift apart on what a freshly-built state_doc actually looks like.
 @date 2026-09-08 08:30 ]]
+--[[ THE `state_doc` CONTAINER - the whole document, and everything the editor keeps about it.
+
+Declared and sealed for the same reason mexpru's `u` is: `state_doc` is created here but read and
+written by editor_text, editor_definition, editor_formula, the two panels and main.lua, so a typo in
+any of them used to make a new field instead of an error.
+
+SIX FIELDS WERE ALREADY BEING CREATED OUTSIDE new_shell when this was written - show_ast,
+show_ast_result, show_ast_string, follow_caret, transform_menu, transform_pick. They worked, because
+Lua lets any field appear; nothing named them anywhere, which is exactly the drift being stopped.
+They are declared below and still start nil.
+
+A DECLARED FIELD THAT IS NIL IS NORMAL - `radial` is nil whenever the menu is closed. An undeclared
+name is refused on read and on write, and a refusal means this list is out of date.
+@date 2026-09-12 05:15 ]]
+local STATE_FIELDS = {
+    boxes             = "the document: every box, in order",
+    active_index      = "which box has the caret, or nil",
+
+    last_layout       = "filled by draw(), read by handle_input() next frame",
+    last_rail_x       = "the same, for the rail's x",
+    last_total_height = "filled by draw(), used to clamp scroll_y",
+    scroll_y          = "how far the stack is scrolled up; 0 is pinned to the top",
+    follow_caret      = "scroll to bring the caret back into view on the next draw",
+
+    show_help         = "F1: the full-screen help page, in place of the boxes",
+    show_alt_help     = "F2: the keybind customiser",
+    help_state        = "panel_help's own state_doc, living here",
+    keymap_state      = "panel_keymap's own state_doc, living here",
+    keymap_rev        = "bumped when the customiser closes - the help's substitution cache key",
+
+    show_wireframe    = "global: mexpr's debug bounding boxes, off by default",
+    show_graph        = "global: the active formula's reachable-position graph",
+    show_ast          = "F4: the parse of the expression you are on",
+    show_ast_string   = "F5: its ast.lua serialization",
+    show_ast_result   = "F6: what the transformation here would produce; replaces F4",
+
+    font_size         = "a char.lua size-table INDEX, not a pixel size. Ctrl+Wheel moves it.",
+    radial            = "the open new-box menu, or nil. While set it owns all input for the frame.",
+    transform_menu    = "the open right-click transform menu, or nil",
+    transform_pick    = "which row of that menu is under the pointer",
+}
+
+--[[ Declared through sealed.lua, like every other container here. @date 2026-09-12 05:45 ]]
+local STATE_SHAPE = sealed.declare("content", "state_doc", STATE_FIELDS)
+
 local function new_shell()
-    return {
+    return STATE_SHAPE.wrap({
         boxes = {},
         active_index = nil,
         last_layout = nil,    -- filled by draw(), read by handle_input() next frame
@@ -248,28 +344,36 @@ local function new_shell()
                                -- While non-nil it owns all input for the frame.
         scroll_y = 0,          -- how far the whole stack is scrolled up (0 = pinned to the top)
         last_total_height = 0, -- filled by draw(), used to clamp scroll_y in handle_input()
-    }
+    })
 end
 
+--[[ A fresh document: one empty text box, with the caret in it.
+
+NOT AN EMPTY DOCUMENT. A document with no boxes has nowhere to type and no way to make the first
+one, so `new` is "the smallest document somebody can start working in" rather than "nothing". The
+empty shell is internal for exactly that reason - deserialize needs it, and nothing else should.
+@date 2026-09-12 03:45 ]]
 function content.new()
-    local state = new_shell()
-    content.add_box(state)
-    state.active_index = 1
-    return state
+    local state_doc = new_shell()
+    content.add_box(state_doc)
+    state_doc.active_index = 1
+    return state_doc
 end
 
 --[[ Inserts a new (empty) box of `kind` at `index` (1..#boxes+1), fixing up active_index if it was
 at or after the insertion point, and returns `index`. `kind` defaults to KIND_TEXT, so every
 existing caller keeps its old behaviour unchanged.
 
-Each kind carries its editor state under its OWN field - `editor`, `fml` or `def` - and everything
+Each kind carries its editor state_doc under its OWN field - `editor`,
+        `fml` or `def` - and everything
 downstream dispatches on which field is present rather than on `box.kind`. That is what keeps the
 kind test in one place: a box that gained a field gained its controls with it, and nothing has to
 be told twice. Guard on the field when adding code here, not on the kind.
 
 A formula box is also given an id at birth, so a box derived from it can name it as its parent.
 @date 2026-09-08 08:30 ]]
-function content.insert_box(state, index, kind)
+function content.insert_box(state_doc, index, kind)
+    STATE_SHAPE.check(state_doc)
     kind = kind or KIND_TEXT
     local box = {kind = kind}
     if kind == KIND_TEXT then
@@ -281,37 +385,39 @@ function content.insert_box(state, index, kind)
         counter is derived from what is already in the document rather than stored, so a loaded file
         cannot hand out an id that is already in use. ]]
         local next_id = 1
-        for _, b in ipairs(state.boxes) do
+        for _, b in ipairs(state_doc.boxes) do
             if b.fml and b.fml.id and b.fml.id >= next_id then
                 next_id = b.fml.id + 1
             end
         end
         box.fml = editor_formula.new(next_id)
     end
-    table.insert(state.boxes, index, box)
-    if state.active_index and state.active_index >= index then
-        state.active_index = state.active_index + 1
+    table.insert(state_doc.boxes, index, box)
+    if state_doc.active_index and state_doc.active_index >= index then
+        state_doc.active_index = state_doc.active_index + 1
     end
     return index
 end
 
 --[[ Appends a new (empty) box at the end and returns its index. @date 2026-09-08 08:30 ]]
-function content.add_box(state, kind)
-    return content.insert_box(state, #state.boxes + 1, kind)
+function content.add_box(state_doc, kind)
+    STATE_SHAPE.check(state_doc)
+    return content.insert_box(state_doc, #state_doc.boxes + 1, kind)
 end
 
 --[[ Removes box i, fixing up active_index to still point at the same logical box (or nil, if the
 removed box was the active one). @date 2026-09-08 08:30 ]]
-function content.remove_box(state, i)
-    table.remove(state.boxes, i)
-    if state.active_index == i then
-        state.active_index = nil
-    elseif state.active_index and state.active_index > i then
-        state.active_index = state.active_index - 1
+function content.remove_box(state_doc, i)
+    STATE_SHAPE.check(state_doc)
+    table.remove(state_doc.boxes, i)
+    if state_doc.active_index == i then
+        state_doc.active_index = nil
+    elseif state_doc.active_index and state_doc.active_index > i then
+        state_doc.active_index = state_doc.active_index - 1
     end
     -- Indices shifted - drop the stale layout so a same-frame click can't mis-hit-test against
     -- last frame's positions; draw() rebuilds it before the next handle_input() runs anyway.
-    state.last_layout = nil
+    state_doc.last_layout = nil
 end
 
 --[[ Moves the box at `i` one place up (dir -1) or down (dir +1), taking the caret with it.
@@ -330,16 +436,17 @@ Not undoable, exactly like content.remove_box(): undo lives inside a box and kno
 the document's shape. Moving is reversible by moving back, which is a good deal cheaper than
 teaching undo about it.
 @date 2026-09-08 08:30 ]]
-function content.move_box(state, i, dir)
+function content.move_box(state_doc, i, dir)
+    STATE_SHAPE.check(state_doc)
     local j = i + dir
-    if not state.boxes[i] or not state.boxes[j] then
+    if not state_doc.boxes[i] or not state_doc.boxes[j] then
         return nil
     end
-    state.boxes[i], state.boxes[j] = state.boxes[j], state.boxes[i]
+    state_doc.boxes[i], state_doc.boxes[j] = state_doc.boxes[j], state_doc.boxes[i]
     -- Same reason remove_box() drops it: the indices this frame's layout was built against no
     -- longer describe the stack, so a click arriving before the next draw() must not hit-test
     -- against it.
-    state.last_layout = nil
+    state_doc.last_layout = nil
     return j
 end
 
@@ -359,13 +466,14 @@ or nil when the box at `i` is not a formula box with content to derive from.
 The id comes from content.insert_box(), which derives the next one from what is already in the
 document - so a derived box can never collide with an id already in use.
 @date 2026-09-08 08:30 ]]
-function content.derive_identity(state, i)
-    local src = state.boxes[i]
+function content.derive_identity(state_doc, i)
+    STATE_SHAPE.check(state_doc)
+    local src = state_doc.boxes[i]
     if not (src and src.fml and src.fml.latex and src.fml.latex ~= "") then
         return nil
     end
-    content.insert_box(state, i + 1, KIND_FORMULA)
-    local made = state.boxes[i + 1]
+    content.insert_box(state_doc, i + 1, KIND_FORMULA)
+    local made = state_doc.boxes[i + 1]
     made.fml.latex = src.fml.latex
     made.fml.parent = src.fml.id
     return i + 1
@@ -387,14 +495,15 @@ lineage still holds.
 DESTRUCTIVE AND NOT UNDOABLE: undo lives inside each editor, and this removes whole boxes. A paste
 into a box with a long derivation under it discards all of it.
 @date 2026-09-08 08:30 ]]
-function content.prune_descendants(state, id)
+function content.prune_descendants(state_doc, id)
+    STATE_SHAPE.check(state_doc)
     if not id then
         return 0
     end
     local doomed, growing = {}, true
     while growing do
         growing = false
-        for _, b in ipairs(state.boxes) do
+        for _, b in ipairs(state_doc.boxes) do
             local f = b.fml
             if f and f.id and not doomed[f.id] and f.parent
                     and (f.parent == id or doomed[f.parent]) then
@@ -406,10 +515,10 @@ function content.prune_descendants(state, id)
 
     -- Backwards, so each removal cannot shift an index still to be visited.
     local removed = 0
-    for i = #state.boxes, 1, -1 do
-        local f = state.boxes[i].fml
+    for i = #state_doc.boxes, 1, -1 do
+        local f = state_doc.boxes[i].fml
         if f and f.id and doomed[f.id] then
-            content.remove_box(state, i)
+            content.remove_box(state_doc, i)
             removed = removed + 1
         end
     end
@@ -425,12 +534,13 @@ so this sidesteps the question instead of picking one and hoping.
 A text box's body is the same $$LaTeX$$ form edit.copy produces, so saving is exactly "select all,
 copy" done to every box in turn, and the file stays readable without this program.
 @date 2026-09-08 08:30 ]]
-function content.serialize(state)
+function content.serialize(state_doc)
+    STATE_SHAPE.check(state_doc)
     local parts = {}
-    for _, box in ipairs(state.boxes) do
+    for _, box in ipairs(state_doc.boxes) do
         --[[ Whatever the box's own editor makes of itself. The body is opaque here on purpose:
         this layer stays "kind, length, bytes" and never learns what a definition or a formula is,
-        so a new box kind changes nothing in this function. A kind that has no editor state yet
+        so a new box kind changes nothing in this function. A kind that has no editor state_doc yet
         writes an empty body and is still carried across the save by its kind alone - skipping it
         would have been simpler and would silently drop boxes, which is the kind of thing found out
         later, by losing work. ]]
@@ -450,7 +560,7 @@ function content.serialize(state)
     return table.concat(parts)
 end
 
---[[ Inverse of serialize(): parses the length-prefixed box list back into a fresh state (same
+--[[ Inverse of serialize(): parses the length-prefixed box list back into a fresh state_doc (same
 shell new() itself builds - see new_shell()). Silently stops at the first malformed length prefix
 (a corrupt/truncated/foreign file) rather than erroring, same leniency insert_text() itself already
 has for content it can't make sense of - whatever boxes parsed cleanly before that point are kept
@@ -458,10 +568,10 @@ rather than losing everything. Always ends up with at least one box, even from a
 string, so the caller never has to special-case "the file had nothing usable in it". `fontset` is
 only needed for editor.from_text()'s benefit (building any $$...$$ formula embeds a box's saved
 text contains - always at mexpru.DEFAULT_SIZE, the same fixed LOGICAL baseline every other new
-formula gets, regardless of state.font_size - see mexpru.DEFAULT_SIZE's own comment).
+formula gets, regardless of state_doc.font_size - see mexpru.DEFAULT_SIZE's own comment).
 @date 2026-09-08 08:30 ]]
 function content.deserialize(text, fontset)
-    local state = new_shell()
+    local state_doc = new_shell()
     local pos = 1
     while pos <= #text do
         local nl = text:find("\n", pos, true)
@@ -497,14 +607,14 @@ function content.deserialize(text, fontset)
             box.fml = editor_formula.new()
             editor_formula.from_text(box.fml, box_text, fontset)
         end
-        table.insert(state.boxes, box)
+        table.insert(state_doc.boxes, box)
         pos = nl + 1 + len
     end
-    if #state.boxes == 0 then
-        content.add_box(state)
+    if #state_doc.boxes == 0 then
+        content.add_box(state_doc)
     end
-    state.active_index = 1
-    return state
+    state_doc.active_index = 1
+    return state_doc
 end
 
 local function point_in_rect(px, py, x, y, w, h)
@@ -515,9 +625,9 @@ end
 vertical midpoint is above the click, i.e. "insert nearest the gap you clicked" - so clicking
 between two boxes inserts between them, above the first inserts at the top, below the last
 appends. ]]
-local function insertion_index_for_y(state, click_y)
+local function insertion_index_for_y(state_doc, click_y)
     local idx = 1
-    for i, r in ipairs(state.last_layout) do
+    for i, r in ipairs(state_doc.last_layout) do
         if click_y > r.y + r.h / 2 then
             idx = i + 1
         else
@@ -535,7 +645,7 @@ edge it entered from tells you nothing about what is beyond it.
 Shared by the caret-follow at the end of handle_input and by the box-move follow, so "bring this
 into view" has one definition and one clamp.
 @date 2026-09-08 08:30 ]]
-local function scroll_span_into_view(state, pos, y, h, lead)
+local function scroll_span_into_view(state_doc, pos, y, h, lead)
     local display_size = vc.ImGui_GetDisplaySize()
     local viewport_top = pos.y
     local viewport_bottom = display_size and display_size.y or (pos.y + 700)
@@ -543,12 +653,12 @@ local function scroll_span_into_view(state, pos, y, h, lead)
     local want_top = y - (lead < 0 and -lead or 0)
     local want_bottom = y + h + (lead > 0 and lead or 0)
     if want_top < viewport_top then
-        state.scroll_y = state.scroll_y - (viewport_top - want_top)
+        state_doc.scroll_y = state_doc.scroll_y - (viewport_top - want_top)
     elseif want_bottom > viewport_bottom then
-        state.scroll_y = state.scroll_y + (want_bottom - viewport_bottom)
+        state_doc.scroll_y = state_doc.scroll_y + (want_bottom - viewport_bottom)
     end
-    local max_scroll = math.max(0, state.last_total_height - (viewport_bottom - viewport_top))
-    state.scroll_y = math.max(0, math.min(max_scroll, state.scroll_y))
+    local max_scroll = math.max(0, state_doc.last_total_height - (viewport_bottom - viewport_top))
+    state_doc.scroll_y = math.max(0, math.min(max_scroll, state_doc.scroll_y))
 end
 
 --[[ Scrolls (if needed) so box `index`'s own TOP edge is visible - used when the active box
@@ -559,8 +669,8 @@ than the viewport.
 Reads LAST frame's layout, like every other mouse-facing helper here, and is a silent no-op before
 the first draw() has run.
 @date 2026-09-08 08:30 ]]
-local function scroll_into_view(state, pos, index)
-    local r = state.last_layout and state.last_layout[index]
+local function scroll_into_view(state_doc, pos, index)
+    local r = state_doc.last_layout and state_doc.last_layout[index]
     if not r then
         return
     end
@@ -568,14 +678,14 @@ local function scroll_into_view(state, pos, index)
     local viewport_top = pos.y
     local viewport_bottom = display_size and display_size.y or (pos.y + 700)
     if r.y < viewport_top then
-        state.scroll_y = state.scroll_y - (viewport_top - r.y)
+        state_doc.scroll_y = state_doc.scroll_y - (viewport_top - r.y)
     elseif r.y > viewport_bottom - 60 then
         -- Not "the whole box" (it may be taller than the viewport) - just enough of its top
         -- that switching here visibly did something, rather than requiring a full box height.
-        state.scroll_y = state.scroll_y + (r.y - (viewport_bottom - 60))
+        state_doc.scroll_y = state_doc.scroll_y + (r.y - (viewport_bottom - 60))
     end
-    local max_scroll = math.max(0, state.last_total_height - (viewport_bottom - viewport_top))
-    state.scroll_y = math.max(0, math.min(max_scroll, state.scroll_y))
+    local max_scroll = math.max(0, state_doc.last_total_height - (viewport_bottom - viewport_top))
+    state_doc.scroll_y = math.max(0, math.min(max_scroll, state_doc.scroll_y))
 end
 
 -- #################################################################################################
@@ -586,8 +696,8 @@ end
 Reads LAST frame's layout, like every other mouse-facing helper here; nil before the first draw().
 For an index past the end this is the bottom of the stack, which is exactly where Ctrl+N at the end
 should put its menu. ]]
-local function insertion_y(state, index)
-    local L = state.last_layout
+local function insertion_y(state_doc, index)
+    local L = state_doc.last_layout
     if not L or #L == 0 then
         return nil
     end
@@ -606,7 +716,7 @@ BOX_LEFT (80px), while the menu needs RADIAL_OUTER_HOVER (160px) of room in ever
 literally on the rail, the whole lower-left sector - formula - would be off screen and unclickable.
 So the menu drifts right/down/up as needed and the caller's (cx, cy) is a preference, not a
 promise. ]]
-local function radial_open(state, index, cx, cy, from_drag, press_x, press_y)
+local function radial_open(state_doc, index, cx, cy, from_drag, press_x, press_y)
     local disp = vc.ImGui_GetDisplaySize()
     local margin = RADIAL_OUTER_HOVER + 8
     if disp then
@@ -619,7 +729,7 @@ local function radial_open(state, index, cx, cy, from_drag, press_x, press_y)
     --[[ press_x/press_y are where the button actually went down, which after the clamp above is
     NOT the menu's centre - see radial_handle_input's arming, which needs the real press point and
     got this wrong once by assuming the two were the same. ]]
-    state.radial = {cx = cx, cy = cy, index = index, from_drag = from_drag or false,
+    state_doc.radial = {cx = cx, cy = cy, index = index, from_drag = from_drag or false,
             press_x = press_x, press_y = press_y, armed = false,
             selected = nil}  -- keyboard selection; mouse hover is `hover`, set per frame
 end
@@ -658,17 +768,17 @@ end
 --[[ Creates the chosen kind at the menu's insertion index, closes the menu, and leaves the caret
 in the new box - every kind has an editor to receive it.
 @date 2026-09-08 08:30 ]]
-local function radial_choose(state, kind)
-    local index = content.insert_box(state, state.radial.index, kind)
+local function radial_choose(state_doc, kind)
+    local index = content.insert_box(state_doc, state_doc.radial.index, kind)
     --[[ Asks which editor field the box got rather than which kind it is, for the same reason
     everything else here does - a kind that gains an editor starts being activated on creation with
     no change to this line, and one with none would take focus away from wherever it was and give
     it to something that cannot use it. ]]
-    local box = state.boxes[index]
+    local box = state_doc.boxes[index]
     if box.editor or box.def or box.fml then
-        state.active_index = index
+        state_doc.active_index = index
     end
-    state.radial = nil
+    state_doc.radial = nil
 end
 
 --[[ Runs while the menu is open, and swallows the whole frame's input either way - the caller
@@ -679,8 +789,8 @@ menu, since there is no button held down to release. A press on the rail opens o
 as long as the button - drag out to a sector, release to pick it - which is the "drag-clicking"
 half of the gesture. `radial.cancel` and a click on the centre both cancel.
 @date 2026-09-08 08:30 ]]
-local function radial_handle_input(state)
-    local radial = state.radial
+local function radial_handle_input(state_doc)
+    local radial = state_doc.radial
     local mpos = vc.ImGui_GetMousePos()
     local sec = mpos and radial_sector_at(radial, mpos.x, mpos.y) or nil
     radial.hover = sec and sec.kind or nil
@@ -694,7 +804,7 @@ local function radial_handle_input(state)
     end
 
     if keymap.pressed("radial.cancel") then
-        state.radial = nil
+        state_doc.radial = nil
         return
     end
 
@@ -730,15 +840,15 @@ local function radial_handle_input(state)
     if keymap.pressed("radial.commit") then
         local sel = radial.selected
         if sel and sel ~= RADIAL_CANCEL then
-            radial_choose(state, sel)
+            radial_choose(state_doc, sel)
         else
             -- Nothing selected, or the "x" selected: both mean close without creating anything.
-            state.radial = nil
+            state_doc.radial = nil
         end
         return
     end
 
-    if state.radial.from_drag then
+    if state_doc.radial.from_drag then
         --[[ ARMING. A drag only counts as a drag once the mouse has moved RADIAL_ARM_DIST from
         where the button went DOWN. Until then a release means "that was a click, not a drag" and
         the menu stays open in click-then-click mode, so a plain rail click still gets you
@@ -749,26 +859,26 @@ local function radial_handle_input(state)
         puts the centre at x=168 and leaves the cursor 104px away - already deep inside the
         lower-left wedge. Testing against the centre made a bare click on the rail spawn a formula
         box instantly. ]]
-        if not state.radial.armed and mpos and state.radial.press_x then
-            local dx = mpos.x - state.radial.press_x
-            local dy = mpos.y - state.radial.press_y
+        if not state_doc.radial.armed and mpos and state_doc.radial.press_x then
+            local dx = mpos.x - state_doc.radial.press_x
+            local dy = mpos.y - state_doc.radial.press_y
             if dx * dx + dy * dy > RADIAL_ARM_DIST * RADIAL_ARM_DIST then
-                state.radial.armed = true
+                state_doc.radial.armed = true
             end
         end
         -- Nothing reads as hovered until the drag is armed, so the wedge the clamp happens to put
         -- under the cursor does not light up as if it were about to be chosen.
-        if not state.radial.armed then
-            state.radial.hover = nil
+        if not state_doc.radial.armed then
+            state_doc.radial.hover = nil
         end
 
         if vc.ImGui_IsMouseReleased("ImGuiMouseButton_Left") then
-            if not state.radial.armed then
-                state.radial.from_drag = false
+            if not state_doc.radial.armed then
+                state_doc.radial.from_drag = false
             elseif sec then
-                radial_choose(state, sec.kind)
+                radial_choose(state_doc, sec.kind)
             else
-                state.radial = nil
+                state_doc.radial = nil
             end
         end
         return
@@ -776,9 +886,9 @@ local function radial_handle_input(state)
 
     if vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false) then
         if sec then
-            radial_choose(state, sec.kind)
+            radial_choose(state_doc, sec.kind)
         else
-            state.radial = nil
+            state_doc.radial = nil
         end
     end
 end
@@ -787,9 +897,10 @@ end
 
 Each wedge is a strip of RADIAL_STEPS quads between RADIAL_INNER and the outer radius, because no
 arc or convex-polygon fill is exposed to Lua (see RADIAL_STEPS' own comment). The hovered wedge
-simply uses the larger outer radius - that IS the grow-on-hover, with no animation state anywhere.
+simply uses the larger outer radius - that IS the grow-on-hover,
+        with no animation state_doc anywhere.
 
-Takes the RADIAL TABLE rather than the whole state (2026-09-07), so the F1 help can hand it a
+Takes the RADIAL TABLE rather than the whole state_doc (2026-09-07), so the F1 help can hand it a
 made-up one and get the real menu - same wedges, same colours, same geometry - instead of a copy of
 this code living in the help page. content.draw_demo_radial() below is that entry point.
 @date 2026-09-08 08:30 ]]
@@ -865,14 +976,27 @@ row and position.
 
 Comparing this frame's three values against last frame's is how the caret-follow block in
 handle_input tells "the caret actually moved" from "nothing changed, another frame just ran",
-without an equality check over the whole editor state. It parks them in the editor's own
+without an equality check over the whole editor state_doc. It parks them in the editor's own
 "_"-prefixed fields, the convention this codebase uses for a transient that is not part of the
 model.
 @date 2026-09-08 08:30 ]]
 local function cursor_sig(editor_state)
     local f = editor_state.active_formula
     if f then
-        return f, f.cursor and f.cursor.row, f.cursor and f.cursor.pos
+        --[[ A CONTAINER HAS NO `cursor` FIELD, and never has: it keeps `cursor_pos`, a weak ref to
+        the node the caret sits after. So `f.cursor and f.cursor.row` was nil on every frame this
+        has ever run, and the two values below have always been nil - which means caret movement
+        INSIDE a formula has never been detected here. What this actually reports is "the active
+        formula changed", nothing finer.
+
+        Found 2026-09-12 by the container seal, which refused the read. Left returning nil rather
+        than repaired, because making it track the caret would change what the document does -
+        scroll-into-view would start following moves it has never followed. That is a behaviour
+        decision, not a typo fix.
+
+        To repair it: compare the RESOLVED node, not `cursor_pos` itself - vc.wref_mexpr() hands
+        back a new wrapper each call, so two wrefs to one node are not equal. ]]
+        return f, nil, nil
     end
     return nil, nil, editor_state.cursor_pos
 end
@@ -881,11 +1005,13 @@ end
 -- Input handling
 -- #################################################################################################
 
---[[ Whether the F2 customiser is on screen. Exists for main.lua, which saves the keymap only once
-the panel is closed (see its own comment) - it needs to ask without reaching into this module's
-state table for a field name that is nobody else's business. ]]
-function content.customiser_open(state)
-    return state.show_alt_help == true
+--[[ Whether the F2 customiser is on screen. Exists for main.lua, which saves the keymap, the glyph
+map and the plugin list only once the panel is closed (see its own comment) - it needs to ask
+without reaching into this module's state_doc table for a field name that is nobody else's business.
+@date 2026-09-12 03:50 ]]
+function content.customiser_open(state_doc)
+    STATE_SHAPE.check(state_doc)
+    return state_doc.show_alt_help == true
 end
 
 --[[ ONE FRAME OF INPUT for the whole document, in two passes.
@@ -960,11 +1086,11 @@ ANY CELL, not just the focused one: a question does not need focus to be answera
 killed the gesture on a cell the caret had left, which looks exactly like a dead feature. `index`
 travels with the answer because the declarations in scope are the ones BEFORE that cell.
 @date 2026-09-11 23:40 ]]
-local function formula_under(state, pos)
+local function formula_under(state_doc, pos)
     if not pos then
         return nil
     end
-    for i, box in ipairs(state.boxes or {}) do
+    for i, box in ipairs(state_doc.boxes or {}) do
         local found = box.fml and editor_formula.formula_at(box.fml, pos)
         if found then
             found.index = i
@@ -989,10 +1115,10 @@ the section comment above for why that is not the same as opening nothing.
 WHY IT REPORTS ITSELF. Each of those outcomes looks identical on screen, so the reason goes to the
 flight recorder, where a "it does nothing" report gets read.
 @date 2026-09-11 23:10 ]]
-local function open_transform_menu(state, fontset)
-    state.transform_menu = nil
+local function open_transform_menu(state_doc, fontset)
+    state_doc.transform_menu = nil
     local mpos = vc.ImGui_GetMousePos()
-    local target = formula_under(state, mpos)
+    local target = formula_under(state_doc, mpos)
     if not target then
         -- Names the RULE, not just the miss: a formula inside a text row is under the pointer and
         -- still refused, so "no formula here" would read as a bug from where the user is sitting.
@@ -1004,14 +1130,14 @@ local function open_transform_menu(state, fontset)
     end of the row, the gap beside a fraction bar - opens nothing at all, because the gesture has
     nothing to be about. That is a different silence from "nothing applies", which still draws its
     empty list: there the user pointed at something and the answer is empty. ]]
-    local at = editor_common.formula_node_at(target.container, fontset, state.font_size, mpos,
+    local at = editor_common.formula_node_at(target.container, fontset, state_doc.font_size, mpos,
             target.hb.draw_x, target.hb.draw_y, target.hb.wrap_edge)
     if not at then
         input_recorder.log_event("gesture: no glyph under the pointer")
         return
     end
 
-    local decls = content.declarations_before(state, target.index)
+    local decls = content.declarations_before(state_doc, target.index)
     local options = ast_gestures.options(fontset, target.container, decls.order, at)
     if #options == 0 then
         input_recorder.log_event("gesture: nothing applies at that glyph")
@@ -1024,8 +1150,8 @@ local function open_transform_menu(state, fontset)
     for _, o in ipairs(options) do
         width = math.max(width, vc.ImGui_CalcTextSize(o.label).x + 2 * MENU_PAD + 12)
     end
-    state.transform_menu = {x = mpos.x, y = mpos.y, w = width,
-            options = options, container = target.container, index = target.index,
+    state_doc.transform_menu = {x = mpos.x, y = mpos.y, w = width, options = options,
+            container = target.container, index = target.index,
             version = target.container.version or 0}
 end
 
@@ -1060,9 +1186,9 @@ document alone, keeps the pick so F6 can still show what WOULD have come out, an
 recorder. That combination is deliberate: the transformation succeeded and only the drawing did not,
 and those are worth telling apart.
 @date 2026-09-12 03:00 ]]
-local function commit_transform(state, fontset, menu, option)
+local function commit_transform(state_doc, fontset, menu, option)
     local container = menu.container
-    local decls = content.declarations_before(state, menu.index)
+    local decls = content.declarations_before(state_doc, menu.index)
     local new_root, ns, err = ast_gestures.preview(fontset, container, decls.order, option)
     if not new_root then
         input_recorder.log_event("transform: " .. option.id .. " refused: " .. tostring(err))
@@ -1077,16 +1203,16 @@ local function commit_transform(state, fontset, menu, option)
         return false
     end
 
-    local index = content.insert_box(state, menu.index + 1, KIND_FORMULA)
-    local box = state.boxes[index]
+    local index = content.insert_box(state_doc, menu.index + 1, KIND_FORMULA)
+    local box = state_doc.boxes[index]
     box.fml.formula = built
     box.fml.latex = mformula_latex.to_latex(built)
     --[[ THE DERIVATION LINK, and the reason the gesture is confined to formula cells: a cell knows
     which cell it came from, and prune_descendants follows that relation when the source is replaced.
     A source without an id would make an orphan, which is a root - something derived from nothing. ]]
-    local source = state.boxes[menu.index]
+    local source = state_doc.boxes[menu.index]
     box.fml.parent = source and source.fml and source.fml.id
-    state.active_index = index
+    state_doc.active_index = index
     return true
 end
 
@@ -1101,8 +1227,8 @@ out of the transformed tree and moving focus into it - needs `ast -> mexpr`, whi
 and was explicitly left until this half was finished. So the pick is carried as far as it can
 currently go, and the panel is where it shows.
 @date 2026-09-11 21:45 ]]
-local function transform_menu_input(state, fontset)
-    local menu = state.transform_menu
+local function transform_menu_input(state_doc, fontset)
+    local menu = state_doc.transform_menu
     menu.hover = menu_row_at(menu, vc.ImGui_GetMousePos())
 
     --[[ RE-AIM. The same button again does not close the menu, it asks again where the pointer is
@@ -1114,31 +1240,31 @@ local function transform_menu_input(state, fontset)
     sits below its line, a tall bracket's column is mostly empty), and a miss must cost one more
     click rather than two. ]]
     if keymap.pressed("math.transform_menu") then
-        open_transform_menu(state, fontset)
+        open_transform_menu(state_doc, fontset)
         return
     end
 
     -- Escape closes it, and so does a click that lands on no row.
     if keymap.pressed("panel.close") then
-        state.transform_menu = nil
+        state_doc.transform_menu = nil
         return
     end
     if vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false) then
         local pick = menu.hover and menu.options[menu.hover]
-        state.transform_menu = nil
+        state_doc.transform_menu = nil
         if pick then
             --[[ The container AND its version travel with the pick: the option holds ast IDS, and
             those name nodes in the tree parsed from this container at this version. An edit moves
             the version, the ast is reparsed, and the ids no longer mean anything - so the pick is
             dropped rather than applied to a tree it was not chosen from. ]]
-            state.transform_pick = {container = menu.container, index = menu.index,
+            state_doc.transform_pick = {container = menu.container, index = menu.index,
                     option = pick, version = menu.container.version or 0}
             --[[ The result arrives as a cell. F6 is opened only when it could NOT - there the pick
             is all there is to show, and a panel saying what would have come out beats nothing
             happening at all. ]]
-            if not commit_transform(state, fontset, menu, pick) then
-                state.show_ast_result = true
-                state.show_ast = false
+            if not commit_transform(state_doc, fontset, menu, pick) then
+                state_doc.show_ast_result = true
+                state_doc.show_ast = false
             end
         end
     end
@@ -1149,41 +1275,55 @@ end
 local function draw_transform_menu(menu)
     -- An empty list is one row tall and holds nothing - see the section comment on why it is drawn.
     local h = math.max(#menu.options, 1) * MENU_ROW_H + 2 * MENU_PAD
-    vc.ImGui_AddRectFilled({x = menu.x, y = menu.y - MENU_PAD},
-            {x = menu.x + menu.w, y = menu.y + h - MENU_PAD}, MENU_BG, 3)
-    vc.ImGui_AddRect({x = menu.x, y = menu.y - MENU_PAD},
-            {x = menu.x + menu.w, y = menu.y + h - MENU_PAD}, MENU_EDGE, 3, 1)
+    vc.ImGui_AddRectFilled({x = menu.x, y = menu.y - MENU_PAD}, {x = menu.x + menu.w,
+            y = menu.y + h - MENU_PAD}, MENU_BG, 3)
+    vc.ImGui_AddRect({x = menu.x, y = menu.y - MENU_PAD}, {x = menu.x + menu.w,
+            y = menu.y + h - MENU_PAD}, MENU_EDGE, 3, 1)
     for i, o in ipairs(menu.options) do
         local ry = menu.y + (i - 1) * MENU_ROW_H
         if menu.hover == i then
-            vc.ImGui_AddRectFilled({x = menu.x + 2, y = ry - 2},
-                    {x = menu.x + menu.w - 2, y = ry + MENU_ROW_H - 2}, MENU_HOVER, 2)
+            vc.ImGui_AddRectFilled({x = menu.x + 2, y = ry - 2}, {x = menu.x + menu.w - 2,
+                    y = ry + MENU_ROW_H - 2}, MENU_HOVER, 2)
         end
         vc.ImGui_AddText({x = menu.x + MENU_PAD + 6, y = ry}, MENU_TEXT, o.label)
     end
 end
 
-function content.handle_input(state, fontset, pos)
+--[[ One frame of input for the whole document.
+
+Core - THE PANELS COME FIRST AND SWALLOW EVERYTHING. While F1 or F2 is up, no input reaches any box
+this frame, so nothing can be typed into or clicked through from behind a full-screen overlay.
+Opening one closes the other rather than stacking them.
+
+Core: after that, this decides WHICH box has the caret and hands the frame to it - box-level
+routing - and owns the gestures that are about the document rather than about a formula: the radial
+new-box menu, box movement, derivation, and the right-click transform menu.
+
+Params: `pos` is where the document was last drawn, needed because every hit test here is against
+the boxes the previous frame left on screen. Returns nothing; everything it does is to `state_doc`.
+@date 2026-09-12 03:45 ]]
+function content.handle_input(state_doc, fontset, pos)
+    STATE_SHAPE.check(state_doc)
     -- F1/F2 each toggle their own full-screen panel on/off; while either is showing, every other
     -- input this frame is swallowed here (nothing forwarded to any box) so it can't be typed into
     -- or clicked through from behind the panel. Opening one closes the other, rather than letting
     -- them stack - only one overlay makes sense on screen at a time.
     if keymap.pressed("app.help") then
-        state.show_help = not state.show_help
-        state.show_alt_help = false
+        state_doc.show_help = not state_doc.show_help
+        state_doc.show_alt_help = false
         return
     end
     if keymap.pressed("app.customiser") then
-        state.show_alt_help = not state.show_alt_help
-        state.show_help = false
-        if not state.show_alt_help then
+        state_doc.show_alt_help = not state_doc.show_alt_help
+        state_doc.show_help = false
+        if not state_doc.show_alt_help then
             --[[ Closing drops any half-finished recording so it cannot reappear next time, and
             bumps the revision so the help page re-resolves its key names. The SAVE itself is
             main.lua's job - it watches keymap.dirty() - because this file owns no file paths, and
             because saving on close rather than per keystroke is the point: a half-typed binding
             must never reach disk. ]]
-            panel_keymap.closed(state.keymap_state)
-            state.keymap_rev = state.keymap_rev + 1
+            panel_keymap.closed(state_doc.keymap_state)
+            state_doc.keymap_rev = state_doc.keymap_rev + 1
         end
         return
     end
@@ -1199,21 +1339,21 @@ function content.handle_input(state, fontset, pos)
     --[[ F4 and F6 are one slot: turning either on turns the other off. Not a general panel
     manager - just these two, because they are the pair that share a corner. ]]
     if keymap.pressed("app.ast_result") then
-        state.show_ast_result = not state.show_ast_result
-        if state.show_ast_result then
-            state.show_ast = false
+        state_doc.show_ast_result = not state_doc.show_ast_result
+        if state_doc.show_ast_result then
+            state_doc.show_ast = false
         end
         return
     end
     if keymap.pressed("app.ast") then
-        state.show_ast = not state.show_ast
-        if state.show_ast then
-            state.show_ast_result = false
+        state_doc.show_ast = not state_doc.show_ast
+        if state_doc.show_ast then
+            state_doc.show_ast_result = false
         end
         return
     end
     if keymap.pressed("app.ast_string") then
-        state.show_ast_string = not state.show_ast_string
+        state_doc.show_ast_string = not state_doc.show_ast_string
         return
     end
     if keymap.pressed("app.profiler_record") or keymap.pressed("app.profiler_reset")
@@ -1242,16 +1382,16 @@ function content.handle_input(state, fontset, pos)
     the revision so the help re-resolves its key names - because main.lua's save watches
     content.customiser_open(), and a panel closed by Escape has to look exactly like one closed by
     its own key or the keymap would never reach disk. ]]
-    if state.show_help or state.show_alt_help then
+    if state_doc.show_help or state_doc.show_alt_help then
         if keymap.pressed("panel.close") then
-            if state.show_alt_help then
-                if not panel_keymap.escape(state.keymap_state) then
-                    state.show_alt_help = false
-                    panel_keymap.closed(state.keymap_state)
-                    state.keymap_rev = state.keymap_rev + 1
+            if state_doc.show_alt_help then
+                if not panel_keymap.escape(state_doc.keymap_state) then
+                    state_doc.show_alt_help = false
+                    panel_keymap.closed(state_doc.keymap_state)
+                    state_doc.keymap_rev = state_doc.keymap_rev + 1
                 end
             else
-                state.show_help = false
+                state_doc.show_help = false
             end
         end
         return
@@ -1260,8 +1400,8 @@ function content.handle_input(state, fontset, pos)
     --[[ While the radial menu is open it owns the frame - checked here, after the F1/F2/F3 panels
     (which are more global still) but ahead of every box-facing shortcut and the whole mouse block,
     so nothing types into or clicks the box sitting behind it. ]]
-    if state.radial then
-        radial_handle_input(state)
+    if state_doc.radial then
+        radial_handle_input(state_doc)
         return
     end
 
@@ -1269,37 +1409,37 @@ function content.handle_input(state, fontset, pos)
     chooses from it must not also reach the formula it is sitting over. Checked after the radial
     (two menus are never open at once - the radial is modal too) and ahead of every box-facing
     shortcut. ]]
-    if state.transform_menu then
-        transform_menu_input(state, fontset)
+    if state_doc.transform_menu then
+        transform_menu_input(state_doc, fontset)
         return
     end
     if keymap.pressed("math.transform_menu") then
-        open_transform_menu(state, fontset)
+        open_transform_menu(state_doc, fontset)
         return
     end
 
     -- Ctrl+Up/Down switches which box is active (previous/next in the stack, stopping at either
     -- end rather than wrapping) - each box already remembers its own cursor/selection from when
     -- it was last active (same as clicking a different box does), so switching this way doesn't
-    -- need to touch either box's own editor state at all, just scroll the newly-active one into
+    -- need to touch either box's own editor state_doc at all, just scroll the newly-active one into
     -- view if it wasn't already. Checked here, ahead of any box-specific handling (including
     -- whether a formula inside the active box currently owns input), so it's always available as
     -- a global shortcut, not something a formula's own plain Up/Down could ever shadow.
     --[[ Ctrl+MouseWheel zoom is a MODIFIER-GATED MOUSE gesture, not a key binding, so it asks
-    keymap for the live modifier state rather than owning an action of its own - there is no key
+    keymap for the live modifier state_doc rather than owning an action of its own - there is no key
     here to rebind. keymap.mods() is the same cached read every binding match uses. ]]
     local ctrl_down = keymap.mods()
     if keymap.pressed("box.prev") then
-        if state.active_index and state.active_index > 1 then
-            state.active_index = state.active_index - 1
-            scroll_into_view(state, pos, state.active_index)
+        if state_doc.active_index and state_doc.active_index > 1 then
+            state_doc.active_index = state_doc.active_index - 1
+            scroll_into_view(state_doc, pos, state_doc.active_index)
         end
         return
     end
     if keymap.pressed("box.next") then
-        if state.active_index and state.active_index < #state.boxes then
-            state.active_index = state.active_index + 1
-            scroll_into_view(state, pos, state.active_index)
+        if state_doc.active_index and state_doc.active_index < #state_doc.boxes then
+            state_doc.active_index = state_doc.active_index + 1
+            scroll_into_view(state_doc, pos, state_doc.active_index)
         end
         return
     end
@@ -1314,25 +1454,25 @@ function content.handle_input(state, fontset, pos)
     with the other box-level shortcuts and ahead of anything box-specific, so it works wherever
     the caret happens to be - including inside a formula, which owns input for every other key. ]]
     if keymap.pressed("box.move_up") then
-        if state.active_index then
-            local moved = content.move_box(state, state.active_index, -1)
+        if state_doc.active_index then
+            local moved = content.move_box(state_doc, state_doc.active_index, -1)
             if moved then
-                state.active_index = moved
+                state_doc.active_index = moved
                 -- Followed next frame, once draw() has put the box in its new slot - see the
                 -- caret-follow block at the end of this function.
-                state.follow_caret = -1
+                state_doc.follow_caret = -1
             end
         end
         return
     end
     if keymap.pressed("box.move_down") then
-        if state.active_index then
-            local moved = content.move_box(state, state.active_index, 1)
+        if state_doc.active_index then
+            local moved = content.move_box(state_doc, state_doc.active_index, 1)
             if moved then
-                state.active_index = moved
+                state_doc.active_index = moved
                 -- Followed next frame, once draw() has put the box in its new slot - see the
                 -- caret-follow block at the end of this function.
-                state.follow_caret = 1
+                state_doc.follow_caret = 1
             end
         end
         return
@@ -1341,22 +1481,22 @@ function content.handle_input(state, fontset, pos)
     --[[ Derive a new formula box from this one. Sits with the other box-level shortcuts, and
     does nothing at all on a box that is not a formula - there is no expression to derive from. ]]
     if keymap.pressed("formula.derive") then
-        if state.active_index then
-            local made = content.derive_identity(state, state.active_index)
+        if state_doc.active_index then
+            local made = content.derive_identity(state_doc, state_doc.active_index)
             if made then
-                state.active_index = made
-                state.follow_caret = 1
+                state_doc.active_index = made
+                state_doc.follow_caret = 1
             end
         end
         return
     end
 
     if keymap.pressed("box.new") then
-        local index = (state.active_index or #state.boxes) + 1
+        local index = (state_doc.active_index or #state_doc.boxes) + 1
         local disp = vc.ImGui_GetDisplaySize()
-        local cx = state.last_rail_x or (pos.x + RAIL_OFFSET)
-        local cy = insertion_y(state, index) or (disp and disp.y / 2) or pos.y
-        radial_open(state, index, cx, cy, false)
+        local cx = state_doc.last_rail_x or (pos.x + RAIL_OFFSET)
+        local cy = insertion_y(state_doc, index) or (disp and disp.y / 2) or pos.y
+        radial_open(state_doc, index, cx, cy, false)
         return
     end
 
@@ -1373,17 +1513,17 @@ function content.handle_input(state, fontset, pos)
 
     NOT undoable, exactly like the "x" button: undo lives inside each editor, so removing a whole
     box takes its history with it. ]]
-    if keymap.pressed("box.close") and state.active_index then
-        local closing = state.active_index
-        content.remove_box(state, closing)
-        if #state.boxes > 0 then
-            state.active_index = math.min(closing, #state.boxes)
+    if keymap.pressed("box.close") and state_doc.active_index then
+        local closing = state_doc.active_index
+        content.remove_box(state_doc, closing)
+        if #state_doc.boxes > 0 then
+            state_doc.active_index = math.min(closing, #state_doc.boxes)
         end
         return
     end
 
     -- Mouse wheel scrolls the whole stack, UNLESS Ctrl is held, in which case it zooms instead
-    -- (state.font_size - a char.lua size-table INDEX, not a pixel size, see DEFAULT_FONT_SIZE's own
+    -- (state_doc.font_size - a char.lua size-table INDEX, not a pixel size, see DEFAULT_FONT_SIZE's own
     -- comment) - global, same as show_wireframe, not tied to whichever box the mouse happens to be
     -- over. One size-table step per wheel notch, not scaled by SCROLL_SPEED - these are
     -- discrete levels, not pixels, and a raw multi-unit wheel event (e.g. a fast trackpad flick)
@@ -1393,15 +1533,16 @@ function content.handle_input(state, fontset, pos)
     local wheel = vc.ImGui_GetMouseWheel()
     if wheel ~= 0 and ctrl_down then
         local step = wheel > 0 and -1 or 1
-        local new_size = math.max(MIN_FONT_SIZE, math.min(MAX_FONT_SIZE, state.font_size + step))
-        if new_size ~= state.font_size then
-            state.font_size = new_size
+        local new_size = math.max(MIN_FONT_SIZE, math.min(MAX_FONT_SIZE,
+                state_doc.font_size + step))
+        if new_size ~= state_doc.font_size then
+            state_doc.font_size = new_size
             -- mexpru.set_zoom() first (mexpru.physical_sz()'s own comment: one global value the
             -- whole app reads) - THEN rescale every box's every formula so already-typed content
             -- visually catches up too, not just brand-new typing (editor.rescale()'s own comment).
             -- Global, not just the active box - confirmed.
-            mexpru.set_zoom(state.font_size - DEFAULT_FONT_SIZE)
-            for _, box in ipairs(state.boxes) do
+            mexpru.set_zoom(state_doc.font_size - DEFAULT_FONT_SIZE)
+            for _, box in ipairs(state_doc.boxes) do
                 -- Every box kind that holds formulas has to catch up, not just text boxes -
                 -- a definition box's slots are formulas too.
                 if box.editor then
@@ -1425,50 +1566,51 @@ function content.handle_input(state, fontset, pos)
     -- usual "scroll up" gesture - it should reveal content ABOVE, i.e. decrease scroll_y.
     if wheel ~= 0 then
         local viewport_h = math.max(0, vc.ImGui_GetDisplaySize().y - pos.y)
-        local max_scroll = math.max(0, state.last_total_height - viewport_h)
-        state.scroll_y = math.max(0, math.min(max_scroll, state.scroll_y - wheel * SCROLL_SPEED))
+        local max_scroll = math.max(0, state_doc.last_total_height - viewport_h)
+        state_doc.scroll_y = math.max(0, math.min(max_scroll,
+                state_doc.scroll_y - wheel * SCROLL_SPEED))
     end
 
     local clicked = vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false)
-    if clicked and state.last_layout then
+    if clicked and state_doc.last_layout then
         local mpos = vc.ImGui_GetMousePos()
 
-        for i, r in ipairs(state.last_layout) do
+        for i, r in ipairs(state_doc.last_layout) do
             if r.close and point_in_rect(mpos.x, mpos.y, r.close.x, r.close.y, r.close.w, r.close.h) then
-                content.remove_box(state, i)
+                content.remove_box(state_doc, i)
                 return
             end
-            if r.wireframe_btn and point_in_rect(mpos.x, mpos.y,
-                    r.wireframe_btn.x, r.wireframe_btn.y, r.wireframe_btn.w, r.wireframe_btn.h) then
-                state.show_wireframe = not state.show_wireframe
+            if r.wireframe_btn and point_in_rect(mpos.x, mpos.y, r.wireframe_btn.x,
+                    r.wireframe_btn.y, r.wireframe_btn.w, r.wireframe_btn.h) then
+                state_doc.show_wireframe = not state_doc.show_wireframe
                 return
             end
-            if r.graph_btn and point_in_rect(mpos.x, mpos.y,
-                    r.graph_btn.x, r.graph_btn.y, r.graph_btn.w, r.graph_btn.h) then
-                state.show_graph = not state.show_graph
+            if r.graph_btn and point_in_rect(mpos.x, mpos.y, r.graph_btn.x, r.graph_btn.y,
+                    r.graph_btn.w, r.graph_btn.h) then
+                state_doc.show_graph = not state_doc.show_graph
                 return
             end
         end
 
         local hit = nil
-        for i, r in ipairs(state.last_layout) do
+        for i, r in ipairs(state_doc.last_layout) do
             if point_in_rect(mpos.x, mpos.y, r.x, r.y, r.w, r.h) then
                 hit = i
                 break
             end
         end
         if hit then
-            state.active_index = hit
-        elseif state.last_rail_x and math.abs(mpos.x - state.last_rail_x) <= RAIL_CLICK_RADIUS then
+            state_doc.active_index = hit
+        elseif state_doc.last_rail_x and math.abs(mpos.x - state_doc.last_rail_x) <= RAIL_CLICK_RADIUS then
             --[[ A press on the rail opens the radial menu instead of inserting a text box outright.
             from_drag = true, so the gesture is press-drag-release: the menu lives exactly as long as
             the button is held. Releasing without leaving the centre cancels, which makes a plain
             click on the rail a no-op rather than a surprise box. ]]
-            radial_open(state, insertion_index_for_y(state, mpos.y), mpos.x, mpos.y, true,
+            radial_open(state_doc, insertion_index_for_y(state_doc, mpos.y), mpos.x, mpos.y, true,
                     mpos.x, mpos.y)
             return
         else
-            state.active_index = nil
+            state_doc.active_index = nil
         end
     end
 
@@ -1483,7 +1625,7 @@ function content.handle_input(state, fontset, pos)
     wherever that box had left it. The screen then appeared to jump, because the draw scrolls the
     caret into view and the caret was not where the click was.
 
-    It reproduced most obviously right after Ctrl+R, since a reloaded state has no active box at
+    It reproduced most obviously right after Ctrl+R, since a reloaded state_doc has no active box at
     all, which makes the FIRST click on anything an activation. Reported live, 2026-09-10: "click on
     the bottom side of the screen moves the screen something else and the cursor doesn't get placed
     where I've clicked it".
@@ -1493,16 +1635,16 @@ function content.handle_input(state, fontset, pos)
     before this point, `active` already names the newly clicked box rather than the old one, and a
     click on empty space clears the selection instead of reaching here. What is left is exactly the
     case that should be forwarded. ]]
-    local active = state.active_index and state.boxes[state.active_index]
+    local active = state_doc.active_index and state_doc.boxes[state_doc.active_index]
     if active and active.editor then
-        editor.handle_input(active.editor, fontset, state.font_size)
+        editor.handle_input(active.editor, fontset, state_doc.font_size)
     elseif active and active.def then
-        editor_definition.handle_input(active.def, fontset, state.font_size)
+        editor_definition.handle_input(active.def, fontset, state_doc.font_size)
     elseif active and active.fml then
         --[[ A true return means the box was pasted into: its content was replaced and its parent
         link dropped. Everything derived from it followed from the OLD content, so it goes. ]]
-        if editor_formula.handle_input(active.fml, fontset, state.font_size) then
-            content.prune_descendants(state, active.fml.id)
+        if editor_formula.handle_input(active.fml, fontset, state_doc.font_size) then
+            content.prune_descendants(state_doc, active.fml.id)
         end
     end
 
@@ -1516,11 +1658,11 @@ function content.handle_input(state, fontset, pos)
     --[[ A formula or definition box has no text caret to follow, so a move of one falls back to
     its own top edge. Checked before the caret branch, which would otherwise leave follow_caret
     set forever on a box that can never satisfy it. ]]
-    if state.follow_caret and not (active and active.editor and active.editor.last_cursor_y) then
-        if state.active_index then
-            scroll_into_view(state, pos, state.active_index)
+    if state_doc.follow_caret and not (active and active.editor and active.editor.last_cursor_y) then
+        if state_doc.active_index then
+            scroll_into_view(state_doc, pos, state_doc.active_index)
         end
-        state.follow_caret = nil
+        state_doc.follow_caret = nil
     end
 
     if active and active.editor and active.editor.last_cursor_y then
@@ -1558,16 +1700,16 @@ function content.handle_input(state, fontset, pos)
         `last_cursor_y` that has since been redrawn, which is the one-frame bargain this file makes
         everywhere else. Setting first would leave a continuous move never satisfying its own flag.
         @date 2026-09-11 00:40 ]]
-        local follow = state.follow_caret
+        local follow = state_doc.follow_caret
         if follow then
-            scroll_span_into_view(state, pos, active.editor.last_cursor_y,
+            scroll_span_into_view(state_doc, pos, active.editor.last_cursor_y,
                     active.editor.last_cursor_h or 0, follow * MOVE_FOLLOW_LEAD)
         elseif ed._scroll_to_caret then
-            scroll_span_into_view(state, pos, active.editor.last_cursor_y,
+            scroll_span_into_view(state_doc, pos, active.editor.last_cursor_y,
                     active.editor.last_cursor_h or 0, 0)
         end
         ed._scroll_to_caret = moved or nil
-        state.follow_caret = nil
+        state_doc.follow_caret = nil
     end
 end
 
@@ -1597,8 +1739,8 @@ slots with `current` saying which has the caret. `current` is negative while the
 DERIVED row - the shorthand or the computed name - which is not an editable expression, hence the
 `> 0`.
 @date 2026-09-10 05:10 ]]
-local function active_expression(state)
-    local box = state.active_index and state.boxes[state.active_index]
+local function active_expression(state_doc)
+    local box = state_doc.active_index and state_doc.boxes[state_doc.active_index]
     if not box then
         return nil
     end
@@ -1690,21 +1832,21 @@ local function draw_ast_panel(x, width, title, lines)
     local h = (size and size.y or 720)
     local y = h - (#lines + 2) * AST_LINE_H - 12
 
-    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
-            {x = x + width, y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
+    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8}, {x = x + width,
+            y = y + (#lines + 1) * AST_LINE_H + 4}, AST_BG_COLOR, 4)
     vc.ImGui_AddText({x = x, y = y}, AST_TEXT_COLOR, title)
     for i, l in ipairs(lines) do
         draw_ast_line(l, x + l.depth * AST_INDENT, y + i * AST_LINE_H)
     end
 end
 
-local function draw_ast_overlay(state, fontset)
-    local container = active_expression(state)
+local function draw_ast_overlay(state_doc, fontset)
+    local container = active_expression(state_doc)
     local lines
     if not container then
         lines = {{depth = 0, text = "no expression here - put the caret in a formula"}}
     else
-        local decls = content.declarations_before(state, state.active_index)
+        local decls = content.declarations_before(state_doc, state_doc.active_index)
         -- .order, not .by_text: resolution WALKS the candidates, since a use site cannot build
         -- the key it would otherwise be looked up by (mexpr_ast.match_use).
         lines = mexpr_ast.describe(fontset, container, decls.order)
@@ -1728,15 +1870,15 @@ it was parsed then, and an edit reparses it into different ones. Clearing rather
 it means a stale choice cannot come back to life later - it was made about a tree that no longer
 exists.
 @date 2026-09-11 22:30 ]]
-local function result_subject(state)
-    local pick = state.transform_pick
+local function result_subject(state_doc)
+    local pick = state_doc.transform_pick
     if pick then
         if pick.container and pick.version == (pick.container.version or 0) then
             return pick.container, pick.index, pick.option
         end
-        state.transform_pick = nil
+        state_doc.transform_pick = nil
     end
-    return active_expression(state), state.active_index, nil
+    return active_expression(state_doc), state_doc.active_index, nil
 end
 
 --[[ F6: the tree a transformation would produce HERE, drawn like F5's.
@@ -1755,13 +1897,13 @@ screen; otherwise the first one `ast_gestures` offers at the caret. The fallback
 panel useful with no gesture at all - it previews what a click where the caret is would do - and the
 choice takes precedence because it is the more specific answer to the same question.
 @date 2026-09-11 21:45 ]]
-local function draw_ast_result_overlay(state, fontset)
+local function draw_ast_result_overlay(state_doc, fontset)
     local lines
-    local container, index, option = result_subject(state)
+    local container, index, option = result_subject(state_doc)
     if not container then
         lines = {{depth = 0, text = "no expression here - put the caret in a formula"}}
     else
-        local decls = content.declarations_before(state, index)
+        local decls = content.declarations_before(state_doc, index)
         local root, _, err = ast_gestures.ast_for(fontset, container, decls.order)
         if not root then
             lines = {{depth = 0, text = "no tree: " .. tostring(err)}}
@@ -1808,13 +1950,13 @@ Anchored BOTTOM-LEFT, the one corner F3 (top-right) and F4 (bottom-right) leave 
 @date 2026-09-10 ]]
 local AST_STR_WIDTH = 480
 
-local function draw_ast_string_overlay(state, fontset)
-    local container = active_expression(state)
+local function draw_ast_string_overlay(state_doc, fontset)
+    local container = active_expression(state_doc)
     local lines
     if not container then
         lines = {{depth = 0, text = "no expression here - put the caret in a formula"}}
     else
-        local decls = content.declarations_before(state, state.active_index)
+        local decls = content.declarations_before(state_doc, state_doc.active_index)
         local node, err, ns = mexpr_ast.build(fontset, container, decls.order)
         if not node then
             lines = {{depth = 0, text = "no tree: " .. tostring(err)}}
@@ -1857,8 +1999,8 @@ local function draw_prof_overlay()
     local size = vc.ImGui_GetDisplaySize()
     local x = (size and size.x or 1280) - PROF_WIDTH - 12
     local y = 12
-    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8},
-            {x = x + PROF_WIDTH, y = y + #lines * PROF_LINE_H + 8}, PROF_BG_COLOR, 4)
+    vc.ImGui_AddRectFilled({x = x - 8, y = y - 8}, {x = x + PROF_WIDTH,
+            y = y + #lines * PROF_LINE_H + 8}, PROF_BG_COLOR, 4)
     for i, line in ipairs(lines) do
         vc.ImGui_AddText({x = x, y = y + (i - 1) * PROF_LINE_H}, PROF_TEXT_COLOR, line)
     end
@@ -1898,15 +2040,15 @@ function content.draw_box_chrome(box_x, box_y, box_w, box_h, kind, is_active, ra
     end
 
     -- Close button: a small "x" sitting just above the box's top-right corner.
-    local close = {x=box_x + box_w - CLOSE_SIZE, y=box_y - CLOSE_SIZE - 2,
-            w=CLOSE_SIZE, h=CLOSE_SIZE}
-    vc.ImGui_AddRect({x=close.x, y=close.y}, {x=close.x+close.w, y=close.y+close.h},
-            RAIL_COLOR, 3, 1)
+    local close = {x=box_x + box_w - CLOSE_SIZE, y=box_y - CLOSE_SIZE - 2, w=CLOSE_SIZE,
+            h=CLOSE_SIZE}
+    vc.ImGui_AddRect({x=close.x, y=close.y}, {x=close.x+close.w, y=close.y+close.h}, RAIL_COLOR, 3,
+            1)
     local pad = 4
-    vc.ImGui_AddLine({x=close.x+pad, y=close.y+pad},
-            {x=close.x+close.w-pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
-    vc.ImGui_AddLine({x=close.x+close.w-pad, y=close.y+pad},
-            {x=close.x+pad, y=close.y+close.h-pad}, CLOSE_COLOR, 2)
+    vc.ImGui_AddLine({x=close.x+pad, y=close.y+pad}, {x=close.x+close.w-pad,
+            y=close.y+close.h-pad}, CLOSE_COLOR, 2)
+    vc.ImGui_AddLine({x=close.x+close.w-pad, y=close.y+pad}, {x=close.x+pad,
+            y=close.y+close.h-pad}, CLOSE_COLOR, 2)
     return close
 end
 
@@ -1936,8 +2078,24 @@ function content.box_kinds()
     return {KIND_TEXT, KIND_FORMULA, KIND_DEFINITION}
 end
 
---[[ Every name declared ABOVE box `index`, keyed by its pattern text - what a box at that position
-is allowed to refer to.
+--[[ THE `decls` CONTAINER - what names are in scope at a box, and THE ONE CREATOR for it.
+
+WHERE `decls` COMES FROM, since it is passed through four files and created in none of them: here.
+Everything downstream - mexpr_ast.build, ast_gestures, the transform menu - receives `.order` from
+this call and never builds one. Each entry is editor_definition.declaration()'s table:
+
+    text     the pattern as serialized text, which is the KEY a use resolves against
+    name     the declared name on its own
+    arity    how many arguments it takes
+    tokens   the pattern's token list, carried rather than re-split from `text` - resolving a use
+             walks two token lists position by position, and splitting the string again would be a
+             second, drifting definition of what a token is
+    groups   its argument groups, carried for the same reason
+    box_index which box declared it, added here
+
+The container itself is {by_text, order}: the same accepted declarations twice, keyed for lookup
+and ordered for iteration, because a resolver wants the lookup and a person reading the document
+wants the sequence.
 
 SCOPE IS DOCUMENT POSITION, and that is the whole rule: a box sees the definitions above it and
 nothing else. Author, 2026-09-10: "the definition module should know to provide all the definitions
@@ -1946,22 +2104,22 @@ reads top to bottom the way a proof does - a name means what it meant where it w
 inserting a definition cannot silently change the meaning of everything above it.
 
 STRICTLY above: box `index` does not see its own declaration. A definition that could refer to
-itself is a different feature (recursion) and needs to be asked for deliberately rather than
-falling out of an off-by-one here.
+itself is a different feature (recursion) and needs to be asked for deliberately rather than falling
+out of an off-by-one here.
 
 REDECLARATION: a later box wins, because the walk goes downward and overwrites. That makes the
-answer well-defined rather than correct - whether shadowing should be allowed at all, or reported
-as a conflict the way keymap.conflicts() reports one, is open. It is written down here so the next
+answer well-defined rather than correct - whether shadowing should be allowed at all, or reported as
+a conflict the way keymap.conflicts() reports one, is open. It is written down here so the next
 reader knows it was chosen rather than stumbled into.
 
-Returns a table keyed by text plus `order`, the same declarations in document order, because a
-resolver wants the lookup and a person reading the document wants the sequence.
-@date 2026-09-10 02:30 ]]
-function content.declarations_before(state, index)
+WHAT WAS WRITTEN IS NOT WHAT IS IN SCOPE - see the note inside.
+@date 2026-09-12 05:10 ]]
+function content.declarations_before(state_doc, index)
+    STATE_SHAPE.check(state_doc)
     local by_text, order = {}, {}
     local written = {}
-    for i = 1, math.min((index or (#state.boxes + 1)) - 1, #state.boxes) do
-        local box = state.boxes[i]
+    for i = 1, math.min((index or (#state_doc.boxes + 1)) - 1, #state_doc.boxes) do
+        local box = state_doc.boxes[i]
         local decl = box and box.def and editor_definition.declaration(box.def)
         if decl then
             decl.box_index = i
@@ -1992,14 +2150,16 @@ A panel covers the whole display, so nothing underneath shows or can be mistaken
 still live; handle_input() backs that up by having already returned for the frame. The profiler
 overlay is drawn on top of either, because a lag spike is over before anyone could switch views.
 
-Records the layout it drew (`state.last_layout`, `last_rail_x`, `last_total_height`) for the next
+Records the layout it drew (`state_doc.last_layout`, `last_rail_x`,
+        `last_total_height`) for the next
 frame's hit-testing and scroll clamping - one frame of lag, which is the bargain every mouse-facing
 helper here already makes.
 
   pos   the document's top-left, before scrolling
   opts  {max_width = n} to lay out narrower than the window, which the F1 help's examples use
 @date 2026-09-08 08:30 ]]
-function content.draw(state, fontset, pos, opts)
+function content.draw(state_doc, fontset, pos, opts)
+    STATE_SHAPE.check(state_doc)
     --[[ Drawn LAST, on top of everything, including the F1/F2 panels - so opening one of those
     doesn't take the numbers away mid-investigation. Hence the flag rather than a straight call:
     the early returns below would otherwise skip it. ]]
@@ -2007,27 +2167,27 @@ function content.draw(state, fontset, pos, opts)
         if prof.overlay_visible() then
             draw_prof_overlay()
         end
-        if state.show_ast then
+        if state_doc.show_ast then
             --[[ pcall: this runs the PARSER every frame on whatever is being typed, which is
             half-written by definition. A throw here would take the document's draw with it, and an
             inspection tool that can crash the thing it inspects is worse than no tool. ]]
-            local ok, err = pcall(draw_ast_overlay, state, fontset)
+            local ok, err = pcall(draw_ast_overlay, state_doc, fontset)
             if not ok then
                 vc.ImGui_AddText({x = 24, y = 4}, 0xaa3c3cff, "F4: " .. tostring(err))
             end
         end
-        if state.show_ast_result then
+        if state_doc.show_ast_result then
             -- Same pcall reasoning as F4/F5: this builds a tree AND runs a transform on it, either
             -- of which may be mid-edit and incomplete.
-            local ok, err = pcall(draw_ast_result_overlay, state, fontset)
+            local ok, err = pcall(draw_ast_result_overlay, state_doc, fontset)
             if not ok then
                 vc.ImGui_AddText({x = 24, y = 36}, 0xaa3c3cff, "F6: " .. tostring(err))
             end
         end
-        if state.show_ast_string then
+        if state_doc.show_ast_string then
             -- Same reasoning as F4's own pcall - ast.to_string walks a freshly-built, possibly
             -- half-typed tree every frame this is open.
-            local ok, err = pcall(draw_ast_string_overlay, state, fontset)
+            local ok, err = pcall(draw_ast_string_overlay, state_doc, fontset)
             if not ok then
                 vc.ImGui_AddText({x = 24, y = 20}, 0xaa3c3cff, "F5: " .. tostring(err))
             end
@@ -2042,13 +2202,13 @@ function content.draw(state, fontset, pos, opts)
     panels can use real ImGui widgets without the editor underneath reacting to the same clicks.
     The profiler overlay still goes on top of either - it has to stay readable while the app is in
     use, which is the whole reason it exists. ]]
-    if state.show_help then
-        panel_help.draw(state.help_state, state.keymap_rev, fontset)
+    if state_doc.show_help then
+        panel_help.draw(state_doc.help_state, state_doc.keymap_rev, fontset)
         overlay()
         return
     end
-    if state.show_alt_help then
-        panel_keymap.draw(state.keymap_state)
+    if state_doc.show_alt_help then
+        panel_keymap.draw(state_doc.keymap_state)
         overlay()
         return
     end
@@ -2058,7 +2218,7 @@ function content.draw(state, fontset, pos, opts)
     local viewport_bottom = display_size and display_size.y or (pos.y + 700)
 
     local layout = {}
-    local content_start_y = pos.y - state.scroll_y
+    local content_start_y = pos.y - state_doc.scroll_y
     local y = content_start_y
     local rail_x = pos.x + RAIL_OFFSET
     local box_x = pos.x + BOX_LEFT
@@ -2082,11 +2242,11 @@ function content.draw(state, fontset, pos, opts)
         max_box_w = math.min(max_box_w, opts.max_width)
     end
 
-    for i, box in ipairs(state.boxes) do
+    for i, box in ipairs(state_doc.boxes) do
         local box_y = y
-        local is_active = (state.active_index == i)
+        local is_active = (state_doc.active_index == i)
 
-        local cached = state.last_layout and state.last_layout[i]
+        local cached = state_doc.last_layout and state_doc.last_layout[i]
         local cached_h = cached and cached.h
         --[[ Every box is simply as wide as the column allows - the full width out to RIGHT_MARGIN,
         never sized to its own content.
@@ -2121,19 +2281,20 @@ function content.draw(state, fontset, pos, opts)
             content.insert_box's own comment on why the check is `box.editor` and not `box.kind`. ]]
             local box_h
             if box.editor then
-                local content_h = editor.draw(box.editor, fontset,
-                        {x=box_x + BOX_PADDING, y=box_y + BOX_PADDING}, state.font_size, content_w, is_active,
-                        state.show_wireframe, state.show_graph)
+                local content_h = editor.draw(box.editor, fontset, {x=box_x + BOX_PADDING,
+                        y=box_y + BOX_PADDING}, state_doc.font_size,
+                                content_w, is_active,
+                        state_doc.show_wireframe, state_doc.show_graph)
                 box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
             elseif box.def then
                 local content_h = editor_definition.draw(box.def, fontset,
-                        {x = box_x + BOX_PADDING, y = box_y + BOX_PADDING}, state.font_size,
-                        content_w, is_active, state.show_wireframe, state.show_graph)
+                        {x = box_x + BOX_PADDING, y = box_y + BOX_PADDING}, state_doc.font_size,
+                        content_w, is_active, state_doc.show_wireframe, state_doc.show_graph)
                 box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
             elseif box.fml then
-                local content_h = editor_formula.draw(box.fml, fontset,
-                        {x = box_x + BOX_PADDING, y = box_y + BOX_PADDING}, state.font_size,
-                        content_w, is_active, state.show_wireframe, state.show_graph)
+                local content_h = editor_formula.draw(box.fml, fontset, {x = box_x + BOX_PADDING,
+                        y = box_y + BOX_PADDING}, state_doc.font_size,
+                        content_w, is_active, state_doc.show_wireframe, state_doc.show_graph)
                 box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
             else
                 box_h = EMPTY_BOX_HEIGHT
@@ -2156,36 +2317,36 @@ function content.draw(state, fontset, pos, opts)
             local wf, gr
             if box.editor or box.def or box.fml then
             -- Wireframe-toggle button: sits just left of the close button, same row. Global (all
-            -- boxes share state.show_wireframe - see new_shell()'s own comment), drawn per-box just
+            -- boxes share state_doc.show_wireframe - see new_shell()'s own comment), drawn per-box just
             -- so there's always one within reach, same as the close button - toggling any one of
             -- them flips it everywhere.
-            wf = {x=close.x - WIREFRAME_SIZE - 4, y=box_y - WIREFRAME_SIZE - 2,
-                    w=WIREFRAME_SIZE, h=WIREFRAME_SIZE}
-            local wf_color = state.show_wireframe and WIREFRAME_ON_COLOR or WIREFRAME_OFF_COLOR
+            wf = {x=close.x - WIREFRAME_SIZE - 4, y=box_y - WIREFRAME_SIZE - 2, w=WIREFRAME_SIZE,
+                    h=WIREFRAME_SIZE}
+            local wf_color = state_doc.show_wireframe and WIREFRAME_ON_COLOR or WIREFRAME_OFF_COLOR
             vc.ImGui_AddRect({x=wf.x, y=wf.y}, {x=wf.x+wf.w, y=wf.y+wf.h}, wf_color, 3, 1)
             -- A small dashed-box glyph (a smaller inset rect) standing in for "wireframe" - filled
-            -- when on, outline-only when off, so the state reads at a glance without needing text.
+            -- when on, outline-only when off, so the state_doc reads at a glance without needing text.
             local wf_pad = 4
-            if state.show_wireframe then
-                vc.ImGui_AddRectFilled({x=wf.x+wf_pad, y=wf.y+wf_pad},
-                        {x=wf.x+wf.w-wf_pad, y=wf.y+wf.h-wf_pad}, wf_color, 1)
+            if state_doc.show_wireframe then
+                vc.ImGui_AddRectFilled({x=wf.x+wf_pad, y=wf.y+wf_pad}, {x=wf.x+wf.w-wf_pad,
+                        y=wf.y+wf.h-wf_pad}, wf_color, 1)
             else
-                vc.ImGui_AddRect({x=wf.x+wf_pad, y=wf.y+wf_pad},
-                        {x=wf.x+wf.w-wf_pad, y=wf.y+wf.h-wf_pad}, wf_color, 1, 1)
+                vc.ImGui_AddRect({x=wf.x+wf_pad, y=wf.y+wf_pad}, {x=wf.x+wf.w-wf_pad,
+                        y=wf.y+wf.h-wf_pad}, wf_color, 1, 1)
             end
 
             -- Graph-toggle button: sits just left of the wireframe button, same row - same global/
             -- per-box-button reasoning (this file's own new_shell() comment on show_graph).
             gr = {x=wf.x - GRAPH_SIZE - 4, y=box_y - GRAPH_SIZE - 2,
                     w=GRAPH_SIZE, h=GRAPH_SIZE}
-            local gr_color = state.show_graph and GRAPH_ON_COLOR or GRAPH_OFF_COLOR
+            local gr_color = state_doc.show_graph and GRAPH_ON_COLOR or GRAPH_OFF_COLOR
             vc.ImGui_AddRect({x=gr.x, y=gr.y}, {x=gr.x+gr.w, y=gr.y+gr.h}, gr_color, 3, 1)
             -- Two dots joined by a line standing in for "graph" - filled dots when on, hollow when
             -- off, mirroring the wireframe button's own filled-vs-outline convention.
             local gr_p1 = {x=gr.x+4, y=gr.y+gr.h-4}
             local gr_p2 = {x=gr.x+gr.w-4, y=gr.y+4}
             vc.ImGui_AddLine(gr_p1, gr_p2, gr_color, 1)
-            if state.show_graph then
+            if state_doc.show_graph then
                 vc.ImGui_AddCircleFilled(gr_p1, 2, gr_color)
                 vc.ImGui_AddCircleFilled(gr_p2, 2, gr_color)
             else
@@ -2212,12 +2373,12 @@ function content.draw(state, fontset, pos, opts)
     only be drawn when both of its boxes were laid out - a parent scrolled out of view is culled and
     has no rect, and the curve is simply skipped rather than drawn to a stale position. ]]
     local by_id = {}
-    for i, box in ipairs(state.boxes) do
+    for i, box in ipairs(state_doc.boxes) do
         if box.fml and box.fml.id then
             by_id[box.fml.id] = i
         end
     end
-    for i, box in ipairs(state.boxes) do
+    for i, box in ipairs(state_doc.boxes) do
         local parent_i = box.fml and box.fml.parent and by_id[box.fml.parent]
         local a = parent_i and layout[parent_i]
         local b = layout[i]
@@ -2261,17 +2422,17 @@ function content.draw(state, fontset, pos, opts)
         vc.ImGui_AddLine({x=rail_x, y=mpos.y-arm}, {x=rail_x, y=mpos.y+arm}, HOVER_COLOR, 2)
     end
 
-    state.last_layout = layout
-    state.last_rail_x = rail_x
-    state.last_total_height = y - content_start_y
+    state_doc.last_layout = layout
+    state_doc.last_rail_x = rail_x
+    state_doc.last_total_height = y - content_start_y
 
     --[[ Drawn after every box so it sits on top of the one it was opened over, and after
     last_layout is stored so opening it never disturbs hit testing for the frame after. ]]
-    if state.radial then
-        draw_radial_at(state.radial)
+    if state_doc.radial then
+        draw_radial_at(state_doc.radial)
     end
-    if state.transform_menu then
-        draw_transform_menu(state.transform_menu)
+    if state_doc.transform_menu then
+        draw_transform_menu(state_doc.transform_menu)
     end
 
     overlay()

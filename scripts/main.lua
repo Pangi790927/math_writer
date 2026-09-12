@@ -1,3 +1,22 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+NOTHING. This is the application's entry script, not a module: it returns no table and nothing
+requires it. virt_composer loads it as `main_script` (see math_writer.yaml) and calls the globals
+below, which are the interface - to the C++ side rather than to any Lua caller.
+
+    test_init()     builds the fontset and the content state, and reads the document back along
+                    with the three config files. main.cpp:178 calls it.
+    test_draw()     one frame: input, then drawing. Called every frame; main.cpp keeps running
+                    when it throws, so Ctrl+Q still works while it is erroring.
+    test_shutdown() saves the document and the config on the way out. Runs before a Ctrl+R reload
+                    too, which is how the reloaded instance opens on what was on screen.
+
+It also owns the SAVE PATHS. math_writer.save, keymap.save, glyphmap.save and transforms.save are
+concatenated here from vc.app_data_prefix(), so a --test instance writes them all under test_run/
+and cannot touch the presentation instance's files. A module that needs persisting hands main.lua
+text through serialize/deserialize rather than opening a file itself.
+@date 2026-09-12 03:25
+================================================================================================= ]]
+
 package.path = package.path .. ";./scripts/?.lua"
 
 local vc = require("virt_composer")
@@ -8,6 +27,7 @@ local input_recorder = require("input_recorder")
 local keymap = require("keymap")
 local glyphmap = require("glyphmap")
 local prof = require("prof")
+local transforms = require("transforms")
 
 local fontset = nil
 local content_state = nil
@@ -31,6 +51,15 @@ document: it is configuration, and a keymap and a glyph map are separately usefu
 want one and not the other, and merging them would mean a change to either rewriting both.
 @date 2026-09-08 08:45 ]]
 local GLYPHMAP_PATH = DATA_PREFIX .. "glyphmap.save"
+--[[ Which transformations are switched on, in its own file for the same reason the keymap is in
+one: it is configuration, not document. Same DATA_PREFIX, so a --test instance writes
+test_run/transforms.save and can never touch the presentation instance's plugin list.
+
+It holds only DIVERGENCES from each plugin's declared default, so the file is usually absent or
+short, and it can never bring a transformation into existence - the folder scan decides what exists,
+this only decides which of those run.
+@date 2026-09-12 02:40 ]]
+local TRANSFORMS_PATH = DATA_PREFIX .. "transforms.save"
 
 --[[ Whole-file read via Lua's own io library (enabled per-project in the makefiles -
 VIRT_COMPOSER_ENABLE_LUA_IO - rather than a custom C++ binding, since io.* already does exactly
@@ -118,6 +147,14 @@ function test_init()
     if gm then
         glyphmap.deserialize(gm, function(msg) input_recorder.log_event(msg) end)
     end
+    --[[ After the plugins have been found - requiring transforms.lua ran the folder scan - because
+    this only flips flags on what that scan registered. A line naming a plugin that is no longer in
+    the folder is skipped rather than failing the file. ]]
+    local tr = read_file(TRANSFORMS_PATH)
+    if tr then
+        local applied, skipped = transforms.load(tr)
+        input_recorder.log_event("transforms: " .. applied .. " set, " .. skipped .. " unknown")
+    end
     glyphmap.clear_dirty()
     input_recorder.init()
 end
@@ -187,6 +224,12 @@ function test_draw()
             write_file(GLYPHMAP_PATH, glyphmap.serialize())
             glyphmap.clear_dirty()
             input_recorder.log_event("saved " .. GLYPHMAP_PATH)
+        end
+        -- Third file, same rule and same moment: the plugin list is edited in the same panel.
+        if transforms.dirty() then
+            write_file(TRANSFORMS_PATH, transforms.serialize())
+            transforms.clear_dirty()
+            input_recorder.log_event("saved " .. TRANSFORMS_PATH)
         end
     end
 

@@ -67,7 +67,8 @@ function run_test()
     local children = mexpru.u(root).children
     local open_final, A_final = children[1], children[2]
 
-    local container = {root = root, cursor_pos = vc.wref_mexpr(A_final), version = 0}
+    -- Through the creator: a container is a sealed type since 2026-09-12.
+    local container = mexpru.new_container(root, A_final)
     mformula_new.make_supsub(container, fs, "sup")
     local sup_empty = container.cursor_pos:get_obj()
     container.root = mexpru.propagate_rebuild(fs, sup_empty, glyph(fs, "A", SZ - 2))

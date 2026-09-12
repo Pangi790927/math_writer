@@ -1,3 +1,39 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+THE LOOKUP
+entry(key: string, alt, shift)          -> glyph | nil
+    Which glyph this key produces with these modifiers. What the
+    editors call.
+name(key: string, which)                -> text
+    One slot's LaTeX name, "" when empty. `which` is "from_letter",
+    "plain", "alt" or "alt_shift".
+slots(key: string)                      -> {slot} | nil
+key_label(name: string)                 -> text
+
+EDITING
+set(key: string, which, name: string)   -> ok, reason
+    VALIDATED against the glyph catalogue, not merely stored - a name
+    the editor cannot draw is refused with a reason to display.
+rekey(old_key, new_key)                 -> ok, reason
+    Moves a whole row onto another key, which is how a row is
+    identified on a keyboard that does not have the original.
+reset(letter)                           -> ok
+    One row, or the WHOLE map when given no letter.
+each(fn: function)                      -> nothing
+    Every letter in a FIXED order - the customiser's row order and the
+    file's line order at once.
+
+PERSISTENCE
+serialize() / deserialize(text: string, warn)
+dirty() / clear_dirty()
+    One line per row that differs from the factory map. deserialize
+    starts from clean defaults, so a letter the file no longer
+    mentions goes back to factory rather than keeping a stale value.
+
+--- internal, not on the module table --------------------------------------------------------------
+    the factory map, the live table and its order
+@date 2026-09-12 03:35
+================================================================================================= ]]
+
 --[[
 glyphmap.lua - what each LETTER KEY produces, and the one place that decides it.
 
@@ -94,10 +130,11 @@ local function install_defaults()
         local letter = LETTERS:sub(i, i)
         local key = key_name_for(letter)
         order[#order + 1] = key
+        local greek_plain, greek_shift = char.greek_for_key(letter)
         live[key] = {
             plain = nil,
-            alt = char.greek_alt[letter],
-            alt_shift = char.greek_alt_shift[letter],
+            alt = greek_plain,
+            alt_shift = greek_shift,
             -- What this row's slots came from, so reset() can restore them after the row has been
             -- moved to a different key. The DEFAULTS are per letter; the row is per key.
             from_letter = letter,
@@ -114,11 +151,19 @@ edit.
 @date 2026-09-08 08:45 ]]
 local dirty = false
 
+--[[ Whether the letter map has changed since it was last written. Watched by main.lua so
+glyphmap.save is written when the customiser closes and not once per frame. @date 2026-09-12 03:35 ]]
 function glyphmap.dirty()   return dirty end
+--[[ Declares the map written. Called by whoever did the writing; clearing it without writing loses
+the change silently. @date 2026-09-12 03:35 ]]
 function glyphmap.clear_dirty() dirty = false end
 
 -- The letters, in a fixed order, with their live slots. Iteration order is the customiser's row
 -- order and the file's line order, so both stay stable across runs.
+--[[ Every letter with its live slots, in a FIXED order.
+
+Iteration order is the customiser's row order and the save file's line order at once, so both stay
+stable across runs and a diff of the file shows only what actually changed. @date 2026-09-12 03:35 ]]
 function glyphmap.each(fn)
     for _, key in ipairs(order) do
         fn(key, live[key])
@@ -186,6 +231,10 @@ function glyphmap.entry(key, alt, shift)
 end
 
 -- What the customiser shows in a cell: the name, or "" when the slot is unset.
+--[[ The LaTeX name in one slot, as text, or "" when the slot is empty.
+
+Empty string rather than nil because every caller is putting it in a text field, and `which` is the
+slot: "from_letter", "plain", "alt" or "alt_shift". @date 2026-09-12 03:35 ]]
 function glyphmap.name(key, which)
     local slot = live[key]
     return (slot and slot[which]) or ""
@@ -244,6 +293,11 @@ function glyphmap.set(key, which, name)
 end
 
 -- Back to the factory tables, for one letter or (with no argument) all of them.
+--[[ Puts one letter's row back to the factory map, or the WHOLE map when given no letter.
+
+The no-argument form is the customiser's "default all", which is why it is armed behind two clicks
+there - it is not undoable from inside the panel. Returns true, or false for a letter with no row.
+@date 2026-09-12 03:35 ]]
 function glyphmap.reset(letter)
     if not letter then
         install_defaults()
@@ -267,10 +321,11 @@ function glyphmap.reset(letter)
     always does something, and the row can be moved by hand once the occupant is dealt with. ]]
     local from = slot.from_letter
     local home = from and key_name_for(from)
+    local greek_plain, greek_shift = char.greek_for_key(from)
     live[letter] = {
         plain = nil,
-        alt = from and char.greek_alt[from] or nil,
-        alt_shift = from and char.greek_alt_shift[from] or nil,
+        alt = greek_plain,
+        alt_shift = greek_shift,
         from_letter = from,
     }
     if home and home ~= letter and not live[home] then
@@ -303,9 +358,10 @@ function glyphmap.serialize()
         local from = now.from_letter
         local default_key = from and key_name_for(from)
         local same_place = (key == default_key)
+        local greek_plain, greek_shift = char.greek_for_key(from)
         local same_glyphs = now.plain == nil
-                and now.alt == (from and char.greek_alt[from])
-                and now.alt_shift == (from and char.greek_alt_shift[from])
+                and now.alt == greek_plain
+                and now.alt_shift == greek_shift
         if not (same_place and same_glyphs) then
             lines[#lines + 1] = key .. "\t" .. (from or "") .. "|" .. (now.plain or "")
                     .. "|" .. (now.alt or "") .. "|" .. (now.alt_shift or "")

@@ -58,7 +58,7 @@ function run_test()
         local S = mexpru.supsub(fs, x, supA, subM)
         local root = h({S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(x)}
+        local c = mexpru.new_container(root, x)
 
         mformula_new.move_up(c)
         at(c, supA, "C1: base up -> sup's own horiz (NOT A)")
@@ -89,7 +89,7 @@ function run_test()
         local S = mexpru.supsub(fs, x, supA, nil)
         local root = h({S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(x)}
+        local c = mexpru.new_container(root, x)
 
         mformula_new.move_up(c)
         at(c, supA, "C2: base up -> sup's horiz, distinct from A even when sup has just one glyph")
@@ -110,7 +110,7 @@ function run_test()
         local S = mexpru.supsub(fs, x, supE, nil)
         local root = h({S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(x)}
+        local c = mexpru.new_container(root, x)
 
         mformula_new.move_up(c)
         at(c, E, "C3: base up into a lazily-empty sup -> lands directly on the empty atom, not the horiz")
@@ -127,7 +127,7 @@ function run_test()
         local S = mexpru.supsub(fs, x, supAB, nil)
         local root = h({S})
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(S)}
+        local c = mexpru.new_container(root, S)
 
         mformula_new.move_up(c)
         at(c, B, "C4 (regression): S up -> end of sup (B), unchanged")

@@ -42,8 +42,9 @@ local function decl(fs, latex)
     if not pat then
         error("test needs '" .. latex .. "' to declare")
     end
-    return {text = pat.text, name = pat.name, arity = pat.arity, tokens = pat.tokens,
-            groups = pat.groups}
+    -- Through the creator: a declaration is a sealed type since 2026-09-12.
+    return mexpr_ast.new_decl{text = pat.text, name = pat.name, arity = pat.arity,
+            tokens = pat.tokens, groups = pat.groups}
 end
 
 -- The definitions that survive, in order, as their texts joined - so a failure prints the set.

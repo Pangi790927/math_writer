@@ -1,3 +1,24 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+init()                                  -> nothing
+close()                                 -> nothing
+    Opens the log for this run - APPENDING, so a previous run's tail
+    is still there - and stops the writer thread at shutdown.
+
+poll()                                  -> nothing
+    Once per frame, BEFORE any per-frame logic, so an event reaches
+    disk even if whatever it triggers then crashes.
+
+log_event(text: string)                 -> nothing
+log_error(err)                          -> nothing
+    Something the app itself did, as opposed to an input this module
+    observed. Every line is flushed as it is written, so both are
+    durable without any special handling at the call site.
+
+--- internal, not on the module table --------------------------------------------------------------
+    the log path, rotation, and the event formatting
+@date 2026-09-12 03:20
+================================================================================================= ]]
+
 --[[
 input_recorder.lua - a "flight recorder" for real input, requested live: "I crashed, make
 something to record the motions I do, such that on a crash (not a segfault one, but a normal

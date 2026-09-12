@@ -1,3 +1,21 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+to_latex(container: mexpru.container, subst: {[mexpru.u] = string}) -> text
+nodes_to_latex(nodes: {node}, subst: {[mexpru.u] = string}) -> text
+    A whole formula, or a RUN of sibling nodes - which is the shape a
+    selection always has. `subst` is optional and passes through to
+    node_to_latex; see its comment.
+
+from_latex(fontset: fontset, sz: size, s: string) -> {root, cursor_pos, version}
+    The inverse, and what a paste from outside arrives through. Always
+    yields a container - an empty atom for unreadable input - because
+    a box with nothing in it is a real state.
+
+--- internal, not on the module table --------------------------------------------------------------
+    node_to_latex, the macro table, expand_macros/expand_sqrt and the
+    recursive-descent parser
+@date 2026-09-12 03:25
+================================================================================================= ]]
+
 --[[
 mformula_latex.lua - LaTeX-subset serialization for mformula_new's mexpr_t-based tree: to_latex()
 (mexpr_t -> string) and from_latex() (string -> a fresh mformula_new-shaped container). Split out
@@ -524,7 +542,7 @@ local function node_to_latex(node, subst)
         gets, so `\\lim x` does not run together into `\\limx`. ]]
         local word = vert_operator_word(node)
         if word then
-            local macro = char.operator_words[word]
+            local macro = char.operator_word(word)
             return macro and ("\\" .. macro .. " ") or ("\\operatorname{" .. word .. "}")
         end
         --[[ "\\begin{matrix} a \\\\ b \\end{matrix}" - real amsmath, so a saved formula pastes into a
@@ -686,7 +704,35 @@ builds those yet either.
 @date 2026-09-08 09:00 ]]
 --[[ `subst` is optional and passes straight to node_to_latex - see its comment for the shape and
 for why the substitution belongs in that walk rather than in a second one. ]]
+--[[ A substitution map, checked.
+
+WHAT `subst` IS: `{[u table] -> replacement text}`. The key is the node's `u`, never the node
+itself, and that is the whole reason it works - lua_object_t::push() hands back the SAME table for
+the same node every time, while a raw mexpr_p is a fresh userdata each call and cannot be a stable
+key. A map keyed by nodes would look right, build without complaint and match NOTHING, and the only
+symptom would be a substitution silently not happening.
+
+nil is an ordinary argument: most renderings substitute nothing.
+@date 2026-09-12 22:30 ]]
+local function check_subst(subst)
+    for key in pairs(subst or {}) do
+        mexpru.check_u(key)
+    end
+    return subst
+end
+
+--[[ A whole formula as LaTeX.
+
+THE DIRECTION THE APP SAVES IN, and the one a copy to the clipboard takes. Walks the container's
+root row through the same node_to_latex every other entry here uses, so a formula, a selection and a
+single node all serialise identically.
+
+Params: `subst` is optional and passes straight through to node_to_latex - see its comment for the
+shape and for what it is for. Returns the text.
+@date 2026-09-12 03:25 ]]
 function mformula_latex.to_latex(container, subst)
+    mexpru.check_container(container)
+    check_subst(subst)
     return node_to_latex(container.root, subst)
 end
 
@@ -696,8 +742,15 @@ horiz's children, so this is exactly the shape it has to serialise). Concatenate
 identically to how node_to_latex() already walks a horiz's own children.
 @date 2026-09-08 09:00 ]]
 function mformula_latex.nodes_to_latex(nodes, subst)
+    check_subst(subst)
     local parts = {}
     for _, node in ipairs(nodes) do
+        --[[ The bare u() call is the check. node_to_latex only reaches u() when there IS a subst,
+        so without one a wrong node would go all the way down before anything noticed; asking here
+        makes it unconditional, and reuses the check that exists rather than adding another. It
+        catches more than a node test would, too: u() also refuses a node whose `u` was captured
+        around the one creator. ]]
+        mexpru.u(node)
         parts[#parts + 1] = node_to_latex(node, subst)
     end
     return table.concat(parts)
@@ -768,10 +821,10 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
         \int reaches this function now: a big operator built at plain text size reads as a thin
         undersized squiggle (that table's own comment). u(g).sz stays the surrounding NOMINAL size
         either way - the boost is real ink, not a change of context level. ]]
-        local delta = char.size_delta_by_desc[entry.desc]
+        local delta = char.size_delta(entry.desc)
         local glyph_sz = delta and math.max(1, math.min(sz + delta, MAX_SIZE_INDEX)) or sz
-        local g = mexpru.mexpr_symbol(fontset,
-                {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
+        local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz),
+                code = entry.ncod}, true)
         mexpru.u(g).sz = sz
         if open_type then
             -- Always tagged, paired or not - a literal unmatched "(" in the source (a
@@ -977,14 +1030,14 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                     if slot_free then
                         local tu = mexpru.u(target)
                         real_target = tu.target
-                        dress_spec = {
+                        dress_spec = mexpru.dress_spec{
                             above_kind = tu.above_kind, above_recipe = tu.above_recipe,
                             bellow_kind = tu.bellow_kind, bellow_recipe = tu.bellow_recipe,
                             dots = tu.dots,
                         }
                     else
                         real_target = target
-                        dress_spec = {}
+                        dress_spec = mexpru.dress_spec{}
                     end
                     if spec.below then
                         dress_spec.bellow_kind = spec.kind
@@ -1007,8 +1060,8 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                 elseif BRACKET_BY_COMMAND[name] then
                     local spec = BRACKET_BY_COMMAND[name]
                     local entry = char.find_by_ascii("|")
-                    local g = mexpru.mexpr_symbol(fontset,
-                            {size = mexpru.physical_sz(sz), code = entry.ncod}, true)
+                    local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sz),
+                            code = entry.ncod}, true)
                     mexpru.u(g).sz = sz
                     if spec.is_open then
                         mexpru.u(g).bracket = {is_open = true, type = spec.type}
@@ -1129,8 +1182,8 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                     -- A typed backslash, written as real LaTeX - see node_to_latex()'s own comment.
                     local e = char.find_by_ascii("\\")
                     if e then
-                        local g = mexpru.mexpr_symbol(fontset,
-                                {size = mexpru.physical_sz(sz), code = e.ncod}, true)
+                        local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sz),
+                                code = e.ncod}, true)
                         mexpru.u(g).sz = sz
                         children[#children + 1] = g
                     end
@@ -1156,7 +1209,7 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                         slots[1] = mexpru.horiz(fontset, {build_empty_atom(fontset, sz)}, sz)
                     end
                     children[#children + 1] = mexpru.vert(fontset, slots, sz)
-                elseif char.operator_words[name] or name == "operatorname" then
+                elseif char.operator_word(name) or name == "operatorname" then
                     --[[ AN OPERATOR NAME COMES BACK AS THE 1-TALL VERT this app writes it with -
                     see vert_operator_word for the shape and node_to_latex for the two spellings
                     that produce it.
@@ -1446,6 +1499,17 @@ local function expand_sqrt(s)
     return table.concat(out)
 end
 
+--[[ LaTeX back into a container the editors can hold.
+
+THE INVERSE OF to_latex, and what a paste from outside arrives through. `\sqrt` is rewritten into a
+power before anything else looks at the text, so the parser below never has to know about it.
+
+Detail: an empty or wholly unreadable string still yields a container - one empty atom - rather than
+nil, because a box with nothing in it is a real state and every caller would otherwise have to
+invent one. Macros this does not know are dropped silently; see the README on the outstanding set.
+
+Returns {root, cursor_pos, version} with the cursor at the end, which is where typing continues.
+@date 2026-09-12 03:25 ]]
 function mformula_latex.from_latex(fontset, sz, s)
     -- \sqrt is rewritten into a power before anything else looks at the text - see expand_sqrt().
     local children = parse_latex_children(fontset, expand_sqrt(expand_macros(s)), 1, sz)
@@ -1454,11 +1518,7 @@ function mformula_latex.from_latex(fontset, sz, s)
     end
     local root = mexpru.horiz(fontset, children, sz)
     mexpru.update_positions(root)
-    return {
-        root = root,
-        cursor_pos = vc.wref_mexpr(children[#children]),
-        version = 0,
-    }
+    return mexpru.new_container(root, mexpru.last_slot(root))
 end
 
 return mformula_latex

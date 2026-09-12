@@ -1,3 +1,39 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+new()                                   -> state_definition
+    A fresh, empty definition.
+
+declaration(state_definition: editor_definition.state_definition) -> {text, arity, ...} | nil
+    WHAT THIS BOX DECLARES, for anything outside that has to resolve a
+    reference to it. nil while the name slot is empty.
+
+name_drawings(pat: pattern, name_slot: mexpru.container) -> lhs, rhs
+    The two LaTeX strings the derived rows are DRAWN from, taken off
+    the boxes the name is made of rather than re-rendered from its
+    text - which is what keeps an accent over the letter.
+
+draw(state_definition: editor_definition.state_definition, fontset: fontset, pos: {x,y}, sz: size,
+     width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean)
+     -> height
+    Every slot down the box from `pos`; returns total content height.
+
+handle_input(state_definition: editor_definition.state_definition, fontset: fontset, sz: size)
+             -> changed
+    Routes a click or drag to whichever slot it landed in, then hands
+    the frame to the slot holding the caret. Routing and dispatch are
+    separate passes and nothing may return between them.
+
+rescale(state_definition: editor_definition.state_definition, fontset: fontset) -> nothing
+    After a zoom. Also drops every cached node reference, which the
+    rebuild invalidates.
+
+to_text(state_definition: editor_definition.state_definition) / from_text(state_definition: editor_definition.state_definition, text: string, fontset: fontset)
+    The save format: a length-prefixed list of slot LaTeX.
+
+--- internal, not on the module table --------------------------------------------------------------
+    slot layout, the derived rows, arity syncing and click routing
+@date 2026-09-12 03:25
+================================================================================================= ]]
+
 --[[
 editor_definition.lua - the editor inside a DEFINITION box (the green one).
 
@@ -45,6 +81,7 @@ local mexpru = require("mexpru")
 local editor = require("editor")  -- the shared formula host; see its header
 local mexpr_ast = require("mexpr_ast")
 local keymap = require("keymap")
+local sealed = require("sealed")
 
 local editor_definition = {}
 
@@ -82,8 +119,9 @@ local FIELD_PAD = 3
     1  the shorthand      F : N^2 \times R^3 -> R^3
     2  the computed name  the pattern the parser read out of the name slot
 
-`state.current` names whichever box has the caret. A real slot is a positive index into
-`state.slots`; a derived row is the NEGATIVE of its index in `state.derived`, so -1 is the
+`state_definition.current` names whichever box has the caret. A real slot is a positive index into
+`state_definition.slots`; a derived row is the NEGATIVE of its index in `state_definition.derived`,
+        so -1 is the
 shorthand and -2 the computed name. One number covers both, and every place that only cares about
 slots can keep testing `> 0`.
 @date 2026-09-08 08:12 ]]
@@ -143,15 +181,18 @@ loose glyph AFTER its letter rather than above it, in both rows at once. Reporte
 "just draw the mexpr already present at the base?".
 
 COMPUTED AT PARSE TIME, not at draw time, because both strings name particular NODES and those nodes
-only exist while the tree that holds them does. `state.pattern` is deliberately held across the
+only exist while the tree that holds them does. `state_definition.pattern` is deliberately held across the
 keystrokes where a name does not parse (sync_arity's own rule), so a draw-time read would be pairing
 a stale node list against a live tree - the substitution would silently miss and the dots would
 vanish while typing. Strings do not go stale.
 @date 2026-09-11 02:10 ]]
 function editor_definition.name_drawings(pat, name_slot)
-    if not pat or not name_slot then
-        return nil, nil
-    end
+    --[[ `if not pat or not name_slot then return nil, nil end` is gone. It could never fire from
+    the only caller - sync_arity returns before this on a failed parse - and if it ever had, nil
+    drawings are indistinguishable from "this name draws as nothing": the derived rows would simply
+    render empty with nothing said. Both arguments are required; say so. ]]
+    assert(type(pat) == "table", "name_drawings needs the parsed pattern")
+    mexpru.check_container(name_slot)
 
     --[[ Keyed by the node's `u` table: the same table comes back for the same node every time
     (mexpru's own bracket-model comment), so it is a real identity key, which a raw mexpr_p is not.
@@ -219,11 +260,54 @@ local MARK_COLORS = {
     is the one mark that has to be unmistakable. ]]
     bad  = 0xaa3c3cff,   -- red   (255,60,60)
 }
+
+--[[ THE TWO SIDES OF THE MARK SET, TIED TOGETHER AT LOAD.
+
+A status with no colour here is not a quieter mark, it is an invisible one - the draw below reads
+`MARK_COLORS[status]` and skips on nil. So a status added in mexpr_ast and forgotten here would turn
+off exactly the feedback it was added to give, and nothing would say so. Checked both ways: a colour
+with no status behind it is equally a sign the two have drifted.
+@date 2026-09-12 17:10 ]]
+--[[ Every COLOUR is a real status: check_keys asks exactly that of the table it is given. ]]
+mexpr_ast.MARK_STATUSES.check_keys(MARK_COLORS, "MARK_COLORS")
+--[[ And every STATUS has a colour - the other direction. A status with no colour here is not a
+quieter mark, it is an invisible one: the draw below reads MARK_COLORS[status] and skips on nil. ]]
+mexpr_ast.MARK_STATUSES.check_covers(MARK_COLORS, "MARK_COLORS")
 --[[ Every slot gets a faint field behind it, whether or not it is the one being edited. Without it
 an empty slot is literally invisible (slot markers only draw on the ACTIVE formula), and the box
 reads as punctuation floating in space rather than as three things you can click. ]]
 local SLOT_BG_COLOR   = 0x22ffffff
 local SLOT_EDGE_COLOR = 0x66ffffff
+
+--[[ THE `state_definition` CONTAINER - one definition box. Declared through sealed.lua; see that
+file for the rule.
+
+EIGHT FIELDS WERE NEVER IN new() when this was written - derived, invalid, marks, parsed_version,
+pattern, slot_invalid, slot_marks, slot_parsed. They were created on first write further down the
+file and nothing named them anywhere, which is the drift being stopped. They are declared here and
+still start nil.
+@date 2026-09-12 06:15 ]]
+local STATE_FIELDS = {
+    slots          = "the box's formula rows",
+    current        = "which box has the caret: a POSITIVE slot index, or the NEGATIVE of an "
+                     .. "index into `derived`, so one number covers both",
+    hitboxes       = "per-slot click geometry, rebuilt by draw() and read next frame",
+    dragging       = "true while a click-drag selection is in progress",
+
+    undo           = "stack of snapshots, newest last",
+    redo           = "what undo popped, so it can be put back",
+    baseline       = "the pre-edit snapshot, CACHED - see begin_edit()",
+
+    pattern        = "the parsed declaration this box makes; held across frames deliberately",
+    parsed_version = "the slot version `pattern` was parsed from - the reparse cache key",
+    derived        = "the read-only rows drawn under the definition",
+    marks          = "the parse marks drawn over the name row",
+    slot_marks     = "the same, per slot",
+    slot_parsed    = "each slot's last parse, keyed the way `parsed_version` keys the name's",
+    invalid        = "why this definition is refused, or nil",
+    slot_invalid   = "the same, per slot",
+}
+local STATE_SHAPE = sealed.declare("editor_definition", "state_definition", STATE_FIELDS)
 
 --[[ A fresh, empty definition. The slots are NOT built here: constructing a formula needs a
 fontset, and content.lua's insert_box() has never taken one (content.new(), deserialize() and every
@@ -231,7 +315,7 @@ test call it without). ensure() below fills them in on the first draw or keystro
 have a fontset to hand.
 @date 2026-09-08 08:12 ]]
 function editor_definition.new()
-    return {
+    return STATE_SHAPE.wrap{
         undo = {},        -- stack of snapshots, newest last
         redo = {},        -- what undo popped, so it can be put back
         baseline = nil,   -- the pre-edit snapshot, CACHED - see begin_edit()
@@ -253,8 +337,8 @@ frame. Built at mexpru.DEFAULT_SIZE - the fixed LOGICAL size every new formula i
 zoom applied globally on top of it (see mexpru.DEFAULT_SIZE's own comment); NOT the caller's live
 font size, which already has zoom folded in and would double-count it.
 @date 2026-09-08 08:12 ]]
-local function ensure(state, fontset)
-    state.slots = state.slots or {}
+local function ensure(state_definition, fontset)
+    state_definition.slots = state_definition.slots or {}
     --[[ 1 name + n parameters + 1 result. Grows the list rather than replacing it, so a document
     saved when a definition had a different arity keeps whatever it had - the SLOT COUNT is where
     arity is stored, so there is no separate number to serialise and no way for the two to
@@ -266,11 +350,11 @@ local function ensure(state, fontset)
 
     A brand-new definition starts at INITIAL_ARITY; anything that already has a name and a result
     keeps exactly the slots it has. ]]
-    local want = (#state.slots == 0) and (INITIAL_ARITY + 2) or 2
-    while #state.slots < want do
-        table.insert(state.slots, mformula.new(fontset, mexpru.DEFAULT_SIZE))
+    local want = (#state_definition.slots == 0) and (INITIAL_ARITY + 2) or 2
+    while #state_definition.slots < want do
+        table.insert(state_definition.slots, mformula.new(fontset, mexpru.DEFAULT_SIZE))
     end
-    return state.slots
+    return state_definition.slots
 end
 
 -- ################################################################################################
@@ -312,10 +396,10 @@ Domains are compared BY THEIR LaTeX, textually, rather than by the structural eq
 docs/phase2_design.md section 9, which does not exist yet. Until it does, two spellings of one set
 do not collapse together.
 @date 2026-09-08 08:12 ]]
-local function shorthand_latex(state)
-    local slots = state.slots
+local function shorthand_latex(state_definition)
+    local slots = state_definition.slots
     local nparams = #slots - 2
-    if nparams < 1 or not state.pattern then
+    if nparams < 1 or not state_definition.pattern then
         -- Arity 0 already renders as `NAME \in RET`, which is as short as it gets.
         return nil
     end
@@ -357,7 +441,7 @@ local function shorthand_latex(state)
     --[[ DOUBLE backslashes. These are LaTeX macros being built as Lua string literals, and Lua
     reads `\t` as a tab and `\r` as a carriage return - written singly, the shorthand rendered as
     "N^2 imes R" and "N ightarrow R", the macro names with their first letter eaten. ]]
-    return (state.pattern.base_tex or state.pattern.name) .. ":" .. table.concat(parts, "\\times ")
+    return (state_definition.pattern.base_tex or state_definition.pattern.name) .. ":" .. table.concat(parts, "\\times ")
             .. "\\rightarrow " .. ret
 end
 
@@ -369,8 +453,8 @@ arguments possible, this is what a definition is, a pattern").
 Held from the last VALID parse, like the arity: while a name is being typed it does not parse, and
 blanking the row on every keystroke would make it useless exactly when you are watching it.
 @date 2026-09-08 08:12 ]]
-local function pattern_latex(state)
-    return state.pattern and (state.pattern.row_tex or state.pattern.text) or nil
+local function pattern_latex(state_definition)
+    return state_definition.pattern and (state_definition.pattern.row_tex or state_definition.pattern.text) or nil
 end
 
 --[[ WHAT THIS BOX DECLARES, for anything outside that needs to resolve a reference to it:
@@ -381,7 +465,8 @@ or nil while the name slot does not parse. `text` is the identity - the same str
 builds for itself (docs/phase2_design.md, "Answered: a use is a REF"), so resolving is a string
 compare rather than a tree match.
 
-A DELIBERATELY SMALL SHAPE, not `state.pattern` itself: that table is the name parser's own result
+A DELIBERATELY SMALL SHAPE,
+        not `state_definition.pattern` itself: that table is the name parser's own result
 and carries its marks, its token list and its declined superscripts, none of which is any business
 of a caller asking "what is declared here". Handing it out whole would couple every reader to the
 parser's internals and make either one hard to change.
@@ -389,8 +474,9 @@ parser's internals and make either one hard to change.
 Held from the last VALID parse, like everything else derived from the name (see pattern_latex
 below), so a reference does not break for the keystrokes it takes to retype a name.
 @date 2026-09-10 02:30 ]]
-function editor_definition.declaration(state)
-    local pat = state and state.pattern
+function editor_definition.declaration(state_definition)
+    STATE_SHAPE.check(state_definition)
+    local pat = state_definition and state_definition.pattern
     if not pat or not pat.text then
         return nil
     end
@@ -400,8 +486,8 @@ function editor_definition.declaration(state)
     --[[ `groups` rides along for the same reason `tokens` does: the checks that decide whether
     a definition may exist at all walk its argument groups (mexpr_ast.check_declarations), and
     re-deriving them from the text would be a second definition of what an argument is. ]]
-    return {text = pat.text, name = pat.name, arity = pat.arity, tokens = pat.tokens,
-            groups = pat.groups}
+    return mexpr_ast.new_decl{text = pat.text, name = pat.name, arity = pat.arity,
+            tokens = pat.tokens, groups = pat.groups}
 end
 
 --[[ Rebuilds each derived row, and only when the string it would draw actually changes - otherwise
@@ -411,17 +497,17 @@ Every row is built the same way, from a LaTeX string, which is what keeps them r
 render through the same layout as everything else and can be selected and copied like any other.
 They are not editable - see handle_input.
 @date 2026-09-08 08:12 ]]
-local function sync_derived(state, fontset)
-    state.derived = state.derived or {}
+local function sync_derived(state_definition, fontset)
+    state_definition.derived = state_definition.derived or {}
     local want = {
-        [DERIVED_SHORTHAND] = shorthand_latex(state),
-        [DERIVED_PATTERN]   = pattern_latex(state),
+        [DERIVED_SHORTHAND] = shorthand_latex(state_definition),
+        [DERIVED_PATTERN]   = pattern_latex(state_definition),
     }
     for i = 1, 2 do
-        local row = state.derived[i]
+        local row = state_definition.derived[i]
         if not row then
             row = {}
-            state.derived[i] = row
+            state_definition.derived[i] = row
         end
         if row.tex ~= want[i] then
             row.tex = want[i]
@@ -436,11 +522,11 @@ local function sync_derived(state, fontset)
 end
 
 --[[ The container a `current` value names, or nil. Positive is a slot, negative a derived row. ]]
-local function current_container(state)
-    if state.current > 0 then
-        return state.slots and state.slots[state.current]
+local function current_container(state_definition)
+    if state_definition.current > 0 then
+        return state_definition.slots and state_definition.slots[state_definition.current]
     end
-    local row = state.derived and state.derived[-state.current]
+    local row = state_definition.derived and state_definition.derived[-state_definition.current]
     return row and row.c
 end
 
@@ -463,22 +549,22 @@ already in editor.lua as edit_bracket().
 @date 2026-09-08 08:12 ]]
 local MAX_UNDO = 200
 
-local function snapshot(state, fontset)
+local function snapshot(state_definition, fontset)
     local slots = {}
-    for i, slot in ipairs(state.slots or {}) do
+    for i, slot in ipairs(state_definition.slots or {}) do
         slots[i] = mformula.clone(slot, fontset)
     end
-    return {slots = slots, current = state.current}
+    return {slots = slots, current = state_definition.current}
 end
 
-local function restore(state, snap)
-    state.slots = snap.slots
-    state.current = math.min(snap.current or 1, #snap.slots)
+local function restore(state_definition, snap)
+    state_definition.slots = snap.slots
+    state_definition.current = math.min(snap.current or 1, #snap.slots)
     --[[ The name may have changed back to something with a different arity, so the row has to be
     re-derived. The version of a RESTORED clone is not comparable with what was parsed before it,
     so the cached parse is dropped outright rather than compared. ]]
-    state.parsed_version = nil
-    state.hitboxes = nil
+    state_definition.parsed_version = nil
+    state_definition.hitboxes = nil
 end
 
 --[[ Makes sure a pre-edit baseline exists, and caches it.
@@ -487,38 +573,38 @@ Cached rather than rebuilt per frame for the same reason editor_text.lua caches 
 on every frame a definition box is active, and taking a snapshot unconditionally means cloning
 every slot ~60 times a second to throw all but one away. editor_text.lua's own comment records that
 that made the editor visibly lag once ("it lags a lot"). ]]
-local function begin_edit(state, fontset)
-    if not state.baseline then
-        state.baseline = snapshot(state, fontset)
+local function begin_edit(state_definition, fontset)
+    if not state_definition.baseline then
+        state_definition.baseline = snapshot(state_definition, fontset)
     end
 end
 
 --[[ Files the cached baseline as one undo step. Called only where a keystroke really changed the
 tree, so moving the caret never costs a step. @date 2026-09-08 08:12 ]]
-local function commit_edit(state)
-    if not state.baseline then
+local function commit_edit(state_definition)
+    if not state_definition.baseline then
         return
     end
-    state.undo[#state.undo + 1] = state.baseline
-    if #state.undo > MAX_UNDO then
-        table.remove(state.undo, 1)
+    state_definition.undo[#state_definition.undo + 1] = state_definition.baseline
+    if #state_definition.undo > MAX_UNDO then
+        table.remove(state_definition.undo, 1)
     end
-    state.baseline = nil        -- the tree just changed; any cached one is stale
-    state.redo = {}             -- a fresh edit forks history, the same as everywhere else
+    state_definition.baseline = nil        -- the tree just changed; any cached one is stale
+    state_definition.redo = {}             -- a fresh edit forks history, the same as everywhere else
 end
 
---[[ Moves one step between the two stacks, pushing the CURRENT state onto the other one first so
+--[[ Moves one step between the two stacks, pushing the CURRENT state_definition onto the other one first so
 the move is itself reversible. Returns whether there was anything to move. @date 2026-09-08 08:12 ]]
-local function undo_or_redo(state, fontset, want_redo)
-    local from = want_redo and state.redo or state.undo
-    local to = want_redo and state.undo or state.redo
+local function undo_or_redo(state_definition, fontset, want_redo)
+    local from = want_redo and state_definition.redo or state_definition.undo
+    local to = want_redo and state_definition.undo or state_definition.redo
     local snap = table.remove(from)
     if not snap then
         return false
     end
-    to[#to + 1] = snapshot(state, fontset)
-    restore(state, snap)
-    state.baseline = nil
+    to[#to + 1] = snapshot(state_definition, fontset)
+    restore(state_definition, snap)
+    state_definition.baseline = nil
     return true
 end
 
@@ -534,28 +620,28 @@ point is to point at WHICH cell is wrong.
 Unlike the name, an invalid parameter changes nothing structural. Arity comes from the name alone,
 so a half-typed domain never reshapes the row; it only marks itself.
 @date 2026-09-08 08:12 ]]
-local function sync_domains(state, fontset)
-    state.slot_invalid = state.slot_invalid or {}
-    state.slot_marks = state.slot_marks or {}
-    state.slot_parsed = state.slot_parsed or {}
-    for i = 2, #state.slots - 1 do
-        local cell = state.slots[i]
+local function sync_domains(state_definition, fontset)
+    state_definition.slot_invalid = state_definition.slot_invalid or {}
+    state_definition.slot_marks = state_definition.slot_marks or {}
+    state_definition.slot_parsed = state_definition.slot_parsed or {}
+    for i = 2, #state_definition.slots - 1 do
+        local cell = state_definition.slots[i]
         local ver = cell.version or 0
-        if state.slot_parsed[i] ~= ver then
-            state.slot_parsed[i] = ver
+        if state_definition.slot_parsed[i] ~= ver then
+            state_definition.slot_parsed[i] = ver
             local ok, err, _, marks = mexpr_ast.parse_domain(fontset, cell)
-            state.slot_invalid[i] = (not ok) and (err or "not a membership") or nil
+            state_definition.slot_invalid[i] = (not ok) and (err or "not a membership") or nil
             --[[ On SUCCESS the marks ride on the result table; only a FAILURE returns them as the
             fourth value. Reading just the fourth meant a cell that parsed cleanly showed no green
             at all - the marks were being produced and thrown away. ]]
-            state.slot_marks[i] = ok and ok.marks or marks
+            state_definition.slot_marks[i] = ok and ok.marks or marks
         end
     end
     -- Slots that no longer exist must not keep stale verdicts: an arity change reuses indices.
-    for i = #state.slots, #state.slot_parsed do
-        state.slot_invalid[i] = nil
-        state.slot_marks[i] = nil
-        state.slot_parsed[i] = nil
+    for i = #state_definition.slots, #state_definition.slot_parsed do
+        state_definition.slot_invalid[i] = nil
+        state_definition.slot_marks[i] = nil
+        state_definition.slot_parsed[i] = nil
     end
 end
 
@@ -569,13 +655,13 @@ until the name is a name again; while it is not, the only feedback is a red line
 Cheap enough to call every frame: it re-parses only when the name slot's own `version` has moved,
 which is bumped by every real tree edit and by nothing else.
 @date 2026-09-08 08:12 ]]
-local function sync_arity(state, fontset)
-    local name = state.slots[1]
+local function sync_arity(state_definition, fontset)
+    local name = state_definition.slots[1]
     local ver = name.version or 0
-    if state.parsed_version == ver then
+    if state_definition.parsed_version == ver then
         return
     end
-    state.parsed_version = ver
+    state_definition.parsed_version = ver
 
     --[[ Marks ride on the result table when the parse SUCCEEDS and come back as the fourth value
     when it fails - see sync_domains(). Taking both is what makes a valid name paint green rather
@@ -585,31 +671,31 @@ local function sync_arity(state, fontset)
     --[[ Marks come back on BOTH paths and are always taken: they describe how far this parse got,
     which is the thing worth seeing precisely when it did not finish. Unlike the arity, they are
     NOT held from the last valid parse - they describe what is on screen right now. ]]
-    state.marks = marks
+    state_definition.marks = marks
     if not pat then
         --[[ Invalid: the row keeps the shape it had. `pattern` is deliberately NOT cleared - it is
         the last thing that DID parse, and holding it is what "hold the last valid arity" means. ]]
-        state.invalid = err or "not a name"
+        state_definition.invalid = err or "not a name"
         return
     end
-    state.invalid = nil
-    state.pattern = pat
+    state_definition.invalid = nil
+    state_definition.pattern = pat
     --[[ While the boxes the parse just walked are still the boxes on screen - see name_drawings for
     why this cannot wait until the rows are drawn. ]]
     pat.base_tex, pat.row_tex = editor_definition.name_drawings(pat, name)
 
     local want = pat.arity + 2
-    if #state.slots == want then
+    if #state_definition.slots == want then
         return
     end
 
     --[[ Reshape around the ends: the name and the result type are what the user typed and must
     survive an arity change untouched. Only the middle is added to or trimmed, and trimming takes
     from the END so the parameters that stay keep their own slots (and whatever is in them). ]]
-    local first, last = state.slots[1], state.slots[#state.slots]
+    local first, last = state_definition.slots[1], state_definition.slots[#state_definition.slots]
     local params = {}
-    for i = 2, #state.slots - 1 do
-        params[#params + 1] = state.slots[i]
+    for i = 2, #state_definition.slots - 1 do
+        params[#params + 1] = state_definition.slots[i]
     end
     while #params > pat.arity do
         table.remove(params)
@@ -623,14 +709,14 @@ local function sync_arity(state, fontset)
         rebuilt[#rebuilt + 1] = sl
     end
     rebuilt[#rebuilt + 1] = last
-    state.slots = rebuilt
+    state_definition.slots = rebuilt
 
     -- The caret may have been in a slot that no longer exists. A derived row is a NEGATIVE index
     -- and must survive this untouched.
-    if state.current > 0 and state.current > #state.slots then
-        state.current = #state.slots
+    if state_definition.current > 0 and state_definition.current > #state_definition.slots then
+        state_definition.current = #state_definition.slots
     end
-    state.hitboxes = nil
+    state_definition.hitboxes = nil
 end
 
 --[[ The row to draw: slot, separator, slot, ... - derived from how many slots there are, never
@@ -664,7 +750,8 @@ reaches above the baseline) and `bottom` positive. So a slot whose top edge shou
 drawn with its baseline at `y - m.top`, and occupies `m.bottom - m.top`. Getting that backwards
 puts the formula above its own box, which is exactly what it looks like.
 
-It also records the click geometry every frame - `state.hitboxes` per slot, `row.hit` per derived
+It also records the click geometry every frame - `state_definition.hitboxes` per slot,
+        `row.hit` per derived
 row - because handle_input() runs in a separate call and cannot re-derive where anything landed.
 
   pos             top-left of the content; each line's baseline comes from its own measure
@@ -674,13 +761,14 @@ row - because handle_input() runs in a separate call and cannot re-derive where 
   show_wireframe  passed through to editor.draw_formula (mexpr's debug boxes)
   show_graph      passed through: the reachable-position graph
 @date 2026-09-08 08:12 ]]
-function editor_definition.draw(state, fontset, pos, sz, width_limit, show_cursor,
+function editor_definition.draw(state_definition, fontset, pos, sz, width_limit, show_cursor,
         show_wireframe, show_graph)
-    local slots = ensure(state, fontset)
-    sync_arity(state, fontset)
-    slots = state.slots
-    sync_domains(state, fontset)
-    sync_derived(state, fontset)
+    STATE_SHAPE.check(state_definition)
+    local slots = ensure(state_definition, fontset)
+    sync_arity(state_definition, fontset)
+    slots = state_definition.slots
+    sync_domains(state_definition, fontset)
+    sync_derived(state_definition, fontset)
     local row = signature_row(#slots)
 
     --[[ Pass 1: measure every piece and find the line's common extent. The whole signature shares
@@ -715,11 +803,11 @@ function editor_definition.draw(state, fontset, pos, sz, width_limit, show_curso
     local hitboxes = {}
     for _, piece in ipairs(row) do
         if piece.slot then
-            local active = show_cursor and piece.slot == state.current
+            local active = show_cursor and piece.slot == state_definition.current
             --[[ Which cell, if any, failed to parse. Computed before the marks below because it
             GATES them. ]]
-            local slot_bad = (piece.slot == 1) and state.invalid
-                    or (state.slot_invalid and state.slot_invalid[piece.slot])
+            local slot_bad = (piece.slot == 1) and state_definition.invalid
+                    or (state_definition.slot_invalid and state_definition.slot_invalid[piece.slot])
 
             --[[ Parse feedback goes down BEFORE the formula, so the glyphs sit on top of it rather
             than under it. The name slot gets it from the name parse; every PARAMETER cell gets it
@@ -731,8 +819,8 @@ function editor_definition.draw(state, fontset, pos, sz, width_limit, show_curso
             rest of the time - a cell that parses cleanly is left alone. Verbatim, 2026-09-07: "I
             only wanted to know what was good in a formula and what was bad when I had to fix it".
             So the green is not a badge for a correct cell; it is context around a red one. ]]
-            local marks = slot_bad and ((piece.slot == 1) and state.marks
-                    or (state.slot_marks and state.slot_marks[piece.slot]))
+            local marks = slot_bad and ((piece.slot == 1) and state_definition.marks
+                    or (state_definition.slot_marks and state_definition.slot_marks[piece.slot]))
             if marks then
                 local nodes = {}
                 for _, m in ipairs(marks) do
@@ -780,18 +868,18 @@ function editor_definition.draw(state, fontset, pos, sz, width_limit, show_curso
             last one that made sense, not this one". ]]
             if slot_bad then
                 local uy = baseline + bottom + pad + 1
-                vc.ImGui_AddLine({x = x - pad, y = uy},
-                        {x = x + math.max(piece.w, 6) + pad, y = uy},
+                vc.ImGui_AddLine({x = x - pad, y = uy}, {x = x + math.max(piece.w, 6) + pad,
+                        y = uy},
                         INVALID_COLOR, INVALID_THICK)
             end
         else
-            fontset:char_draw({size = sz, code = piece.ncod}, {x = x, y = baseline},
-                    SEP_COLOR, false, 0)
+            fontset:char_draw({size = sz, code = piece.ncod}, {x = x, y = baseline}, SEP_COLOR,
+                    false, 0)
         end
         x = x + math.max(piece.w, 6) + SLOT_GAP
     end
 
-    state.hitboxes = hitboxes
+    state_definition.hitboxes = hitboxes
 
     --[[ THE DERIVED ROWS, each on its own line under the signature: the shorthand, then the
     computed name. Each is an ordinary box like the slots - same field behind it, same
@@ -804,12 +892,12 @@ function editor_definition.draw(state, fontset, pos, sz, width_limit, show_curso
     select the whole thing, which meant parts of it could not be selected at all. ]]
     local total_h = (bottom - top) + 2 * FIELD_PAD
     local pad = FIELD_PAD
-    for i, row in ipairs(state.derived or {}) do
+    for i, row in ipairs(state_definition.derived or {}) do
         if row.c then
             local row_y = pos.y + total_h + LINE_GAP
             local m = mformula.measure(row.c, fontset, sz, width_limit)
             local row_baseline = row_y + pad - m.top
-            local active = show_cursor and state.current == -i
+            local active = show_cursor and state_definition.current == -i
             vc.ImGui_AddRectFilled({x = pos.x - pad, y = row_baseline + m.top - pad},
                     {x = pos.x + math.max(m.width, 6) + pad, y = row_baseline + m.bottom + pad},
                     SLOT_BG_COLOR, 3)
@@ -849,12 +937,12 @@ Reads the hit boxes the last draw left behind, so a slot that has never been dra
 the list. At file scope rather than inside handle_input because a right-click asks this same question
 without wanting anything routed anywhere.
 @date 2026-09-11 21:40 ]]
-local function click_targets(state)
+local function click_targets(state_definition)
     local t = {}
-    for i, hb in ipairs(state.hitboxes or {}) do
-        t[#t + 1] = {idx = i, hb = hb, container = (state.slots or {})[i]}
+    for i, hb in ipairs(state_definition.hitboxes or {}) do
+        t[#t + 1] = {idx = i, hb = hb, container = (state_definition.slots or {})[i]}
     end
-    for i, row in ipairs(state.derived or {}) do
+    for i, row in ipairs(state_definition.derived or {}) do
         if row.c and row.hit then
             t[#t + 1] = {idx = -i, hb = row.hit, container = row.c}
         end
@@ -870,28 +958,29 @@ cursor. That is the signal undo is built on - here through begin_edit/commit_edi
 editor_text.lua through its own snapshots - and it is handed back to the caller as well, so
 content.lua can tell an edit from a click without re-deriving it.
 @date 2026-09-08 08:12 ]]
-function editor_definition.handle_input(state, fontset, sz)
-    local slots = ensure(state, fontset)
+function editor_definition.handle_input(state_definition, fontset, sz)
+    STATE_SHAPE.check(state_definition)
+    local slots = ensure(state_definition, fontset)
 
     --[[ Undo and redo, checked before anything else so they work wherever the caret is, and redo
     first - the same placement, the same bindings and the same order editor_text.lua uses, so the
     two boxes cannot disagree about what undo means. ]]
     if keymap.pressed("edit.redo") then
-        undo_or_redo(state, fontset, true)
+        undo_or_redo(state_definition, fontset, true)
         return false
     end
     if keymap.pressed("edit.undo") then
-        undo_or_redo(state, fontset, false)
+        undo_or_redo(state_definition, fontset, false)
         return false
     end
 
     local down = vc.ImGui_IsMouseDown("ImGuiMouseButton_Left")
     if not down then
-        state.dragging = nil
+        state_definition.dragging = nil
     end
     -- NOTE: `dragging` holds a box index, which for a derived row is NEGATIVE - truthy in Lua, so
-    -- the `state.dragging ~= nil` tests below stay correct. Do not "simplify" them to `if
-    -- state.dragging then`; it happens to work and stops working the moment 0 becomes a valid
+    -- the `state_definition.dragging ~= nil` tests below stay correct. Do not "simplify" them to `if
+    -- state_definition.dragging then`; it happens to work and stops working the moment 0 becomes a valid
     -- index again.
 
     --[[ CLICK ROUTING FIRST, for every target, THEN dispatch to whatever ended up current.
@@ -902,9 +991,9 @@ function editor_definition.handle_input(state, fontset, sz)
     nothing could take focus back off it. Routing decides WHERE input goes; dispatch then sends it
     there. Nothing between the two may return. ]]
     local clicked = vc.ImGui_IsMouseClicked("ImGuiMouseButton_Left", false)
-    if clicked or (down and state.dragging) then
+    if clicked or (down and state_definition.dragging) then
         local mp = vc.ImGui_GetMousePos()
-        local targets = click_targets(state)
+        local targets = click_targets(state_definition)
         local hit
         if clicked then
             for _, t in ipairs(targets) do
@@ -915,7 +1004,7 @@ function editor_definition.handle_input(state, fontset, sz)
             end
         else
             for _, t in ipairs(targets) do
-                if t.idx == state.dragging then
+                if t.idx == state_definition.dragging then
                     hit = t
                     break
                 end
@@ -926,10 +1015,10 @@ function editor_definition.handle_input(state, fontset, sz)
             it started, which is why `dragging` remembers WHICH box rather than re-hit-testing every
             frame - a drag that wanders out of the box must keep extending inside it, not jump to
             whatever is under the pointer. ]]
-            state.current = hit.idx
+            state_definition.current = hit.idx
             editor.formula_hit_test(hit.container, fontset, sz, mp, hit.hb.draw_x, hit.hb.draw_y,
-                    hit.hb.wrap_edge, state.dragging ~= nil and not clicked)
-            state.dragging = hit.idx
+                    hit.hb.wrap_edge, state_definition.dragging ~= nil and not clicked)
+            state_definition.dragging = hit.idx
         end
     end
 
@@ -937,31 +1026,31 @@ function editor_definition.handle_input(state, fontset, sz)
     without this the highlight stays painted after focus has moved on and the shorthand goes on
     looking selected when it is not - which is half of what "I can not deselect it" was. Done here,
     unconditionally, so the highlight can never outlive the focus regardless of how focus moved. ]]
-    for i, row in ipairs(state.derived or {}) do
-        if row.c and state.current ~= -i then
+    for i, row in ipairs(state_definition.derived or {}) do
+        if row.c and state_definition.current ~= -i then
             row.c.sel_anchor = nil
         end
     end
 
     --[[ The shorthand can also be left by keyboard: Escape puts the caret back in the name slot.
     Without it, a definition reached entirely by keyboard could be entered and not left. ]]
-    if state.current < 0 and keymap.pressed("definition.exit_slot") then
-        state.current = 1
+    if state_definition.current < 0 and keymap.pressed("definition.exit_slot") then
+        state_definition.current = 1
         return false
     end
 
-    if state.current < 0 then
-        local row_c = current_container(state)
+    if state_definition.current < 0 then
+        local row_c = current_container(state_definition)
         if not row_c then
             -- It went away (a cell was emptied); the caret cannot stay in something not drawn.
-            state.current = 1
+            state_definition.current = 1
         else
             --[[ Selection, navigation and Ctrl+C all work because mformula handles them. An EDIT
             is discarded instead of kept: the shorthand is derived from the cells, so the only
             honest response to typing into it is to put back what the cells say. Clearing the cached
             string is what makes sync_shorthand() rebuild it on the next frame. ]]
             if editor.edit_bracket(row_c, fontset, sz) then
-                state.derived[-state.current].tex = nil
+                state_definition.derived[-state_definition.current].tex = nil
             end
             return false
         end
@@ -970,22 +1059,33 @@ function editor_definition.handle_input(state, fontset, sz)
     --[[ One undo step per keystroke that actually CHANGED the tree - cursor movement and clicks
     do not make steps. edit_bracket() (editor.lua) is what draws that line, by reporting whether the
     container's own version moved. ]]
-    begin_edit(state, fontset)
-    local cur = slots[state.current] or slots[1]
+    begin_edit(state_definition, fontset)
+    local cur = slots[state_definition.current] or slots[1]
     local changed = editor.edit_bracket(cur, fontset, sz)
     if changed then
-        commit_edit(state)
+        commit_edit(state_definition)
     end
     return changed
 end
 
 --[[ After a zoom change, so already-built content catches up with the new size rather than only
 newly-typed content being affected (mformula.rescale()'s own comment). ]]
-function editor_definition.rescale(state, fontset)
-    if not state.slots then
+--[[ Re-lays-out every slot after a zoom, and drops what the old layout left behind.
+
+Core: mformula.rescale REBUILDS a container's tree out of new nodes rather than resizing the old
+ones, so everything cached against the previous tree is stale the moment this runs - and stale here
+means pointing at a discarded tree, at pre-zoom positions. The clearing below is not tidying; it is
+the other half of rescaling.
+
+Params: `state_definition` may have no slots yet,
+        which is an ordinary early state_definition and returns quietly.
+@date 2026-09-12 03:25 ]]
+function editor_definition.rescale(state_definition, fontset)
+    STATE_SHAPE.check(state_definition)
+    if not state_definition.slots then
         return
     end
-    for _, slot in ipairs(state.slots) do
+    for _, slot in ipairs(state_definition.slots) do
         mformula.rescale(slot, fontset)
     end
 
@@ -1000,20 +1100,20 @@ function editor_definition.rescale(state, fontset)
     is cheap, happens once per zoom, and cannot go subtly wrong the way a remap could. Clearing the
     version stamps is what makes sync_arity()/sync_domains() actually redo the work - they skip when
     the stamp matches, and a rescale does not bump a container's `version`. ]]
-    state.marks = nil
-    state.parsed_version = nil
-    state.slot_marks = {}
-    state.slot_parsed = {}
-    state.hitboxes = nil
+    state_definition.marks = nil
+    state_definition.parsed_version = nil
+    state_definition.slot_marks = {}
+    state_definition.slot_parsed = {}
+    state_definition.hitboxes = nil
 
     --[[ The derived rows are NOT among the slots, so the loop above never reached them - after a
     zoom they were left drawn at the old size next to text that had moved. Rebuilt rather than
     rescaled, since they are generated from strings anyway: dropping them is what makes
     sync_derived() build fresh ones at the new size on the next frame. ]]
-    state.derived = nil
-    if state.current < 0 then
+    state_definition.derived = nil
+    if state_definition.current < 0 then
         -- The caret cannot stay in a container that is about to be replaced.
-        state.current = 1
+        state_definition.current = 1
     end
 end
 
@@ -1027,8 +1127,9 @@ string can contain any character, so no separator is guaranteed not to collide w
 The COUNT is also where the arity lives - there is no separate number written down, so a saved
 definition cannot disagree with itself about how many parameters it has.
 @date 2026-09-08 08:12 ]]
-function editor_definition.to_text(state)
-    local slots = state.slots or {}
+function editor_definition.to_text(state_definition)
+    STATE_SHAPE.check(state_definition)
+    local slots = state_definition.slots or {}
     local parts = {tostring(#slots), "\n"}
     for _, slot in ipairs(slots) do
         local latex = mformula.to_latex(slot)
@@ -1038,10 +1139,12 @@ function editor_definition.to_text(state)
 end
 
 --[[ Inverse of to_text(). Lenient in the same way every other loader here is: a body that does not
-parse leaves the state with no slots at all, and ensure() then hands it a fresh empty one on the
+parse leaves the state_definition with no slots at all,
+        and ensure() then hands it a fresh empty one on the
 next frame - a corrupt or foreign definition costs you that definition, never the whole document.
 @date 2026-09-08 08:12 ]]
-function editor_definition.from_text(state, text, fontset)
+function editor_definition.from_text(state_definition, text, fontset)
+    STATE_SHAPE.check(state_definition)
     local slots = {}
     local nl = text:find("\n", 1, true)
     local count = nl and tonumber(text:sub(1, nl - 1))
@@ -1059,7 +1162,7 @@ function editor_definition.from_text(state, text, fontset)
         end
     end
     if #slots > 0 then
-        state.slots = slots
+        state_definition.slots = slots
     end
 end
 

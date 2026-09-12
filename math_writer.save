@@ -1,4 +1,4 @@
-text 2263
+text 2267
 $$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)$$ 
 
 $$\vec{a}\ \vec{m}\ \vec{F}\ \vec{I}$$
@@ -13,7 +13,7 @@ $$a\bar{a}\ =\ |a|^{2}\ a\ \not =\ b$$
 
 $$\frac{df(x)}{dx}\ =\ \mathop{\lim }\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D$$$$\Delta ABC\ \equiv \ \Delta BGD\ $$
 
-$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ $$$$\int \limits^{+\infty }_{-\infty }ax^{2}+bx+c\ \,dx$$$$\sum \limits^{N}_{\begin{matrix}i=0\\j<i\end{matrix}}ji^{2}\pi $$$$\lim \limits_{x\rightarrow 0}\left\lvert \frac{x}{y}\right\rvert $$
+$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ $$$$\int \limits^{+\infty }_{-\infty }ax^{2}+bx+c\ \,dx$$$$\sum \limits^{N}_{\begin{matrix}i=0\\j<i\end{matrix}}ji^{2}\pi $$$$\lim \limits_{x\rightarrow 0}\left\lvert \frac{x}{y}\right\rvert \ \ $$
 deeccasdabcdef abcdefgf
 $$\frac{x^{2}}{y}+\frac{2\pi }{T}$$
 
@@ -63,12 +63,37 @@ formula 31
 20
 a:\N \rightarrow \R 1
 21
-1formula 39
+1formula 32
+3
+20
+a:\N \rightarrow \R 2
+221
+2formula 39
 3
 29
 a(ab+a(b+c+d))\ (a+b+ca(b+d))1
 30
-formula 40
+formula 65
+3
+53
+a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
+271
+3formula 39
+3
+27
+a(ab+a(b+c+d))(a+b+cab+cad)2
+261
+3formula 65
+3
+53
+a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
+251
+3formula 65
+3
+53
+a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
+211
+3formula 40
 3
 29
 a(ab+a(b+c+d))\ (a+b+ca(b+d))2
@@ -77,23 +102,13 @@ formula 40
 3
 27
 a(ab+a(b+c+d))(a+b+cab+cad)2
-112
+232
 10formula 80
 3
 67
 a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-122
-11formula 80
-3
-67
-a(ab+ab+ac+ad)a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-132
-12formula 84
-3
-71
-aaba+aaba+aaca+aada+a(ab+a(b+c+d))b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-142
-13formula 84
+242
+23formula 84
 3
 71
 aaba+aaba+aaca+aada+aabb+aa(b+c+d)b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2

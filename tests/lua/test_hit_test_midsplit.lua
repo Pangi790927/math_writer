@@ -57,7 +57,7 @@ function run_test()
     local Y = glyph(fs, "Y", SZ)
     local root = mexpru.horiz(fs, {Y, S}, SZ)
     mexpru.update_positions(root)
-    local c = {root = root, cursor_pos = vc.wref_mexpr(Y), version = 0}
+    local c = mexpru.new_container(root, Y, 0)
 
     local xbox = raw_box(x)
     local Sbox = raw_box(S)

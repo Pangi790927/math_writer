@@ -65,7 +65,8 @@ local function sum_with(fs, sup_place, sub_place)
     local base = mexpru.mexpr_symbol(fs, {size = mexpru.physical_sz(SZ), code = e.ncod}, true)
     mexpru.u(base).sz = SZ
     local node = mexpru.supsub(fs, base, side(fs, "n"), side(fs, "i"), SZ, sup_place, sub_place)
-    return {root = mexpru.horiz(fs, {node}, SZ)}
+    -- Through the creator: a container is a sealed type since 2026-09-12.
+    return mexpru.new_container(mexpru.horiz(fs, {node}, SZ))
 end
 
 function run_test()
@@ -129,7 +130,7 @@ function run_test()
         local base = mexpru.mexpr_symbol(fs, {size = mexpru.physical_sz(SZ), code = e.ncod}, true)
         mexpru.u(base).sz = SZ
         local only_sub = mexpru.supsub(fs, base, nil, side(fs, "i"), SZ, D, D)
-        local out = mformula_latex.to_latex({root = mexpru.horiz(fs, {only_sub}, SZ)})
+        local out = mformula_latex.to_latex(mexpru.new_container(mexpru.horiz(fs, {only_sub}, SZ)))
         check("a lone display side needs no braces", out:find("{" .. B .. "sum", 1, true) == nil,
                 out)
         check("...and still says \\limits", out:find(B .. "limits", 1, true) ~= nil, out)

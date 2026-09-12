@@ -182,6 +182,16 @@ struct fontset_t : public vc::object_t {
                     return vc::VC_ERROR_GENERIC;
                 }
                 fonts[sz_id][font_id] = std::shared_ptr<ImFont>(font, [](ImFont *font){
+                    /* The atlas owns the ImFont and is destroyed with the context, so once the
+                    context is gone there is nothing left to remove and `font` is already
+                    dangling - returning IS the correct action here, not a degraded version of
+                    one. Ordering normally keeps this from arising at all (main.cpp releases the
+                    Lua state before imgui_uninit()); this covers the exits that do not go
+                    through there - an early bail, a throw out of create(), a future caller.
+                    GetCurrentContext() is a bare read of GImGui and carries no assert of its
+                    own, unlike GetIO(), which is what asserted here on 2026-09-12. */
+                    if (ImGui::GetCurrentContext() == nullptr)
+                        return;
                     ImGuiIO& io = ImGui::GetIO();
                     io.Fonts->RemoveFont(font);
                 });

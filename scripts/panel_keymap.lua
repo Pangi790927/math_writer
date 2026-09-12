@@ -1,3 +1,24 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+new_state()                             -> state_keymap
+    The panel's state. Created with the content state and lives there.
+
+draw(state_keymap: panel_keymap.state_keymap) -> nothing
+    The whole F2 screen: Shortcuts, Letters and Transforms.
+
+escape(state_keymap: panel_keymap.state_keymap) -> handled
+    Escape, offered to the panel BEFORE it is allowed to close it - so
+    an in-progress edit is abandoned first and the panel stays open.
+
+closed(state_keymap: panel_keymap.state_keymap) -> nothing
+    Drops every in-progress edit when the panel goes away. What was
+    committed is already in the keymap; this discards the rest.
+
+--- internal, not on the module table --------------------------------------------------------------
+    the recorder, the binding cells, the letters table and
+    draw_transforms
+@date 2026-09-12 03:25
+================================================================================================= ]]
+
 --[[
 panel_keymap.lua - the F2 screen: the keybind table.
 
@@ -26,6 +47,8 @@ keymap.dirty(). A half-typed binding must never reach disk.
 local vc = require("virt_composer")
 local keymap = require("keymap")
 local glyphmap = require("glyphmap")
+local transforms = require("transforms")
+local sealed = require("sealed")
 
 local panel_keymap = {}
 
@@ -71,6 +94,23 @@ local MODIFIER_KEYS = {
     ImGuiKey_ReservedForModSuper = "super",
 }
 
+--[[ THE `state_keymap` CONTAINER - the F2 panel's own state. Declared through sealed.lua; see that file
+for the rule. Lives on the document state (`state.keymap_state`) for the same reason hstate does.
+@date 2026-09-12 05:55 ]]
+local STATE_KEYMAP_FIELDS = {
+    section      = "which section is on screen: keys, letters or transforms",
+    editing      = "which cell is being typed into, as an id-and-index key, or nil",
+    buffer       = "what has been typed into it so far - ALWAYS a string, see buffer_of()",
+    error        = "why the current cell will not commit",
+    panel_error  = "the same, for the panel as a whole",
+    focus_next   = "ask ImGui for keyboard focus next frame, after a cell has just opened",
+    confirm_all  = "the two-click arm on `default all`",
+    filter_text  = "what the search box holds, as TEXT - a half-typed `Ctrl+` must survive",
+    filter       = "that text parsed, or nil for `show everything`",
+    filter_error = "why the search text does not parse; shown, but filters nothing",
+}
+local STATE_KEYMAP_SHAPE = sealed.declare("panel_keymap", "state_keymap", STATE_KEYMAP_FIELDS)
+
 --[[ The panel's own state, created with the content state and living there.
 
   section     which half is on screen: "keys" or "letters"
@@ -87,18 +127,18 @@ function panel_keymap.new_state()
     what the box has to show while it is being edited, and a half-typed "Ctrl+" has to survive
     between frames without being either discarded or mistaken for a finished filter. `filter` is
     that text parsed, or nil for "show everything". ]]
-    return {section = "keys", editing = nil, buffer = "", error = nil, panel_error = nil,
-            focus_next = false, confirm_all = false,
+    return STATE_KEYMAP_SHAPE.wrap{section = "keys", editing = nil, buffer = "", error = nil,
+            panel_error = nil, focus_next = false, confirm_all = false,
             filter_text = "", filter = nil, filter_error = nil}
 end
 
 -- The buffer is a STRING, always. A nil reaching ImGui_InputText's const char* parameter is not a
 -- bad frame, it is an abort (see the InputText call below), so this is checked rather than assumed.
-local function buffer_of(kstate)
-    if type(kstate.buffer) ~= "string" then
-        kstate.buffer = ""
+local function buffer_of(state_keymap)
+    if type(state_keymap.buffer) ~= "string" then
+        state_keymap.buffer = ""
     end
-    return kstate.buffer
+    return state_keymap.buffer
 end
 
 --[[ Turns the accumulator into the same text a field would accept, so every route converges on
@@ -179,11 +219,11 @@ frame. An unparseable filter keeps its text - so it can be corrected rather than
 shows why, but filters nothing: a typo must not silently hide half the table and look like a
 shortcut having gone missing.
 @date 2026-09-09 23:40 ]]
-local function set_filter(kstate, text)
-    kstate.filter_text = text or ""
-    local bind, why = keymap.parse_filter(kstate.filter_text)
-    kstate.filter = bind
-    kstate.filter_error = (not bind) and why or nil
+local function set_filter(state_keymap, text)
+    state_keymap.filter_text = text or ""
+    local bind, why = keymap.parse_filter(state_keymap.filter_text)
+    state_keymap.filter = bind
+    state_keymap.filter_error = (not bind) and why or nil
 end
 
 --[[ Accepts whatever is in the buffer into the cell being edited, and closes it on success.
@@ -192,12 +232,12 @@ The one place a typed binding or a typed glyph name becomes real, so both routes
 recording - end here and there is one definition of what is acceptable. A refusal leaves the cell
 open with the reason in it rather than discarding what was typed.
 @date 2026-09-08 08:45 ]]
-local function commit(kstate)
+local function commit(state_keymap)
     if not rec or not rec.key then
         return
     end
     local ok, why = keymap.set_bind(rec.id, rec.index, rec_text())
-    kstate.error = ok and nil or (rec.id .. ": " .. tostring(why))
+    state_keymap.error = ok and nil or (rec.id .. ": " .. tostring(why))
     rec = nil
 end
 
@@ -240,22 +280,22 @@ disagree about how many lines they draw (which is what keeps the columns aligned
 The letters table below reuses neither: its cells commit through glyphmap.set() rather than
 keymap.set_bind(), so it inlines a field and buttons of its own.
 @date 2026-09-09 21:20 ]]
-local function edit_box_field(kstate)
+local function edit_box_field(state_keymap)
     --[[ Focus the field on the frame it appears, and only that frame: the click that opened this
     focused the BUTTON, not the field that replaced it, and re-focusing every frame would make the
     field impossible to leave. ]]
-    if kstate.focus_next then
+    if state_keymap.focus_next then
         vc.ImGui_SetKeyboardFocusHere(0)
-        kstate.focus_next = false
+        state_keymap.focus_next = false
     end
     --[[ ImGui_InputText returns a std::pair, and virt_composer pushes a pair as ONE Lua table
     {changed, text} - not as two values. Written as `local changed, text = ...` it binds the TABLE
     to `changed` and nil to `text`, which then goes back in as the string parameter on the next
     frame and throws "failed conversion to string from [nil]" - taking the whole app down, because
     the error unwinds out of the table before EndTable() and ImGui aborts on the imbalance. ]]
-    local res = vc.ImGui_InputText("##edit", buffer_of(kstate), 48)
+    local res = vc.ImGui_InputText("##edit", buffer_of(state_keymap), 48)
     if res and res[1] then
-        kstate.buffer = res[2] or ""
+        state_keymap.buffer = res[2] or ""
     end
 end
 
@@ -265,18 +305,18 @@ was. Split out of the field itself because the two now sit in different COLUMNS.
 `index` beyond the end appends: keymap.set_bind() clamps to #binds+1, so the same call serves an
 existing slot and the pending new one the "+" button opens.
 @date 2026-09-09 21:20 ]]
-local function edit_box_buttons(kstate, id, index)
+local function edit_box_buttons(state_keymap, id, index)
     if vc.ImGui_SmallButton("v##save") then
-        local ok, why = keymap.set_bind(id, index, kstate.buffer)
+        local ok, why = keymap.set_bind(id, index, state_keymap.buffer)
         if ok then
-            kstate.editing, kstate.error = nil, nil
+            state_keymap.editing, state_keymap.error = nil, nil
         else
-            kstate.error = id .. ": " .. tostring(why)
+            state_keymap.error = id .. ": " .. tostring(why)
         end
     end
     vc.ImGui_SameLine(0, 4)
     if vc.ImGui_SmallButton("x##cancel") then
-        kstate.editing, kstate.error = nil, nil
+        state_keymap.editing, state_keymap.error = nil, nil
     end
 end
 
@@ -301,7 +341,7 @@ STOPPING WITH NO KEY PRESSED IS A REAL ANSWER, not an abandoned edit: "Ctrl" alo
 Ctrl binding, which is exactly what rec_text(true) hands back. Stopping with nothing held at all
 gives the empty string, which set_filter reads as no filter - so the same button also clears.
 @date 2026-09-10 00:10 ]]
-local function draw_filter_row(kstate, line_h)
+local function draw_filter_row(state_keymap, line_h)
     vc.ImGui_PushID("filterrow")
     vc.ImGui_Text("Find")
     vc.ImGui_SameLine(0, 10)
@@ -309,15 +349,15 @@ local function draw_filter_row(kstate, line_h)
     local recording = (rec ~= nil and rec.id == "filter")
     if rec_button(recording, line_h) then
         if recording then
-            set_filter(kstate, rec_text(true))
+            set_filter(state_keymap, rec_text(true))
             rec = nil
         else
             --[[ The previous filter is dropped the instant recording starts, so the table goes
             back to showing everything while the chord is being pressed. Leaving it in place would
             mean typing a new search against a table still narrowed by the old one. ]]
-            set_filter(kstate, "")
+            set_filter(state_keymap, "")
             rec = {id = "filter", index = 1}
-            kstate.editing = nil
+            state_keymap.editing = nil
         end
     end
 
@@ -332,18 +372,18 @@ local function draw_filter_row(kstate, line_h)
         local so_far = rec_text(true)
         vc.ImGui_Text(so_far ~= "" and so_far or "press a combination...")
     else
-        vc.ImGui_Text(kstate.filter_text ~= "" and kstate.filter_text or "(any)")
-        if kstate.filter_text ~= "" then
+        vc.ImGui_Text(state_keymap.filter_text ~= "" and state_keymap.filter_text or "(any)")
+        if state_keymap.filter_text ~= "" then
             vc.ImGui_SameLine(0, 10)
             if vc.ImGui_SmallButton("clear##fclear") then
-                set_filter(kstate, "")
+                set_filter(state_keymap, "")
             end
         end
     end
 
-    if kstate.filter_error then
+    if state_keymap.filter_error then
         vc.ImGui_SameLine(0, 12)
-        vc.ImGui_Text("! " .. tostring(kstate.filter_error))
+        vc.ImGui_Text("! " .. tostring(state_keymap.filter_error))
     end
     vc.ImGui_PopID()
 end
@@ -358,7 +398,8 @@ Cells hold LaTeX names, validated on commit against the same catalogue the `\nam
 uses, so anything typeable by name is bindable and nothing else is. An empty PLAIN cell means "the
 letter itself", which is why it reads as blank rather than as an error.
 
-Shares the kstate.editing convention with the keys table, so the two sections behave identically:
+Shares the state_keymap.editing convention with the keys table,
+        so the two sections behave identically:
 click a cell, type, tick to save, cross to abandon. The edit key is prefixed so a letter cell and
 an action row can never collide on it.
 @date 2026-09-09 21:20 ]]
@@ -368,7 +409,80 @@ local LETTER_COLUMNS = {
     {which = "alt_shift", title = "With Alt+Shift"},
 }
 
-local function draw_letters(kstate, line_h)
+--[[ The Transforms section: every plugin found in scripts/transforms, with a tick for each.
+
+Core: THIS IS THE ONLY PLACE A TRANSFORMATION IS TURNED ON OR OFF. The folder scan decides what
+EXISTS - dropping a file in makes it appear in this list - and this decides which of those the
+editor may actually offer and run. Author, 2026-09-12: "those will be shown to the user but
+activated or not by the user".
+
+Core: a plugin arrives OFF unless it declared itself default-active, so a file appearing in the
+folder can never change how the editor behaves until somebody ticks it here. The ones shipped with
+the project declare that default and are on from the first run.
+
+Detail: the tick writes through transforms.set_active immediately, which takes effect on the very
+next right-click - there is no apply step. What is written to disk is only the divergence from each
+plugin's own default, and only when this panel closes, which is the same rule the keymap and the
+glyph map already follow.
+
+Detail: the id column is what `transforms.save` stores and what an option carries, so it is shown
+rather than hidden behind the label - a file naming an id that no longer exists is skipped on load,
+and this is where you can see which ids are real.
+
+Note: an empty list means the folder is empty. A LOADING FAULT is different and says so at the top -
+it means path_composer was not registered and no folder was read at all, which is a wiring problem
+rather than a project with no transformations in it.
+@date 2026-09-12 02:45 ]]
+local function draw_transforms(state_keymap, line_h)
+    local rows_above = (state_keymap.panel_error and 4 or 3)
+
+    if transforms.load_error then
+        vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h * rows_above})
+        vc.ImGui_Text("! plugins were not scanned: " .. transforms.load_error)
+        rows_above = rows_above + 1
+    end
+
+    local specs = transforms.list()
+    vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h * rows_above})
+    vc.ImGui_Text(#specs .. " plugin(s) in scripts/transforms")
+    rows_above = rows_above + 1
+
+    vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h * rows_above})
+    local flags = vc.ImGuiTableFlags_Borders + vc.ImGuiTableFlags_RowBg
+            + vc.ImGuiTableFlags_ScrollY + vc.ImGuiTableFlags_Resizable
+    --[[ "_v1" - a new table, so TableSetupColumn's widths apply on first sight and are remembered
+    from then on. See the keys table for why the suffix matters when the font size changes. ]]
+    if not vc.ImGui_BeginTable("transforms_table_v1", 3, flags,
+            {x = 0, y = 0}, 0) then
+        return
+    end
+    vc.ImGui_TableSetupColumn("On", vc.ImGuiTableColumnFlags_WidthFixed, 50 * FONT_SCALE, 0)
+    vc.ImGui_TableSetupColumn("Id", vc.ImGuiTableColumnFlags_WidthFixed, 160 * FONT_SCALE, 0)
+    vc.ImGui_TableSetupColumn("Name", vc.ImGuiTableColumnFlags_WidthStretch, 0, 0)
+    vc.ImGui_TableHeadersRow()
+
+    for _, spec in ipairs(specs) do
+        vc.ImGui_TableNextRow(0, 0)
+        vc.ImGui_TableSetColumnIndex(0)
+        --[[ The id is in the widget label after ## so two plugins can never collide on it, the same
+        way every other row in this panel is kept distinct. ]]
+        --[[ ONE TABLE, not two values. ImGui_Checkbox returns a std::pair and virt_composer pushes
+        a pair as a single Lua table {changed, value} - written as `local changed, on = ...` the
+        table binds to `changed` and `on` is nil, which reads as "never ticked". The same trap the
+        InputText call above this file already carries a comment about. ]]
+        local res = vc.ImGui_Checkbox("##on" .. spec.id, spec.active == true)
+        if res[1] then
+            transforms.set_active(spec.id, res[2])
+        end
+        vc.ImGui_TableSetColumnIndex(1)
+        vc.ImGui_Text(spec.id)
+        vc.ImGui_TableSetColumnIndex(2)
+        vc.ImGui_Text(spec.label or spec.id)
+    end
+    vc.ImGui_EndTable()
+end
+
+local function draw_letters(state_keymap, line_h)
     --[[ "Default all", in two clicks.
 
     One click arms it and the label says so; the second does it. A single-click version would be a
@@ -379,34 +493,34 @@ local function draw_letters(kstate, line_h)
     Anything else disarms it: switching section, editing a cell, starting a recording. So it only
     fires when two deliberate clicks happen in a row on this one button. ]]
     vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h * 3})
-    if kstate.confirm_all then
+    if state_keymap.confirm_all then
         if vc.ImGui_SmallButton("really reset every letter?##dall") then
             glyphmap.reset()
-            kstate.confirm_all = false
-            kstate.editing, kstate.error = nil, nil
+            state_keymap.confirm_all = false
+            state_keymap.editing, state_keymap.error = nil, nil
         end
         vc.ImGui_SameLine(0, 8)
         if vc.ImGui_SmallButton("no##dallno") then
-            kstate.confirm_all = false
+            state_keymap.confirm_all = false
         end
     elseif vc.ImGui_SmallButton("default all##dall") then
-        kstate.confirm_all = true
+        state_keymap.confirm_all = true
     end
 
     vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h * 4})
     local flags = vc.ImGuiTableFlags_Borders + vc.ImGuiTableFlags_RowBg
             + vc.ImGuiTableFlags_ScrollY + vc.ImGuiTableFlags_Resizable
     local size = vc.ImGui_GetDisplaySize()
-    if not vc.ImGui_BeginTable("letters_table_v1", 5, flags,
-            {x = size.x - 48, y = size.y - 20 - line_h * 4 - 20}, 0) then
+    if not vc.ImGui_BeginTable("letters_table_v1", 5, flags, {x = size.x - 48,
+            y = size.y - 20 - line_h * 4 - 20}, 0) then
         return
     end
     -- Sized so the stretch column at the end still fits a "default" button at the doubled font:
     -- it was clipped to "defaul" when these were wider.
     vc.ImGui_TableSetupColumn("Key", vc.ImGuiTableColumnFlags_WidthFixed, 60 * FONT_SCALE, 0)
     for _, col in ipairs(LETTER_COLUMNS) do
-        vc.ImGui_TableSetupColumn(col.title, vc.ImGuiTableColumnFlags_WidthFixed,
-                125 * FONT_SCALE, 0)
+        vc.ImGui_TableSetupColumn(col.title, vc.ImGuiTableColumnFlags_WidthFixed, 125 * FONT_SCALE,
+                0)
     end
     vc.ImGui_TableSetupColumn("", vc.ImGuiTableColumnFlags_WidthStretch, 0, 0)
     vc.ImGui_TableHeadersRow()
@@ -434,7 +548,7 @@ local function draw_letters(kstate, line_h)
             recording = false
             if target then
                 local ok, why = glyphmap.rekey(letter, target)
-                kstate.error = ok and nil or (letter .. ": " .. tostring(why))
+                state_keymap.error = ok and nil or (letter .. ": " .. tostring(why))
             end
         end
         vc.ImGui_Text(recording and (rec.key and glyphmap.key_label(rec.key) or "press a key")
@@ -442,8 +556,8 @@ local function draw_letters(kstate, line_h)
         vc.ImGui_SameLine(0, 6)
         if rec_button(recording, line_h) then
             rec = {id = "glyph", index = letter}
-            kstate.editing, kstate.error = nil, nil
-            kstate.confirm_all = false
+            state_keymap.editing, state_keymap.error = nil, nil
+            state_keymap.confirm_all = false
         end
         if recording then
             -- Only a way out: the key itself is the confirmation, so there is nothing for a tick
@@ -457,30 +571,30 @@ local function draw_letters(kstate, line_h)
             vc.ImGui_TableNextColumn()
             vc.ImGui_PushID(col.which)
             local key = "L:" .. letter .. ":" .. col.which
-            if kstate.editing == key then
+            if state_keymap.editing == key then
                 --[[ Committed through glyphmap.set(), which validates the name and reports why it
                 refused - the cell keeps the text and the error so it can be corrected rather than
                 silently discarded. ]]
-                if kstate.focus_next then
+                if state_keymap.focus_next then
                     vc.ImGui_SetKeyboardFocusHere(0)
-                    kstate.focus_next = false
+                    state_keymap.focus_next = false
                 end
-                local res = vc.ImGui_InputText("##ledit", buffer_of(kstate), 32)
+                local res = vc.ImGui_InputText("##ledit", buffer_of(state_keymap), 32)
                 if res and res[1] then
-                    kstate.buffer = res[2] or ""
+                    state_keymap.buffer = res[2] or ""
                 end
                 vc.ImGui_SameLine(0, 6)
                 if vc.ImGui_SmallButton("v##lsave") then
-                    local ok, why = glyphmap.set(letter, col.which, kstate.buffer)
+                    local ok, why = glyphmap.set(letter, col.which, state_keymap.buffer)
                     if ok then
-                        kstate.editing, kstate.error = nil, nil
+                        state_keymap.editing, state_keymap.error = nil, nil
                     else
-                        kstate.error = letter .. ": " .. tostring(why)
+                        state_keymap.error = letter .. ": " .. tostring(why)
                     end
                 end
                 vc.ImGui_SameLine(0, 4)
                 if vc.ImGui_SmallButton("x##lcancel") then
-                    kstate.editing, kstate.error = nil, nil
+                    state_keymap.editing, state_keymap.error = nil, nil
                 end
             else
                 -- An unset PLAIN cell shows the letter it inserts, in brackets, so the row reads
@@ -498,11 +612,11 @@ local function draw_letters(kstate, line_h)
                             or "-"
                 end
                 if vc.ImGui_SmallButton(shown .. "##lcell") then
-                    kstate.editing = key
-                    kstate.buffer = slots[col.which] or ""
-                    kstate.focus_next = true
-                    kstate.error = nil
-                    kstate.confirm_all = false
+                    state_keymap.editing = key
+                    state_keymap.buffer = slots[col.which] or ""
+                    state_keymap.focus_next = true
+                    state_keymap.error = nil
+                    state_keymap.confirm_all = false
                 end
             end
             vc.ImGui_PopID()
@@ -513,13 +627,13 @@ local function draw_letters(kstate, line_h)
         a row was a single letter; against "ImGuiKey_A:" it never matched, so a row's own error was
         never shown next to it. ]]
         local tag = letter .. ":"
-        if kstate.error and kstate.error:sub(1, #tag) == tag then
-            vc.ImGui_Text(kstate.error:sub(#tag + 2))
+        if state_keymap.error and state_keymap.error:sub(1, #tag) == tag then
+            vc.ImGui_Text(state_keymap.error:sub(#tag + 2))
             vc.ImGui_SameLine(0, 10)
         end
         if vc.ImGui_SmallButton("default##lreset") then
             glyphmap.reset(letter)
-            kstate.editing, kstate.error = nil, nil
+            state_keymap.editing, state_keymap.error = nil, nil
         end
 
         vc.ImGui_PopID()
@@ -527,7 +641,7 @@ local function draw_letters(kstate, line_h)
     end)
     vc.ImGui_EndTable()
     if not rows_ok then
-        kstate.panel_error = "letters: " .. tostring(rows_err)
+        state_keymap.panel_error = "letters: " .. tostring(rows_err)
     end
 end
 
@@ -537,7 +651,8 @@ handle_input has already returned early, so this owns the frame.
 Returns nothing - every effect goes through keymap, which is also what makes this panel testable
 without a display: the registry can be driven directly and asked what it now holds.
 @date 2026-09-08 08:45 ]]
-function panel_keymap.draw(kstate)
+function panel_keymap.draw(state_keymap)
+    STATE_KEYMAP_SHAPE.check(state_keymap)
     local size = vc.ImGui_GetDisplaySize()
     vc.ImGui_AddRectFilled({x = 0, y = 0}, {x = size.x, y = size.y}, BG_COLOR, 0)
 
@@ -558,29 +673,40 @@ function panel_keymap.draw(kstate)
     stop existing. ]]
     vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h})
     for _, sec in ipairs({{id = "keys", label = "Shortcuts"},
-                          {id = "letters", label = "Letters"}}) do
-        local active = (kstate.section == sec.id)
+                          {id = "letters", label = "Letters"},
+                          {id = "transforms", label = "Transforms"}}) do
+        local active = (state_keymap.section == sec.id)
         if vc.ImGui_SmallButton((active and ("[" .. sec.label .. "]") or sec.label)
                 .. "##sec" .. sec.id) then
-            kstate.section = sec.id
-            kstate.editing, kstate.error = nil, nil
-            kstate.confirm_all = false
+            state_keymap.section = sec.id
+            state_keymap.editing, state_keymap.error = nil, nil
+            state_keymap.confirm_all = false
             rec = nil
         end
         vc.ImGui_SameLine(0, 10)
     end
     -- Kept short enough to fit the window at the doubled size - the long form ran off the edge.
-    vc.ImGui_Text(kstate.section == "letters"
-            and "A glyph name like \\alpha, or one character. Rec picks the key."
-            or "Type a binding, or press the record button. Suffix +All ignores modifiers.")
+    local hint = "Type a binding, or press the record button. Suffix +All ignores modifiers."
+    if state_keymap.section == "letters" then
+        hint = "A glyph name like \\alpha, or one character. Rec picks the key."
+    elseif state_keymap.section == "transforms" then
+        hint = "Every plugin in scripts/transforms. Tick one to let it offer and run."
+    end
+    vc.ImGui_Text(hint)
 
-    if kstate.panel_error then
+    if state_keymap.panel_error then
         vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h * 2})
-        vc.ImGui_Text("! " .. kstate.panel_error)
+        vc.ImGui_Text("! " .. state_keymap.panel_error)
     end
 
-    if kstate.section == "letters" then
-        draw_letters(kstate, line_h)
+    if state_keymap.section == "transforms" then
+        draw_transforms(state_keymap, line_h)
+        vc.ImGui_PopFont()
+        return
+    end
+
+    if state_keymap.section == "letters" then
+        draw_letters(state_keymap, line_h)
         vc.ImGui_PopFont()
         return
     end
@@ -588,9 +714,9 @@ function panel_keymap.draw(kstate)
     --[[ Counted rather than spelled out twice: the search row pushes the table down by one line
     AND takes one line off its height, and the two numbers drifting apart is how the table ends up
     overflowing the window bottom. ]]
-    local rows_above = (kstate.panel_error and 4 or 3)
+    local rows_above = (state_keymap.panel_error and 4 or 3)
     vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h * rows_above})
-    draw_filter_row(kstate, line_h)
+    draw_filter_row(state_keymap, line_h)
     rows_above = rows_above + 1
 
     vc.ImGui_SetCursorPos({x = 24, y = 20 + line_h * rows_above})
@@ -635,7 +761,7 @@ function panel_keymap.draw(kstate)
         --[[ Which ids the search box lets through, computed ONCE for the whole table rather than
         per row: the answer cannot change while the table is being walked, and asking per row would
         re-scan every action's binds for every action. ]]
-        local visible = keymap.filter_ids(kstate.filter)
+        local visible = keymap.filter_ids(state_keymap.filter)
         local rows_ok, rows_err = pcall(function()
         keymap.each(function(id, action)
             --[[ Skipped BEFORE TableNextRow/PushID, never after: a row that has begun has to be
@@ -684,8 +810,8 @@ function panel_keymap.draw(kstate)
             end
             -- The panel keeps one error string, tagged with the action it came from, so only the
             -- row that actually failed shows it.
-            if kstate.error and kstate.error:sub(1, #id + 1) == id .. ":" then
-                notes[#notes + 1] = kstate.error:sub(#id + 3)
+            if state_keymap.error and state_keymap.error:sub(1, #id + 1) == id .. ":" then
+                notes[#notes + 1] = state_keymap.error:sub(#id + 3)
             end
 
             vc.ImGui_TableNextColumn()
@@ -711,16 +837,16 @@ function panel_keymap.draw(kstate)
                     vc.ImGui_Text(keymap.format(bind))
                 elseif recording then
                     vc.ImGui_Text(rec_text())
-                elseif kstate.editing == id .. "#" .. i then
-                    edit_box_field(kstate)
+                elseif state_keymap.editing == id .. "#" .. i then
+                    edit_box_field(state_keymap)
                 else
                     -- The label IS the button: clicking the text starts editing it, which is how
                     -- the typed route is reached.
                     if vc.ImGui_SmallButton(keymap.format(bind) .. "##text") then
-                        kstate.editing = id .. "#" .. i
-                        kstate.buffer = keymap.format(bind)
-                        kstate.error = nil
-                        kstate.focus_next = true
+                        state_keymap.editing = id .. "#" .. i
+                        state_keymap.buffer = keymap.format(bind)
+                        state_keymap.error = nil
+                        state_keymap.focus_next = true
                         rec = nil
                     end
                 end
@@ -730,9 +856,9 @@ function panel_keymap.draw(kstate)
                 vc.ImGui_Text("(unbound)")
             end
             local new_index = #action.binds + 1
-            if kstate.editing == id .. "#" .. new_index then
+            if state_keymap.editing == id .. "#" .. new_index then
                 vc.ImGui_PushID("knew")
-                edit_box_field(kstate)
+                edit_box_field(state_keymap)
                 vc.ImGui_PopID()
             end
 
@@ -753,8 +879,8 @@ function panel_keymap.draw(kstate)
                 to back out of a mis-press without abandoning the edit entirely. ]]
                 local function start_recording()
                     rec = {id = id, index = i}
-                    kstate.editing = nil
-                    kstate.error = nil
+                    state_keymap.editing = nil
+                    state_keymap.error = nil
                 end
 
                 if recording then
@@ -762,14 +888,14 @@ function panel_keymap.draw(kstate)
                         start_recording()
                     end
                     if vc.ImGui_SmallButton("v##ok") then
-                        commit(kstate)
+                        commit(state_keymap)
                     end
                     vc.ImGui_SameLine(0, 4)
                     if vc.ImGui_SmallButton("x##no") then
                         rec = nil
                     end
-                elseif kstate.editing == id .. "#" .. i then
-                    edit_box_buttons(kstate, id, i)
+                elseif state_keymap.editing == id .. "#" .. i then
+                    edit_box_buttons(state_keymap, id, i)
                 else
                     if rec_button(false, line_h) then
                         start_recording()
@@ -787,22 +913,22 @@ function panel_keymap.draw(kstate)
             local new_index2 = #action.binds + 1
             if owned then
                 -- nothing further: no "+", no "default"
-            elseif kstate.editing == id .. "#" .. new_index2 then
+            elseif state_keymap.editing == id .. "#" .. new_index2 then
                 vc.ImGui_PushID("cnew")
-                edit_box_buttons(kstate, id, new_index2)
+                edit_box_buttons(state_keymap, id, new_index2)
                 vc.ImGui_PopID()
             elseif vc.ImGui_SmallButton("+##add") then
-                kstate.editing = id .. "#" .. new_index2
-                kstate.buffer = ""
-                kstate.focus_next = true
-                kstate.error = nil
+                state_keymap.editing = id .. "#" .. new_index2
+                state_keymap.buffer = ""
+                state_keymap.focus_next = true
+                state_keymap.error = nil
                 rec = nil
             end
             if not owned then
                 vc.ImGui_SameLine(0, 6)
                 if vc.ImGui_SmallButton("default##reset") then
                     keymap.reset(id)
-                    kstate.editing, kstate.error = nil, nil
+                    state_keymap.editing, state_keymap.error = nil, nil
                 end
             end
 
@@ -811,10 +937,10 @@ function panel_keymap.draw(kstate)
         end)
         vc.ImGui_EndTable()
         if not rows_ok then
-            -- NOT kstate.error: that one is tagged with an action id and shown on that action's
+            -- NOT state_keymap.error: that one is tagged with an action id and shown on that action's
             -- row. A failure of the panel itself belongs to no row - and the rows may not even
             -- have drawn - so it gets the banner above the table instead.
-            kstate.panel_error = "panel error: " .. tostring(rows_err)
+            state_keymap.panel_error = "panel error: " .. tostring(rows_err)
         end
     end
     -- Always popped, including on the BeginTable-returned-false path above - an unbalanced font
@@ -832,22 +958,31 @@ back out of does Escape mean "close".
 Recording is checked first: it is the more modal of the two, and the recorder can be armed while a
 different row still holds a stale edit target.
 @date 2026-09-08 08:45 ]]
-function panel_keymap.escape(kstate)
+function panel_keymap.escape(state_keymap)
+    STATE_KEYMAP_SHAPE.check(state_keymap)
     if rec then
         rec = nil
         return true
     end
-    if kstate.editing then
-        kstate.editing, kstate.error = nil, nil
+    if state_keymap.editing then
+        state_keymap.editing, state_keymap.error = nil, nil
         return true
     end
     return false
 end
 
 -- Called when the panel closes, so an abandoned recording cannot survive into the next opening.
-function panel_keymap.closed(kstate)
+--[[ Drops every piece of in-progress editing when the panel goes away.
+
+Core: a half-typed binding, a half-recorded chord and an error message are all about a cell that is
+about to stop existing, so none of them may survive to the next time the panel opens - reopening on
+someone else's abandoned edit is how a stray keystroke lands in the wrong row. What is COMMITTED is
+already in the keymap by then; this discards only what was not.
+@date 2026-09-12 03:25 ]]
+function panel_keymap.closed(state_keymap)
+    STATE_KEYMAP_SHAPE.check(state_keymap)
     rec = nil
-    kstate.editing, kstate.error, kstate.panel_error = nil, nil, nil
+    state_keymap.editing, state_keymap.error, state_keymap.panel_error = nil, nil, nil
 end
 
 return panel_keymap

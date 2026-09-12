@@ -66,7 +66,7 @@ function run_test()
         local P, Q, R = glyph(fs, "P", SZ), glyph(fs, "Q", SZ), glyph(fs, "R", SZ)
         local root = mexpru.horiz(fs, {P, Q, R}, SZ)
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(P), version = 0}
+        local c = mexpru.new_container(root, P, 0)
 
         local qbox = raw_box(Q)
         local qmid_y = (qbox.top + qbox.bottom) / 2
@@ -94,7 +94,7 @@ function run_test()
         mexpru.u(e).sz = SZ
         local root = mexpru.horiz(fs, {e}, SZ)
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(e), version = 0}
+        local c = mexpru.new_container(root, e, 0)
 
         local ebox = raw_box(e)
         hit(c, {x = (ebox.left + ebox.right) / 2, y = (ebox.top + ebox.bottom) / 2})
@@ -113,7 +113,7 @@ function run_test()
         local Y = glyph(fs, "Y", SZ)
         local root = mexpru.horiz(fs, {Y, S}, SZ)
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(Y), version = 0}
+        local c = mexpru.new_container(root, Y, 0)
 
         local xbox = raw_box(x)
         local xmid_y = (xbox.top + xbox.bottom) / 2
@@ -142,7 +142,7 @@ function run_test()
         local Y = glyph(fs, "Y", SZ)
         local root = mexpru.horiz(fs, {Y, S}, SZ)
         mexpru.update_positions(root)
-        local c = {root = root, cursor_pos = vc.wref_mexpr(Y), version = 0}
+        local c = mexpru.new_container(root, Y, 0)
 
         local Sbox = raw_box(S)
         local xbox = raw_box(x)

@@ -105,7 +105,7 @@ function run_test()
         --[[ BOUND TO THE SUM, not to whatever was clicked: the parameter is the ADD's id, so the
         transform needs no knowledge of how the gesture arrived. ]]
         local node, ns = ast_gestures.ast_for(fs, c, {})
-        local target = opts[1] and ns.by_id[opts[1].params.add]
+        local target = opts[1] and ast.node_of(ns, opts[1].params.add)
         check("...with the ADD as its parameter",
                 target ~= nil and target.type == ast.ADD, target and target.type)
 

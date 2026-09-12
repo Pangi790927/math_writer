@@ -64,7 +64,7 @@ function run_test()
     check("setup: cursor target (A) really is at index 2, between the brackets",
             same(children[2], A) and A:get_parent_idx() == 2)
 
-    local container = {root = root, cursor_pos = vc.wref_mexpr(A), version = 0}
+    local container = mexpru.new_container(root, A, 0)
     mformula_new.make_supsub(container, fs, "sup")
 
     local final_children = mexpru.u(container.root).children

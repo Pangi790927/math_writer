@@ -72,7 +72,14 @@ longer exists is skipped silently by the io.open below, which is why "mexpr" cam
 scripts/mexpr.lua was deleted (2026-09-09) rather than being left to sit here reading as coverage.
 @date 2026-09-09 21:20 ]]
 local FILES = {"char", "mexpru", "mformula_new", "mformula_latex", "editor",
-               "content", "transforms", "ast", "prof", "input_recorder"}
+               "content", "transforms", "ast", "prof", "input_recorder",
+               --[[ Added 2026-09-12, after this exact fault shipped in mexpr_ast and the suite
+               said nothing: a `local function check_units` was called two hundred lines above its
+               own declaration, which Lua resolves as a nil global. The list was the gap, not the
+               check - these eleven files were simply never on it. ]]
+               "mexpr_ast", "ast_mexpr", "ast_gestures", "sealed", "glyphmap", "keymap",
+               "editor_text", "editor_definition", "editor_formula", "panel_help",
+               "panel_keymap"}
 
 function run_test()
     for _, name in ipairs(FILES) do
@@ -81,11 +88,26 @@ function run_test()
             local src = strip(f:read("*a"))
             f:close()
 
-            -- line number of every `local function NAME`, and of every bare `local NAME`
+            --[[ Line number of every `local function NAME` and of every `local NAME = ...`,
+            plus every bare `local NAME` forward declaration.
+
+            THE ASSIGNMENT FORM WAS ADDED 2026-09-12, after the same fault landed twice in one
+            session: `local U_SHAPE = sealed.declare(...)` written below a function that reads
+            `U_SHAPE.check`. A local is a local whether it holds a function or a table, and a
+            member read off one before its declaration resolves to a nil GLOBAL exactly the way a
+            call does. Only the call form was checked, so both times the suite passed and the app
+            threw. ]]
             local defined, forward, line = {}, {}, 0
             for text in src:gmatch("[^\n]*") do
                 line = line + 1
+                --[[ The assignment form is taken only at FILE SCOPE - `local X =` at column zero.
+                A value local inside a function body is re-declared constantly (`local u`, `local
+                bb`) and has nothing to do with a same-named one in another function, so tracking
+                those makes the check scope-blind and it reports pure noise. What this is for is
+                the file-level declarations - shapes, constants, tables - which is exactly the case
+                that bit twice. ]]
                 local fn = text:match("^%s*local%s+function%s+([%w_]+)")
+                        or text:match("^local%s+([%w_]+)%s*=")
                 if fn and not defined[fn] then
                     defined[fn] = line
                 end
@@ -99,12 +121,21 @@ function run_test()
             line = 0
             for text in src:gmatch("[^\n]*") do
                 line = line + 1
+                --[[ A CALL or a MEMBER READ: `f(` and `T.x` both reach the local, and both
+                are nil if it is not in scope yet. ]]
+                local uses = {}
                 for callee in text:gmatch("([%w_]+)%s*%(") do
+                    uses[#uses + 1] = callee
+                end
+                for owner in text:gmatch("([%w_]+)%s*%.") do
+                    uses[#uses + 1] = owner
+                end
+                for _, callee in ipairs(uses) do
                     local def = defined[callee]
                     if def and line < def then
                         local fwd = forward[callee]
                         check(string.format(
-                                "%s.lua:%d calls %s() but its local is declared at line %d"
+                                "%s.lua:%d uses %s but its local is declared at line %d"
                                 .. " (needs a forward declaration)",
                                 name, line, callee, def),
                                 fwd ~= nil and fwd < line)

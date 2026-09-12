@@ -1,3 +1,17 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+new_state()                             -> state_help
+draw(state_help: panel_help.state_help, stamp, fontset: fontset) -> nothing
+    The F1 screen: chapter list on the left, the chapter on the right.
+
+chapters()                              -> {chapter, ...}
+    The chapters in listing order, exposed so the help panel is not
+    the only thing that can enumerate them.
+
+--- internal, not on the module table --------------------------------------------------------------
+    the chapter texts, layout and scrolling
+@date 2026-09-12 03:25
+================================================================================================= ]]
+
 --[[
 panel_help.lua - the F1 screen: what this editor does that no key list can tell you, with every
 key name in the prose taken from the live keymap.
@@ -25,6 +39,7 @@ is real rather than an approximation, and wrap() can count characters instead of
 ]]
 
 local vc = require("virt_composer")
+local sealed = require("sealed")
 local keymap = require("keymap")
 local mformula = require("mformula_new")
 local mexpru = require("mexpru")
@@ -781,10 +796,10 @@ local function draw_marked_line(line)
             if is_key then
                 local p = vc.ImGui_GetCursorScreenPos()
                 local sz = vc.ImGui_CalcTextSize(piece)
-                vc.ImGui_AddRectFilled({x = p.x - 3, y = p.y},
-                        {x = p.x + sz.x + 3, y = p.y + sz.y}, KEY_BG, 3)
-                vc.ImGui_AddRect({x = p.x - 3, y = p.y},
-                        {x = p.x + sz.x + 3, y = p.y + sz.y}, KEY_EDGE, 3, 1)
+                vc.ImGui_AddRectFilled({x = p.x - 3, y = p.y}, {x = p.x + sz.x + 3,
+                        y = p.y + sz.y}, KEY_BG, 3)
+                vc.ImGui_AddRect({x = p.x - 3, y = p.y}, {x = p.x + sz.x + 3, y = p.y + sz.y},
+                        KEY_EDGE, 3, 1)
             end
             vc.ImGui_Text(piece)
         end
@@ -1089,8 +1104,8 @@ local function draw_letters_reference(fontset, body_w)
     local rows = {}
     glyphmap.each(function(key_name, slots)
         if slots.alt or slots.alt_shift then
-            rows[#rows + 1] = {key = glyphmap.key_label(key_name),
-                    alt = slots.alt, alt_shift = slots.alt_shift}
+            rows[#rows + 1] = {key = glyphmap.key_label(key_name), alt = slots.alt,
+                    alt_shift = slots.alt_shift}
         end
     end)
 
@@ -1192,6 +1207,18 @@ local function build_figures(lines, fontset)
     return figs
 end
 
+--[[ THE `state_help` CONTAINER - the help panel's own state. Declared through sealed.lua; see that
+file for the rule. Lives on the document state (`state.help_state`) rather than as a module upvalue,
+so it dies with the document rather than persisting into the next one.
+@date 2026-09-12 05:55 ]]
+local STATE_HELP_FIELDS = {
+    chapter        = "which chapter is on screen",
+    scroll_of      = "{chapter -> scroll position}, so switching back returns where you were",
+    pending_scroll = "a scroll to apply once the chapter has been laid out",
+    pending_frames = "how many frames that pending scroll still has to wait for a real layout",
+}
+local STATE_HELP_SHAPE = sealed.declare("panel_help", "state_help", STATE_HELP_FIELDS)
+
 --[[ The panel's state. It is created with the content state and lives there, not here, which is
 what makes a reading position survive closing and reopening the panel.
 
@@ -1201,7 +1228,7 @@ what makes a reading position survive closing and reopening the panel.
   pending_frames  how many frames that request has left to run; see draw()
 @date 2026-09-08 07:43 ]]
 function panel_help.new_state()
-    return {chapter = 1, pending_scroll = nil, scroll_of = {}}
+    return STATE_HELP_SHAPE.wrap{chapter = 1, pending_scroll = nil, scroll_of = {}}
 end
 
 --[[ Draws the whole screen - chapter list on the left, the chapter itself on the right.
@@ -1210,12 +1237,13 @@ Called from content.draw() while state.show_help is set. content's own handle_in
 returned early by then, so this owns the frame: it may submit real widgets, and it reads the
 navigation keys itself rather than being handed them.
 
-  hstate   the state from new_state(); read and written
+  state_help   the state from new_state(); read and written
   stamp    content's keymap revision. It joins the page's cache key, so a rebinding rewrites the
            prose on the next frame rather than at the next chapter change
   fontset  the fonts figures and examples are built with; without one they are skipped
 @date 2026-09-08 07:43 ]]
-function panel_help.draw(hstate, stamp, fontset)
+function panel_help.draw(state_help, stamp, fontset)
+    STATE_HELP_SHAPE.check(state_help)
     local size = vc.ImGui_GetDisplaySize()
     vc.ImGui_AddRectFilled({x = 0, y = 0}, {x = size.x, y = size.y}, BG_COLOR, 0)
 
@@ -1248,8 +1276,8 @@ function panel_help.draw(hstate, stamp, fontset)
     -- Chapter list, left. A child region so a long list scrolls on its own rather than pushing
     -- the page off the bottom.
     vc.ImGui_SetCursorPos({x = PAD, y = PAD + line_h * 2})
-    if vc.ImGui_BeginChild("help_chapters",
-            {x = SIDEBAR_W, y = size.y - PAD * 2 - line_h * 2}, 0, 0) then
+    if vc.ImGui_BeginChild("help_chapters", {x = SIDEBAR_W, y = size.y - PAD * 2 - line_h * 2}, 0,
+            0) then
         for i, ch in ipairs(CHAPTERS) do
             -- PushID per row: every Selectable would otherwise be identified by its label alone,
             -- and two chapters that ever share a title would become the same widget.
@@ -1261,14 +1289,14 @@ function panel_help.draw(hstate, stamp, fontset)
             -- Sub-chapters are indented under their parent; the number already says which is
             -- which, and the indent makes the shape readable at a glance.
             local label = (ch.sub and "   " or "") .. CHAPTER_NUMBERS[i] .. ". " .. ch.title
-            if vc.ImGui_Selectable(label, i == hstate.chapter, 0, {x = 0, y = 0})
-                    and i ~= hstate.chapter then
+            if vc.ImGui_Selectable(label, i == state_help.chapter, 0, {x = 0, y = 0})
+                    and i ~= state_help.chapter then
                 --[[ Picked from the list: restore where this chapter was left, or start at the top
                 if it has never been opened. The scroll of the chapter being LEFT was recorded by
                 the body block above on this same frame, so it is already safe to switch away. ]]
-                hstate.chapter = i
-                hstate.pending_scroll = (hstate.scroll_of and hstate.scroll_of[i]) or "top"
-                hstate.pending_frames = 2
+                state_help.chapter = i
+                state_help.pending_scroll = (state_help.scroll_of and state_help.scroll_of[i]) or "top"
+                state_help.pending_frames = 2
             end
             vc.ImGui_PopID()
         end
@@ -1276,18 +1304,18 @@ function panel_help.draw(hstate, stamp, fontset)
     vc.ImGui_EndChild()
 
     -- Page, right.
-    local ch = CHAPTERS[hstate.chapter] or CHAPTERS[1]
+    local ch = CHAPTERS[state_help.chapter] or CHAPTERS[1]
     -- `columns` joins the cache key: a resize changes the wrap, and a page cached at the old width
     -- would keep its old line breaks until the chapter was switched.
-    if cache.chapter ~= hstate.chapter or cache.stamp ~= stamp or cache.columns ~= columns then
-        cache.chapter, cache.stamp, cache.columns = hstate.chapter, stamp, columns
+    if cache.chapter ~= state_help.chapter or cache.stamp ~= stamp or cache.columns ~= columns then
+        cache.chapter, cache.stamp, cache.columns = state_help.chapter, stamp, columns
         cache.lines = wrap(resolve(ch.body), columns)
         cache.figures = fontset and build_figures(cache.lines, fontset) or {}
     end
 
     local x = body_x
     vc.ImGui_SetCursorPos({x = x, y = PAD + line_h * 2})
-    vc.ImGui_Text(CHAPTER_NUMBERS[hstate.chapter] .. ". " .. ch.title)
+    vc.ImGui_Text(CHAPTER_NUMBERS[state_help.chapter] .. ". " .. ch.title)
 
     --[[ SetCursorPos AGAIN, immediately before BeginChild. After a Text() ImGui puts the cursor
     back at the window's own content x, not at the x that Text was drawn at - so without this the
@@ -1316,18 +1344,18 @@ function panel_help.draw(hstate, stamp, fontset)
         A remembered position beats the directional default below, because landing where you were
         reading is what returning means; only a chapter never opened falls back to top or bottom
         depending on which way you arrived at it. ]]
-        hstate.scroll_of = hstate.scroll_of or {}
+        state_help.scroll_of = state_help.scroll_of or {}
 
         local function go_to_chapter(n, fallback)
             -- Save this chapter's place before leaving it, or returning would restore whatever it
             -- held the previous time rather than where you actually are now.
-            hstate.scroll_of[hstate.chapter] = y
-            hstate.chapter = n
-            hstate.pending_scroll = hstate.scroll_of[n] or fallback
-            hstate.pending_frames = 2
+            state_help.scroll_of[state_help.chapter] = y
+            state_help.chapter = n
+            state_help.pending_scroll = state_help.scroll_of[n] or fallback
+            state_help.pending_frames = 2
         end
 
-        if hstate.pending_scroll ~= nil then
+        if state_help.pending_scroll ~= nil then
             --[[ Applied over TWO frames, not one, and the difference is visible.
 
             ImGui reports a window's scroll extent from the size measured on the PREVIOUS frame,
@@ -1339,57 +1367,57 @@ function panel_help.draw(hstate, stamp, fontset)
             extent; the first is not wasted, it puts the page approximately right so nothing
             visibly jumps. ]]
             local want
-            if hstate.pending_scroll == "top" then
+            if state_help.pending_scroll == "top" then
                 want = 0
-            elseif hstate.pending_scroll == "bottom" then
+            elseif state_help.pending_scroll == "bottom" then
                 want = maxy
             else
                 -- A chapter may have been re-wrapped narrower since you left it, so a remembered
                 -- offset can genuinely be past its end - clamped against the SETTLED extent.
-                want = math.max(0, math.min(hstate.pending_scroll, maxy))
+                want = math.max(0, math.min(state_help.pending_scroll, maxy))
             end
             vc.ImGui_SetScrollY(want)
-            hstate.pending_frames = (hstate.pending_frames or 2) - 1
-            if hstate.pending_frames <= 0 then
-                hstate.pending_scroll = nil
-                hstate.pending_frames = nil
+            state_help.pending_frames = (state_help.pending_frames or 2) - 1
+            if state_help.pending_frames <= 0 then
+                state_help.pending_scroll = nil
+                state_help.pending_frames = nil
             end
         else
             -- Only recorded while actually reading - never on the frame a restore is being
             -- applied, when `y` is still the outgoing page's.
-            hstate.scroll_of[hstate.chapter] = y
+            state_help.scroll_of[state_help.chapter] = y
 
             --[[ LEFT/RIGHT jump straight to the neighbouring chapter, whatever the scroll. A
             long chapter was otherwise only reachable end-to-end by holding Down through all of
             it, and moving between chapters is a different intention from reading one. ]]
             if keymap.pressed("help.next_chapter") then
-                if hstate.chapter < #CHAPTERS then
-                    go_to_chapter(hstate.chapter + 1, "top")
+                if state_help.chapter < #CHAPTERS then
+                    go_to_chapter(state_help.chapter + 1, "top")
                 end
             elseif keymap.pressed("help.prev_chapter") then
-                if hstate.chapter > 1 then
+                if state_help.chapter > 1 then
                     --[[ "top", not "bottom": arriving by a deliberate jump means you want the
                     chapter, so it starts at its beginning. Up/Down below arrive by running off an
                     edge, which is the case where landing at the near end is what continues the
                     reading. Either way a remembered position still wins. ]]
-                    go_to_chapter(hstate.chapter - 1, "top")
+                    go_to_chapter(state_help.chapter - 1, "top")
                 end
 
             -- UP/DOWN scroll, and only turn the page once this one has no more to give.
             elseif keymap.pressed("help.scroll_down") then
                 if y < maxy - 1 then
                     vc.ImGui_SetScrollY(math.min(maxy, y + step))
-                elseif hstate.chapter < #CHAPTERS then
-                    go_to_chapter(hstate.chapter + 1, "top")
+                elseif state_help.chapter < #CHAPTERS then
+                    go_to_chapter(state_help.chapter + 1, "top")
                 end
             elseif keymap.pressed("help.scroll_up") then
                 if y > 1 then
                     vc.ImGui_SetScrollY(math.max(0, y - step))
-                elseif hstate.chapter > 1 then
+                elseif state_help.chapter > 1 then
                     --[[ Arriving at the previous chapter from BELOW lands at its end - the part
                     you were next to - rather than skipping everything between. Only when it has
                     no remembered position of its own, which takes precedence. ]]
-                    go_to_chapter(hstate.chapter - 1, "bottom")
+                    go_to_chapter(state_help.chapter - 1, "bottom")
                 end
             end
         end
@@ -1444,6 +1472,11 @@ end
 
 -- Exposed for the tests: every {placeholder} in every chapter must name a real action.
 -- @date 2026-09-08 07:43
+--[[ The help chapters, in the order the panel lists them.
+
+Exposed so the F1 screen is not the only thing that can enumerate them - the keymap panel names the
+same chapters when it points at the help. The live table, not a copy: read it.
+@date 2026-09-12 03:25 ]]
 function panel_help.chapters()
     return CHAPTERS
 end

@@ -1,3 +1,35 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+origins(root: node)                     -> {ast id -> mexpr node}
+var_origins(ns: ast.ns, origins: {ast id -> mexpr node}) -> {VAR id -> mexpr node}
+    Where each ast node's ink IS, read off the tags the parse left.
+    var_origins answers the looser question - any drawing of a use of
+    this variable - which is what lets a duplicated factor be copied
+    from a reference the source only wrote once.
+
+build(fontset: fontset, source_root, ns: ast.ns, node: node, sz: size) -> mexpr row | nil, reason
+container(fontset: fontset, source_root, ns: ast.ns, node: node, sz: size)
+          -> container | nil, reason
+    An ast tree written back out as glyphs, copying what was drawn for
+    anything with an IDENTITY and building the rest. `container` wraps
+    the row with a cursor and a version so an editor can hold it.
+    REFUSES BY NAME what it cannot write - fractions, calls, big
+    operators, relations - because a refusal is a correct answer and a
+    wrong drawing is not.
+
+verify(fontset: fontset, container: mformula.container, decls: {decl}, ns: ast.ns, node: node)
+       -> ok, want, got
+    Reparses what was built and compares shapes with what it was asked
+    to build. One parse, and it catches the whole class of bug that
+    matters here - a missing bracket, a dropped sign.
+
+--- internal, not on the module table --------------------------------------------------------------
+    new_write_ctx() THE ONE creator for the `ctx_write` every emit_* is handed
+    PREC/ATOM_PREC, glyph, glyph_desc, append, bracketed, emit_ref,
+    emit_digits, emit_num, emit_factors, negative_term, emit_sum,
+    emit_power
+@date 2026-09-12 03:20
+================================================================================================= ]]
+
 --[[
 ast_mexpr.lua - the way BACK: an ast tree, written out as the mexpr tree that draws it.
 
@@ -57,28 +89,49 @@ local function prec_of(node)
     return PREC[node.type] or ATOM_PREC
 end
 
+--[[ THE `ctx_write` CONTAINER - what every emit_* below is handed, and THE ONE CREATOR for it.
+
+NAMED `ctx_write`, NOT `ctx`. Three different containers in this project were called `ctx`: a
+plugin's (transforms.ctx, which keeps the bare name because it is the one that crosses files), the
+PARSER's in mexpr_ast, and this one. `ctx.ns` meant three different things depending on which file
+you were reading - the same collision four containers called `state` had, and fixed the same way.
+
+Its fields:
+    fs           the fontset every glyph is built at
+    sz           the LOGICAL size the output is written at
+    origins      ast id -> the mexpr node that DRAWS it, from ast_mexpr.origins
+    var_origins  VAR id -> a node drawing SOME reference to that variable
+
+NOT SEALED, unlike the containers that cross files: this is built here, read only by the emit_*
+locals below, and dropped when the write finishes. If it ever leaves this file it should be sealed,
+the same way mexpr_ast's `unit` carries that note.
+@date 2026-09-12 14:30 ]]
+local function new_write_ctx(fontset, sz, origins, var_origins)
+    return {fs = fontset, sz = sz, origins = origins, var_origins = var_origins}
+end
+
 --[[ One glyph, built the way every other glyph in this editor is: logical size on `u`, physical size
 in the geometry (mexpru.rescale's own rule). @date 2026-09-12 02:00 ]]
-local function glyph(ctx, ascii)
+local function glyph(ctx_write, ascii)
     local entry = char.find_by_ascii(ascii)
     if not entry then
         return nil
     end
-    local g = mexpru.mexpr_symbol(ctx.fs,
-            {size = mexpru.physical_sz(ctx.sz), code = entry.ncod}, true)
-    mexpru.u(g).sz = ctx.sz
+    local g = mexpru.mexpr_symbol(ctx_write.fs, {size = mexpru.physical_sz(ctx_write.sz), code = entry.ncod},
+            true)
+    mexpru.u(g).sz = ctx_write.sz
     return g
 end
 
 --[[ The same, for a glyph that has no ascii key of its own - the centred dot. @date 2026-09-12 ]]
-local function glyph_desc(ctx, desc)
+local function glyph_desc(ctx_write, desc)
     local entry = char.find_by_desc(desc)
     if not entry then
         return nil
     end
-    local g = mexpru.mexpr_symbol(ctx.fs,
-            {size = mexpru.physical_sz(ctx.sz), code = entry.ncod}, true)
-    mexpru.u(g).sz = ctx.sz
+    local g = mexpru.mexpr_symbol(ctx_write.fs, {size = mexpru.physical_sz(ctx_write.sz), code = entry.ncod},
+            true)
+    mexpru.u(g).sz = ctx_write.sz
     return g
 end
 
@@ -100,8 +153,8 @@ not see the content it had to fit.
 THE PEER IS A `u` TABLE, never a node: that is the established identity key, it survives the rebuild
 that resolve_bracket_pairs performs, and it holds nothing weakly-referenced.
 @date 2026-09-12 02:00 ]]
-local function bracketed(ctx, run)
-    local open, close = glyph(ctx, "("), glyph(ctx, ")")
+local function bracketed(ctx_write, run)
+    local open, close = glyph(ctx_write, "("), glyph(ctx_write, ")")
     if not open or not close then
         return nil, "no bracket glyphs in the font"
     end
@@ -120,30 +173,28 @@ mexpr's children live under different names per kind; an unknown kind simply con
 which is the right failure - it means "no copy available here", and the caller then refuses.
 @date 2026-09-12 02:00 ]]
 function ast_mexpr.origins(root)
+    mexpru.check_node(root, "root")
     local out = {}
+    --[[ THE EDGES COME FROM mexpru.child_links, not from a list written out here. They were written
+    out here - children, slots, base, sup, sub, target, num, den - which made this a second
+    declaration of the node shape, free to fall behind mexpru's own. A node-valued field added there
+    and forgotten here would leave this map incomplete, and an incomplete map is not loud: the
+    writer would re-render the glyphs it could not find rather than copying them, and the only
+    symptom would be a decoration or a spacing quietly lost.
+
+    `u()` always returns a table, so the old `if not u then return end` could never fire. A nil
+    CHILD is different and still guarded - most nodes have most links unset. ]]
     local function walk(node)
         if not node then
             return
         end
         local u = mexpru.u(node)
-        if not u then
-            return
-        end
         if u.ast_draws then
             out[u.ast_draws] = node
         end
-        for _, child in ipairs(u.children or {}) do
+        for _, child in ipairs(mexpru.child_links(node)) do
             walk(child)
         end
-        for _, slot in ipairs(u.slots or {}) do
-            walk(slot)
-        end
-        walk(u.base)
-        walk(u.sup)
-        walk(u.sub)
-        walk(u.target)
-        walk(u.num)
-        walk(u.den)
     end
     walk(root)
     return out
@@ -168,13 +219,19 @@ FIRST ONE WINS, arbitrarily and safely: every reference to one variable draws th
 would not be the same variable.
 @date 2026-09-12 02:30 ]]
 function ast_mexpr.var_origins(ns, origins)
+    --[[ `if not ns or not ns.by_id then return out end` is gone. It turned a missing namespace into
+    an EMPTY MAP, which is not a refusal - it is the same answer as "this tree has no references",
+    so the writer would have gone on to re-render every name instead of copying it, and the only
+    symptom would be decorations lost. A namespace is required here; say so. ]]
+    ast.check_ns(ns)
+    assert(type(origins) == "table", "var_origins needs an origins map, as ast_mexpr.origins builds")
+
     local out = {}
-    if not ns or not ns.by_id then
-        return out
-    end
     for id, mexpr_node in pairs(origins) do
-        local node = ns.by_id[id]
-        if type(node) == "table" and node.type == ast.VREF and not out[node[1]] then
+        --[[ `type(node) == "table"` used to guard this. ast.node_of answers a node or nil and
+        nothing else, so the test is now just "did anything answer to that id". ]]
+        local node = ast.node_of(ns, id)
+        if node and node.type == ast.VREF and not out[node[1]] then
             out[node[1]] = mexpr_node
         end
     end
@@ -185,12 +242,12 @@ end
 nothing to copy - a name this parse never saw drawn, which today means a declared name (whose spans
 are not recorded yet). Refusing is the point: there is no way to draw a name from its string.
 @date 2026-09-12 02:00 ]]
-local function emit_ref(ctx, node)
-    local src = ctx.origins[node.id] or ctx.var_origins[node[1]]
+local function emit_ref(ctx_write, node)
+    local src = ctx_write.origins[node.id] or ctx_write.var_origins[node[1]]
     if not src then
         return nil, "nothing to copy for this name - it was never drawn in the source"
     end
-    return {mformula_new.clone_node(ctx.fs, src)}
+    return {mformula_new.clone_node(ctx_write.fs, src)}
 end
 
 --[[ A whole number, as its digits. Numbers are the one leaf with no identity to preserve: a `3` is
@@ -200,15 +257,15 @@ REFUSES A FRACTION (n ~= 1) and INFINITY (n == 0), which are real numbers this f
 a fraction needs mexpru.mexpr_frac and a stage this is not at. `sign` is handled here only for a
 number standing alone; inside a sum the sign IS the operator and emit_sum strips it first.
 @date 2026-09-12 02:00 ]]
-local function emit_digits(ctx, m)
+local function emit_digits(ctx_write, m)
     local run = {}
     for d in tostring(math.abs(m)):gmatch("%d") do
-        run[#run + 1] = glyph(ctx, d)
+        run[#run + 1] = glyph(ctx_write, d)
     end
     return run
 end
 
-local function emit_num(ctx, node)
+local function emit_num(ctx_write, node)
     local m, n, sign = node[1], node[2], node[3]
     if n ~= 1 then
         return nil, "only whole numbers can be written back so far (got "
@@ -216,9 +273,9 @@ local function emit_num(ctx, node)
     end
     local run = {}
     if (sign or 1) < 0 then
-        run[#run + 1] = glyph(ctx, "-")
+        run[#run + 1] = glyph(ctx_write, "-")
     end
-    return append(run, emit_digits(ctx, m))
+    return append(run, emit_digits(ctx_write, m))
 end
 
 local emit    -- forward: the four below are mutually recursive with it
@@ -231,18 +288,18 @@ be several glyphs long. The rule is therefore CONSERVATIVE: a dot before any num
 not the first. It never changes the meaning, and re-parsing proves it - which is what verify() is
 for.
 @date 2026-09-12 02:00 ]]
-local function emit_factors(ctx, node, from)
+local function emit_factors(ctx_write, node, from)
     local run = {}
     for i = from, #node do
         local child = node[i]
-        local sub, err = emit(ctx, child, PREC[ast.MUL])
+        local sub, err = emit(ctx_write, child, PREC[ast.MUL])
         if not sub then
             return nil, err
         end
         if #run > 0 and child.type == ast.NUM then
             -- The centred dot the parser reads as multiplication (MUL_OPS), not an asterisk, which
             -- it reads as nothing at all.
-            run[#run + 1] = glyph_desc(ctx, "\\cdot")
+            run[#run + 1] = glyph_desc(ctx_write, "\\cdot")
         end
         append(run, sub)
     end
@@ -271,25 +328,25 @@ local function negative_term(child)
 end
 
 --[[ A sum, with its signs written as the operators they are. @date 2026-09-12 02:00 ]]
-local function emit_sum(ctx, node)
-    local run, err = emit(ctx, node[1], PREC[ast.ADD])
+local function emit_sum(ctx_write, node)
+    local run, err = emit(ctx_write, node[1], PREC[ast.ADD])
     if not run then
         return nil, err
     end
     for i = 2, #node do
         local child = node[i]
         local negative = negative_term(child)
-        run[#run + 1] = glyph(ctx, negative and "-" or "+")
+        run[#run + 1] = glyph(ctx_write, negative and "-" or "+")
 
         local part
         if not negative then
-            part, err = emit(ctx, child, PREC[ast.ADD])
+            part, err = emit(ctx_write, child, PREC[ast.ADD])
         elseif child.type == ast.NUM then
             -- The sign became the operator, so the number itself is written unsigned.
             if child[2] ~= 1 then
                 return nil, "only whole numbers can be written back so far"
             end
-            part = emit_digits(ctx, child[1])
+            part = emit_digits(ctx_write, child[1])
         else
             local coefficient = child[1]
             if coefficient[2] ~= 1 then
@@ -297,9 +354,9 @@ local function emit_sum(ctx, node)
             end
             --[[ `-1 \cdot b` is spelled `-b`: a unit coefficient is the sign and nothing else, so
             it contributes no digits. Any other coefficient keeps its own. ]]
-            part = (coefficient[1] == 1) and {} or emit_digits(ctx, coefficient[1])
+            part = (coefficient[1] == 1) and {} or emit_digits(ctx_write, coefficient[1])
             local tail
-            tail, err = emit_factors(ctx, child, 2)
+            tail, err = emit_factors(ctx_write, child, 2)
             part = tail and append(part, tail) or nil
         end
         if not part then
@@ -320,21 +377,21 @@ with becomes the supsub's base.
 THE EXPONENT IS A ROW OF ITS OWN, one size step smaller - the same step typing produces
 (mformula_new.SUB_SIZE_DELTA), so a built power and a typed one are the same tree.
 @date 2026-09-12 02:00 ]]
-local function emit_power(ctx, node)
-    local base, err = emit(ctx, node[1], ATOM_PREC)
+local function emit_power(ctx_write, node)
+    local base, err = emit(ctx_write, node[1], ATOM_PREC)
     if not base then
         return nil, err
     end
-    local sup_sz = math.min(ctx.sz + mformula_new.SUB_SIZE_DELTA, mexpru.MAX_SIZE_INDEX)
+    local sup_sz = math.min(ctx_write.sz + mformula_new.SUB_SIZE_DELTA, mexpru.MAX_SIZE_INDEX)
     local inner
-    inner, err = emit({fs = ctx.fs, sz = sup_sz, origins = ctx.origins,
-            var_origins = ctx.var_origins}, node[2], 1)
+    inner, err = emit({fs = ctx_write.fs, sz = sup_sz, origins = ctx_write.origins,
+            var_origins = ctx_write.var_origins}, node[2], 1)
     if not inner then
         return nil, err
     end
     local carrier = base[#base]
-    base[#base] = mexpru.supsub(ctx.fs, carrier, mexpru.horiz(ctx.fs, inner, sup_sz), nil,
-            mexpru.u(carrier).sz or ctx.sz, mexpru.PLACE_BESIDE, mexpru.PLACE_BESIDE)
+    base[#base] = mexpru.supsub(ctx_write.fs, carrier, mexpru.horiz(ctx_write.fs, inner, sup_sz), nil,
+            mexpru.u(carrier).sz or ctx_write.sz, mexpru.PLACE_BESIDE, mexpru.PLACE_BESIDE)
     return base
 end
 
@@ -344,22 +401,22 @@ is in this model: several slots of one row, with no node of their own.
 `min_prec` is what the surrounding context requires; a node binding looser than that is bracketed
 here, in one place, rather than at each site that could need it.
 @date 2026-09-12 02:00 ]]
-emit = function(ctx, node, min_prec)
+emit = function(ctx_write, node, min_prec)
     if type(node) ~= "table" or not node.type then
         return nil, "not an ast node: " .. tostring(node)
     end
 
     local run, err
     if node.type == ast.VREF then
-        run, err = emit_ref(ctx, node)
+        run, err = emit_ref(ctx_write, node)
     elseif node.type == ast.NUM then
-        run, err = emit_num(ctx, node)
+        run, err = emit_num(ctx_write, node)
     elseif node.type == ast.MUL then
-        run, err = emit_factors(ctx, node, 1)
+        run, err = emit_factors(ctx_write, node, 1)
     elseif node.type == ast.ADD then
-        run, err = emit_sum(ctx, node)
+        run, err = emit_sum(ctx_write, node)
     elseif node.type == ast.EXP then
-        run, err = emit_power(ctx, node)
+        run, err = emit_power(ctx_write, node)
     else
         return nil, "cannot write a " .. (ast.type_name(node.type) or "?") .. " back yet"
     end
@@ -367,7 +424,7 @@ emit = function(ctx, node, min_prec)
         return nil, err
     end
     if prec_of(node) < (min_prec or 1) then
-        return bracketed(ctx, run)
+        return bracketed(ctx_write, run)
     end
     return run
 end
@@ -382,15 +439,17 @@ Returns the root node, or nil plus a reason. Positions are updated here, since n
 can measure a tree that has never been laid out.
 @date 2026-09-12 02:00 ]]
 function ast_mexpr.build(fontset, source_root, ns, node, sz)
+    ast.check_ns(ns)
+    ast.check_node(node, "node")
+    --[[ `source_root` is OPTIONAL - nil means there is no source drawing to copy from, which is a
+    real case: a tree built from scratch has nothing to inherit. Checked only when given. ]]
+    if source_root ~= nil then
+        mexpru.check_node(source_root, "source_root")
+    end
     sz = sz or mexpru.DEFAULT_SIZE
     local origins = source_root and ast_mexpr.origins(source_root) or {}
-    local ctx = {
-        fs = fontset,
-        sz = sz,
-        origins = origins,
-        var_origins = ast_mexpr.var_origins(ns, origins),
-    }
-    local run, err = emit(ctx, node, 1)
+    local ctx_write = new_write_ctx(fontset, sz, origins, ast_mexpr.var_origins(ns, origins))
+    local run, err = emit(ctx_write, node, 1)
     if not run then
         return nil, err
     end
@@ -410,12 +469,7 @@ function ast_mexpr.container(fontset, source_root, ns, node, sz)
     if not root then
         return nil, err
     end
-    local children = mexpru.u(root).children
-    return {
-        root = root,
-        cursor_pos = vc.wref_mexpr(children[#children] or root),
-        version = 0,
-    }
+    return mexpru.new_container(root, mexpru.last_slot(root))
 end
 
 --[[ Does the built mexpr parse back to the tree it was built from?
@@ -433,6 +487,9 @@ Returns true, or false plus both shapes - the caller prints them, because a diff
 only useful thing to say when this fails.
 @date 2026-09-12 02:00 ]]
 function ast_mexpr.verify(fontset, container, decls, ns, node)
+    mexpru.check_container(container)
+    ast.check_ns(ns)
+    ast.check_node(node, "node")
     local mexpr_ast = require("mexpr_ast")
     local want = ast.shape(ns, node)
     local reparsed, err, new_ns = mexpr_ast.build(fontset, container, decls or {})

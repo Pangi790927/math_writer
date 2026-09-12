@@ -1,3 +1,36 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+TIMING
+wrap(name: string, fn: function)        -> fn'
+    An instrumented copy of `fn`, reporting its own inclusive time.
+begin(name: string) / stop(name: string) -> nothing
+    A named scope for a PHASE that is not one function. Every begin
+    needs its stop.
+event(name: string)                     -> nothing
+    Tags the current frame with something that happened in it.
+now_ms()                                -> ms
+    The profiler's own clock, so hand timing reads the same one.
+
+THE PANEL
+set_enabled(on: boolean) / enabled()    -> nothing / boolean
+overlay_visible()                       -> boolean
+    `enabled` is "timing is being collected", which a spike recording
+    does with the overlay hidden - these are not the same question.
+reset()                                 -> nothing
+report()                                -> text
+
+SPIKE RECORDING
+record_start(path: string, threshold_ms: number) -> ok
+record_stop() / recording()             -> nothing / boolean
+spike_count()                           -> n
+    Every frame slower than the threshold, with its breakdown, to a
+    file. INDEPENDENT OF THE OVERLAY on purpose: the overlay costs
+    real milliseconds and has itself been the largest item in a spike.
+
+--- internal, not on the module table --------------------------------------------------------------
+    everything is a thin pass to perf_composer.h
+@date 2026-09-12 03:35
+================================================================================================= ]]
+
 --[[
 prof.lua - Lua front end for perf_composer.h's profiler.
 
@@ -141,6 +174,8 @@ end
 
 -- Whether the PANEL should be drawn - what content.lua asks. Not the same as enabled(): a recording
 -- runs with this false, which is the whole point.
+--[[ Whether the profiler PANEL is on screen. Distinct from `enabled` above, which is true while
+timing is being collected for any reason - a spike recording collects with the overlay hidden. @date 2026-09-12 03:35 ]]
 function prof.overlay_visible()
     return overlay
 end
@@ -158,6 +193,9 @@ function prof.report()
 end
 
 -- Raw clock, milliseconds, for a one-off measurement that doesn't deserve a named scope.
+--[[ The profiler's own clock, in milliseconds. Used so a caller timing something by hand reads the
+same clock the frame breakdown does,
+        rather than a second one that drifts against it. @date 2026-09-12 03:35 ]]
 function prof.now_ms()
     return vc.prof_now_ms()
 end
@@ -188,6 +226,11 @@ function prof.recording()
     return vc.prof_recording()
 end
 
+--[[ How many frames the running spike recording has written so far.
+
+What the overlay shows to say a recording is doing something: a threshold set too high records
+nothing,
+        and without a count that is indistinguishable from a recording that never started. @date 2026-09-12 03:35 ]]
 function prof.spike_count()
     return vc.prof_spike_count()
 end

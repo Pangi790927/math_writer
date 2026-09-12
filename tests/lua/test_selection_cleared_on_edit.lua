@@ -49,12 +49,13 @@ function run_test()
         local root = mexpru.horiz(fs, {a, b, c}, SZ)
         mexpru.update_positions(root)
         local kids = mexpru.u(root).children
-        local container = {
-            root = root,
-            cursor_pos = vc.wref_mexpr(kids[3]),
-            sel_anchor = vc.wref_mexpr(kids[1]),
-            version = 0,
-        }
+        --[[ THROUGH THE CREATOR since 2026-09-12, because mformula_new's public functions check
+        what they are handed and a look-alike is refused by type. `sel_anchor` is the one field
+        new_container does not take - a selection is made by moving, not by constructing one - so it
+        is set afterwards, which the seal allows: it is a DECLARED field, just not a constructor
+        argument. ]]
+        local container = mexpru.new_container(root, kids[3], 0)
+        container.sel_anchor = vc.wref_mexpr(kids[1])
         return container, kids
     end
 

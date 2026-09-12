@@ -80,7 +80,18 @@ function run_test()
         return false
     end
 
-    local result, terr = transforms.distribute(ns, root, add.id)
+    --[[ THE PARAMS COME FROM THE OFFER as of 2026-09-12, not from a `{add = add.id}` written here.
+    distribute seals what its offer() builds and checks it on retrieval, so a hand-made table with
+    the right key is refused - the metatable is the type. That is not an assertion that stopped
+    holding either: it is the same assertion, made through the same door the right-click menu uses,
+    and it now also pins that offer and apply AGREE about the parameter, which two hand-written
+    tables could never have caught. ]]
+    local option = transforms.offers(ns, root, add)[1]
+    check("setup: distribute offers itself at the sum", option ~= nil)
+    if not option then
+        return false
+    end
+    local result, terr = transforms.apply(option.id, ns, root, option.params)
     check("distribute produces a tree", result ~= nil, terr)
     if not result then
         return false
@@ -121,7 +132,7 @@ function run_test()
     --[[ SAME NAMESPACE, deliberately: shared nodes keep their ids, which is what lets "has this
     changed?" be answered by identity instead of by comparing shapes. ]]
     check("the result lives in the namespace it came from",
-            rawequal(ns.by_id[result.id], result))
+            rawequal(ast.node_of(ns, result.id), result))
 
     if checks_failed == 0 then
         print("PASS: only what is used twice is copied (" .. checks_run .. " checks)")

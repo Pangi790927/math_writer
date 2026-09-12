@@ -72,7 +72,7 @@ function run_test()
     do
         local root = mexpru.horiz(fs, bracketed(fs, {glyph(fs, "a", SZ)}, SZ), SZ)
         mexpru.update_positions(root)
-        local latex = mformula_new.to_latex({root = root})
+        local latex = mformula_new.to_latex(mexpru.new_container(root))
         check("short pair round-trips as (a)", latex == "(a)", latex)
     end
 
@@ -91,7 +91,7 @@ function run_test()
         check("setup: both atoms still carry their own bracket tag",
                 mexpru.u(children[1]).bracket ~= nil and mexpru.u(children[3]).bracket ~= nil)
 
-        local latex = mformula_new.to_latex({root = root})
+        local latex = mformula_new.to_latex(mexpru.new_container(root))
         check("tall pair round-trips, grown - NOT \"!\"",
                 latex == "\\left(a^{i}\\right)", latex)
         check("no stray '!' anywhere in the output", not latex:find("!", 1, true), latex)
@@ -109,7 +109,7 @@ function run_test()
         local root = mexpru.horiz(fs, inner_horiz_children, SZ)
         mexpru.update_positions(root)
 
-        local latex = mformula_new.to_latex({root = root})
+        local latex = mformula_new.to_latex(mexpru.new_container(root))
         check("nested pairs round-trip, both grown",
                 latex == "\\left(\\left(a^{i}\\right)\\right)", latex)
     end

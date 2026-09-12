@@ -41,7 +41,8 @@ local function formula_of(fs, items)
     end
     local root = mexpru.horiz(fs, kids, SZ)
     mexpru.update_positions(root)
-    return {root = root, cursor_pos = vc.wref_mexpr(kids[#kids]), version = 0}
+    -- Through the creator: a container is a sealed type since 2026-09-12.
+    return mexpru.new_container(root, kids[#kids])
 end
 
 local function count_spaces(container)

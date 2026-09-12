@@ -1,3 +1,96 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+THE CONTAINER
+new(fontset: fontset, sz: size) / clone(container: mformula.container,
+    fontset: fontset) / clone_node(fontset: fontset, node: node)
+build_empty_atom(fontset: fontset, sz: size) -> node
+rescale(container: mformula.container, fontset: fontset) -> nothing
+set_warn_sink(fn: function)             -> nothing
+SUB_SIZE_DELTA                          constant
+    A container is {root, cursor_pos, version}. `version` is bumped by
+    every real TREE edit and by nothing else, which is how a caller
+    tells an edit from a cursor move.
+
+DRAWING AND MEASURING
+check_box(box: mformula_new.box)        -> box
+draw(container: mexpru.container, fontset: fontset, pos: {x,y}, sz: size, show_cursor: boolean,
+     draw_wireframe, wrap_edge: number) -> box
+measure(container: mexpru.container, fontset: fontset, sz: size, wrap_width: number) -> box
+    The SAME box draw() returns, with the caret fields unset.
+cursor_rect(container: mformula.container, pos: {x, y}, fontset: fontset, wrap_edge: number) -> {rect}
+cursor_box(container: mformula.container, fontset: fontset, sz: size, wrap_width: number) -> {highlight}
+vert_contours(container: mformula.container) -> {contour}
+slot_markers(container: mformula.container, fontset: fontset, sz: size) -> {marker}
+node_bbox(fontset: fontset, node: node) / node_rects(fontset: fontset, nodes)
+reachable_graph(container: mformula.container, fontset: fontset, sz: size, wrap_width: number)
+
+POINTING
+hit_test(container: mformula.container, fontset: fontset, sz: size, click: {x,y},
+         wrap_width: number, extend: boolean)
+glyph_at(fontset: fontset, node: node, click: {x,y}) -> node | nil
+node_at(container: mformula.container, fontset: fontset, sz: size, click: {x,y}, wrap_width: number)
+        -> node | nil
+    hit_test SNAPS to the nearest caret position and always lands;
+    node_at answers only for a glyph the point is really on. Different
+    questions, not halves of one.
+
+THE CURSOR
+cursor_to_start(container: mformula.container) -> nothing
+cursor_to_end(container: mformula.container) -> nothing
+cursor_path(container: mformula.container) / cursor_from_path(container: mformula.container,
+            path: string)
+move_left(container: mformula.container) -> moved
+move_right(container: mformula.container) -> moved
+move_up(container: mformula.container)  -> moved
+move_down(container: mformula.container) -> moved
+move_up_reverse(container: mformula.container) -> moved
+move_down_reverse(container: mformula.container) -> moved
+is_sprint_landmark(node: node)          -> boolean
+selection_range(container: mformula.container) -> horiz, lo, hi
+select_all(container: mformula.container) -> ok
+    A selection may never leave its horiz, which is why select_all
+    takes the ROOT row and moves the caret out to it.
+
+EDITING
+handle_input(container: mformula.container, fontset: fontset, sz: size) -> nothing
+make_supsub(container: mformula.container, fontset: fontset, slot: node, place: place) -> node
+make_frac(container: mformula.container, fontset: fontset, target_sz: size) -> node
+make_bigop(container: mformula.container, fontset: fontset, slot: node) -> node
+make_vert(container: mformula.container, fontset: fontset, target_sz: size) -> node
+shrink_vert(container: mformula.container, fontset: fontset) -> ok
+base_glyph(code: number, size_off: number | nil) -> mformula_new.base_glyph
+    The glyph a formula can be started from. Convert whatever you
+    are holding into one of these; it is all new_from_base takes.
+
+new_from_base(fontset: fontset, sz: size, base_glyph: mformula_new.base_glyph | nil,
+              slot: string) -> container
+new_with_frac(fontset: fontset, sz: size) -> container
+new_with_vert(fontset: fontset, sz: size) -> container
+toggle_accent(container: mformula.container, fontset: fontset, kind: string, where: string) -> ok
+adjust_dots(container: mformula.container, fontset: fontset, delta: number) -> ok
+collapse_empty_supsub(container: mformula.container, fontset: fontset) -> ok
+try_digraph(container: mformula.container, fontset: fontset, target: node, target_is_supsub_base: boolean, ch: string) -> ok
+try_resolve_command(container: mformula.container, fontset: fontset) -> ok
+delete_overprint_unit(container: mformula.container, fontset: fontset, target: node, target_parent: node, backspace: boolean) -> ok
+span_is_lone_placeholder(children: {node}, lo, hi) -> boolean
+
+BRACKETS
+open_bracket(container: mformula.container, fontset: fontset, bracket_type: string)
+try_close_bracket(container: mformula.container, fontset: fontset, bracket_type: string)
+innermost_unclosed_open(container: mformula.container) -> node | nil
+pending_integral(container: mformula.container) -> node | nil
+
+LATEX
+to_latex(container: mformula.container, subst) / nodes_to_latex(nodes, subst)
+from_latex(fontset: fontset, sz: size, text: string)
+    Thin passes to mformula_latex, so a caller holding a container
+    does not have to know which module renders it.
+
+--- internal, not on the module table --------------------------------------------------------------
+    the node constructors, the wrap passes, the navigation graph and
+    the bracket pairing
+@date 2026-09-12 04:10
+================================================================================================= ]]
+
 --[[
 mformula_new.lua - the structured expression editor. Holds mexpr_t itself (via mexpru.lua) as the
 live edited tree, rather than a separate Lua row/item model re-derived into mexpr on every change,
@@ -43,6 +136,7 @@ Everything else in this file is reached through those.
 local vc = require("virt_composer")
 local char = require("char")
 local mexpru = require("mexpru")
+local sealed = require("sealed")
 
 -- Set by main.lua to input_recorder.log_event, so live_cursor() can report a recovery without this
 -- file depending on the recorder (which would be a require cycle through char/prof). The local is
@@ -83,6 +177,7 @@ local innermost_unclosed_open
 that asks about typing has to be able to tell which moment it is in.
 @date 2026-09-10 23:40 ]]
 local function pending_integral(container)
+    mexpru.check_container(container)
     local open_atom = innermost_unclosed_open(container)
     if not open_atom then
         return nil
@@ -313,6 +408,15 @@ local function wrapper_base_sz(target)
             or (is_supsub(target) and mexpru.u(mexpru.u(target).base).sz)
 end
 
+--[[ The empty placeholder atom - a real, selectable node standing for "nothing here yet".
+
+Core: A SLOT IS NEVER TRULY EMPTY. An exponent with nothing in it, a fresh formula, a numerator
+waiting to be typed - each holds one of these, because a row with no children has no position to put
+a caret in and nothing to click on. That is why an empty formula is still navigable.
+
+Exported because from_latex needs one for input it could not read at all, and a test builds them
+directly.
+@date 2026-09-12 04:15 ]]
 local function build_empty_atom(fontset, sz)
     -- sz is LOGICAL (u(_).sz's own meaning, untouched by zoom - mexpru.rescale()'s own comment);
     -- the actual geometry below has to be built at the CURRENT PHYSICAL size (mexpru.physical_sz()
@@ -345,11 +449,7 @@ function mformula_new.new(fontset, sz)
     local empty_atom = build_empty_atom(fontset, sz)
     local root = mexpru.horiz(fontset, {empty_atom}, sz)
     mexpru.update_positions(root)
-    return {
-        root = root,
-        cursor_pos = vc.wref_mexpr(empty_atom),
-        version = 0,
-    }
+    return mexpru.new_container(root, empty_atom)
 end
 
 --[[ Parks the cursor at the formula's own start - what editor_text.lua uses when the caret walks
@@ -360,14 +460,15 @@ any further in, for the same reason move_left/move_right never enter a compound 
 at a formula is not the same as choosing a place inside it.
 @date 2026-09-08 09:30 ]]
 function mformula_new.cursor_to_start(container)
+    mexpru.check_container(container)
     container.cursor_pos = vc.wref_mexpr(container.root)
 end
 
 --[[ Parks the cursor after the last thing in the root row - where typing continues. Used when a
 formula is entered from the right, and after building one from LaTeX. @date 2026-09-08 09:10 ]]
 function mformula_new.cursor_to_end(container)
-    local children = mexpru.u(container.root).children
-    container.cursor_pos = vc.wref_mexpr(children[#children])
+    mexpru.check_container(container)
+    container.cursor_pos = vc.wref_mexpr(mexpru.last_slot(container.root))
 end
 
 --[[ How much room the formula actually occupies: {width, top, bottom} in the baseline frame,
@@ -524,6 +625,7 @@ through wrap_point() with the same x, so the whole band lands on one row - the r
 wrapped onto rather than its unwrapped spot.
 @date 2026-09-08 09:30 ]]
 function mformula_new.cursor_rect(container, pos, fontset, wrap_edge)
+    mexpru.check_container(container)
     local node = container.cursor_pos:get_obj()
     local t = cursor_target(fontset, node)
     -- Both LOGICAL (u(_).sz's own meaning), mapped to PHYSICAL before touching real font metrics -
@@ -571,6 +673,7 @@ version, and a new root at the freed one's address, in one frame - costs one fra
 contours.
 @date 2026-09-08 09:30 ]]
 function mformula_new.vert_contours(container)
+    mexpru.check_container(container)
     local key = tostring(container.version or 0) .. "/" .. tostring(container.root)
     local cache = container._contour_cache
     if cache and cache.key == key then
@@ -683,6 +786,33 @@ local function live_cursor(container)
     return container.root
 end
 
+--[[ THE `box` CONTAINER - what draw() hands back: where the formula ended up on screen.
+
+Declared and sealed because it crosses four files and is the basis of every click: editor.lua turns
+it into a click rect, and the three editors keep it from one frame to the next so the NEXT frame's
+input has something to hit-test against. A typo reading it - `box.hight` - would come back nil and a
+formula would simply stop being clickable, with nothing said.
+
+Everything in it is RELATIVE TO THE DRAW ORIGIN, and `top` is negative: the origin is the BASELINE,
+not the top of the ink.
+@date 2026-09-12 15:50 ]]
+local BOX_FIELDS = {
+    width      = "how far right the ink reaches from the origin",
+    top        = "the highest point, NEGATIVE - the origin is the baseline",
+    bottom     = "the lowest point",
+    cursor_top = "screen y of the caret's top this frame; UNSET when measuring, or when the "
+                 .. "caret was not drawn",
+    cursor_h   = "the caret's height, unset in the same cases - content.lua scrolls it into view",
+}
+local BOX_SHAPE = sealed.declare("mformula_new", "box", BOX_FIELDS)
+
+--[[ Asserts that this is a draw box, for a function elsewhere that takes one. Returns it.
+@date 2026-09-12 16:00 ]]
+function mformula_new.check_box(box)
+    return BOX_SHAPE.check(box, "box")
+end
+
+
 --[[ Draws the whole formula at `pos`, and returns the box it occupies.
 
 `pos` is a BASELINE origin, the same convention plain text uses, not a top-left corner. The return
@@ -706,6 +836,7 @@ This also draws what ImGui knows nothing about - the vert contours and their cel
 the glyphs, so they sit under the text.
 @date 2026-09-08 09:30 ]]
 function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wireframe, wrap_edge)
+    mexpru.check_container(container)
     if show_cursor == nil then
         show_cursor = true
     end
@@ -831,8 +962,8 @@ function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wirefr
                 local nb = node_box(kids[slot], fontset, sz, wrap_width, container.root)
                 local top = nb and (pos.y + nb.y) or math.min(a.top, b.top)
                 local bottom = nb and (pos.y + nb.y + nb.h) or math.max(a.bottom, b.bottom)
-                vc.ImGui_AddRectFilled({x = a.x, y = top},
-                        {x = right, y = bottom}, SELECTION_COLOR, 0)
+                vc.ImGui_AddRectFilled({x = a.x, y = top}, {x = right, y = bottom},
+                        SELECTION_COLOR, 0)
             end
             container.cursor_pos = saved_cursor
         end
@@ -850,7 +981,7 @@ function mformula_new.draw(container, fontset, pos, sz, show_cursor, draw_wirefr
         end
     end
 
-    return {width = ext.width, top = ext.top, bottom = ext.bottom,
+    return BOX_SHAPE.wrap{width = ext.width, top = ext.top, bottom = ext.bottom,
             cursor_top = cursor_top, cursor_h = cursor_h}
 end
 
@@ -863,8 +994,13 @@ draw() returns, so a formula cannot measure one size and draw another. Wrapping 
 is what lets a wrapped formula claim its extra rows in pass 1 rather than one frame late.
 @date 2026-09-08 09:30 ]]
 function mformula_new.measure(container, fontset, sz, wrap_width)
+    mexpru.check_container(container)
     local ext = content_extent(container, fontset, sz, wrap_width)
-    return {width = ext.width, top = ext.top, bottom = ext.bottom}
+    --[[ THE SAME `box` DRAW RETURNS, with the two caret fields simply unset - measuring does not
+    place a caret. It has to be the same type: editor.formula_click_rect is handed whichever of the
+    two the caller has, and both answer the same question about where the ink is. They were two
+    look-alike tables until 2026-09-12, which is why that function could not check what it got. ]]
+    return BOX_SHAPE.wrap{width = ext.width, top = ext.top, bottom = ext.bottom}
 end
 
 --[[ How every tree edit announces itself: bump the version, and DROP any selection with it.
@@ -923,6 +1059,7 @@ codebase's own convention. It was exported alongside the get_parent_idx ordering
 bug has a regression test against the real function rather than a hand-rolled mirror of it.
 @date 2026-09-08 09:30 ]]
 function mformula_new.make_supsub(container, fontset, slot, place)
+    mexpru.check_container(container)
     --[[ THE WHOLE DECISION LIVES HERE, not half here and half in the key handler. Fill the supsub
     already standing over this base, build one around it, or refuse - plan_decoration answers all
     three, and this is the only entry, so a test calling it directly gets exactly what a keypress
@@ -1015,7 +1152,7 @@ local function is_overprint(node)
         return false
     end
     local entry = char.find_by_ncod(node.symb.code)
-    return entry ~= nil and char.adv_by_desc[entry.desc] == 0
+    return entry ~= nil and char.advance_of(entry.desc) == 0
 end
 
 --[[ Deletes an overprinted pair as one symbol. Returns whether it did.
@@ -1030,6 +1167,7 @@ the bracket cascade - which this can never be part of. An overprint glyph is nev
 either half of the pair somehow carries one, this bails and lets the real cascade logic run.
 @date 2026-09-08 09:00 ]]
 local function delete_overprint_unit(container, fontset, target, target_parent, backspace)
+    mexpru.check_container(container)
     local horiz = target_parent
     if not horiz or mexpru.u(horiz).kind ~= "horiz" then
         return false
@@ -1191,6 +1329,7 @@ rewriting one means rebuilding the supsub around it, and "x^{<}" then "=" is not
 is reaching for - the same reasoning that keeps bracket characters off a base.
 @date 2026-09-08 09:00 ]]
 local function try_digraph(container, fontset, target, target_is_supsub_base, ch)
+    mexpru.check_container(container)
     if target_is_supsub_base then
         return false
     end
@@ -1263,6 +1402,7 @@ records and to_latex() writes back out. size_delta_by_desc is applied on the way
 its own limits.
 @date 2026-09-08 09:30 ]]
 function mformula_new.try_resolve_command(container, fontset)
+    mexpru.check_container(container)
     local node = live_cursor(container)
     if not node or node.type ~= vc.MEXPR_TYPE_SYMBOL then
         return false
@@ -1314,14 +1454,14 @@ function mformula_new.try_resolve_command(container, fontset)
 
     char.operator_words is the same list the LaTeX reader and writer use, so a word typed here, one
     pasted as `\\lim`, and one loaded from a save all arrive as the identical node. ]]
-    if char.operator_words[word] then
+    if char.operator_word(word) then
         local sz = mexpru.u(children[first]).sz
         local glyphs = {}
         for k = 1, #word do
             local e = char.find_by_ascii(word:sub(k, k))
             if e then
-                local g = mexpru.mexpr_symbol(fontset,
-                        {size = mexpru.physical_sz(sz), code = e.ncod}, true)
+                local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(sz),
+                        code = e.ncod}, true)
                 mexpru.u(g).sz = sz
                 glyphs[#glyphs + 1] = g
             end
@@ -1351,10 +1491,10 @@ function mformula_new.try_resolve_command(container, fontset)
     level the user was typing at. size_delta_by_desc is then applied on top, exactly as the Alt-Greek
     path and the LaTeX parser both do - a LOGICAL level in u(_).sz, a boosted one in the glyph. ]]
     local sz = mexpru.u(children[first]).sz
-    local delta = char.size_delta_by_desc[entry.desc]
+    local delta = char.size_delta(entry.desc)
     local glyph_sz = delta and math.max(1, math.min(sz + delta, MAX_SIZE_INDEX)) or sz
-    local glyph = mexpru.mexpr_symbol(fontset,
-            {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
+    local glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz),
+            code = entry.ncod}, true)
     mexpru.u(glyph).sz = sz
 
     for _ = first, last do
@@ -1401,10 +1541,10 @@ local function to_display_operator(fontset, atom)
         return atom
     end
     local sz = mexpru.u(atom).sz
-    local delta = char.size_delta_by_desc[target.desc]
+    local delta = char.size_delta(target.desc)
     local glyph_sz = delta and math.max(1, math.min(sz + delta, MAX_SIZE_INDEX)) or sz
-    local g = mexpru.mexpr_symbol(fontset,
-            {size = mexpru.physical_sz(glyph_sz), code = target.ncod}, true)
+    local g = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz),
+            code = target.ncod}, true)
     mexpru.u(g).sz = sz
     return g
 end
@@ -1423,6 +1563,7 @@ The capture-before-you-wrap discipline is make_supsub()'s - mexpru.bigop() repar
 builds, so the parent and the index have to be read first.
 @date 2026-09-08 09:30 ]]
 function mformula_new.make_bigop(container, fontset, slot)
+    mexpru.check_container(container)
     --[[ The limit keys, which are the sup/sub keys with the other placement. This was a separate
     function over a separate node kind until 2026-09-10; what survives of it is the guard below and
     the operator's own display form, both of which are about big operators specifically rather than
@@ -1452,13 +1593,42 @@ function mformula_new.make_bigop(container, fontset, slot)
     mformula_new.make_supsub(container, fontset, slot, mexpru.PLACE_DISPLAY)
 end
 
---[[ A brand-new formula that is one supsub, whose BASE is `base_item` (an editor_text.lua chars entry -
-{code=, size_off=} - or nil), with the cursor waiting in the requested `slot` ("sup"/"sub").
+--[[ THE `base_glyph` CONTAINER - the glyph a formula can be started FROM, and the whole of what
+this module needs to know about where that glyph came from.
+
+IT EXISTS TO KEEP A TEXT ITEM OUT OF HERE. new_from_base took editor_text.lua's own `chars` entry
+until 2026-09-12 and read `code` and `size_off` off it, which made this module - the one the text
+editor is built ON - depend on the shape of a text item. It could not even be checked: editor_text
+requires mformula_new, so reaching back for a checker would have been a require cycle, and the
+layering was the reason rather than an obstacle to work around. Those two values were all that was
+ever used, so they are their own type now, owned here, and the translation happens at the single
+call site. Author, 2026-09-12: "mformula_new shouldn't know about text items".
+@date 2026-09-12 23:55 ]]
+local BASE_GLYPH_FIELDS = {
+    code     = "the glyph's ncod - char.lua's catalogue code",
+    size_off = "logical size steps for this glyph, negative = bigger; absent means none",
+}
+local BASE_GLYPH_SHAPE = sealed.declare("mformula_new", "base_glyph", BASE_GLYPH_FIELDS)
+
+--[[ The one creator for a base_glyph.
+
+Core: names the two values new_from_base takes, so a caller holding a glyph in a shape of its own
+converts it HERE rather than trusting that its own table is close enough - which is exactly what the
+old signature had no way to refuse.
+
+Params: `code` the glyph's ncod, `size_off` its size boost or nil. Returns the sealed container.
+@date 2026-09-12 23:55 ]]
+function mformula_new.base_glyph(code, size_off)
+    return BASE_GLYPH_SHAPE.wrap{code = code, size_off = size_off}
+end
+
+--[[ A brand-new formula that is one supsub, whose BASE is `base_glyph` (or nil), with the cursor
+waiting in the requested `slot` ("sup"/"sub").
 
 editor_text.lua's own plain-text Ctrl+Shift+=/- calls this: with the caret after an ordinary character it
 lifts that character out of the text stream and hands it here, so "x" then Ctrl+Shift+= becomes an
 "x" with the caret sitting in its exponent - the same gesture that, INSIDE a formula, make_supsub()
-already provides. nil base_item (nothing typed before the caret) gets a fresh empty atom to hang the
+already provides. nil base_glyph (nothing typed before the caret) gets a fresh empty atom to hang the
 slot off instead, matching editor_text.lua's own "no preceding character... base is just left empty".
 
 Ported, the last of the old editor's exports with no counterpart here - until then
@@ -1468,16 +1638,17 @@ version there is no need to eagerly build the OPPOSITE slot as well: sup/sub are
 (build_side()'s own comment), and the Ctrl+Shift+=/- handler fills a missing side in place when it's
 actually asked for.
 @date 2026-09-08 09:00 ]]
-function mformula_new.new_from_base(fontset, sz, base_item, slot)
+function mformula_new.new_from_base(fontset, sz, base_glyph, slot)
     local base
-    if base_item then
+    if base_glyph then
+        BASE_GLYPH_SHAPE.check(base_glyph, "base_glyph")
         -- size_off is the same per-glyph visual boost editor_text.lua bakes in (currently only "\\int") -
         -- carried into the real construction call, while u(_).sz stays the nominal LOGICAL level,
         -- exactly as the Alt-Greek path and mformula_latex.lua's own parser both do.
-        local glyph_sz = base_item.size_off
-                and math.max(1, math.min(sz + base_item.size_off, MAX_SIZE_INDEX)) or sz
-        base = mexpru.mexpr_symbol(fontset,
-                {size = mexpru.physical_sz(glyph_sz), code = base_item.code}, true)
+        local glyph_sz = base_glyph.size_off
+                and math.max(1, math.min(sz + base_glyph.size_off, MAX_SIZE_INDEX)) or sz
+        base = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz),
+                code = base_glyph.code}, true)
         mexpru.u(base).sz = sz
     else
         base = build_empty_atom(fontset, sz)
@@ -1490,11 +1661,7 @@ function mformula_new.new_from_base(fontset, sz, base_item, slot)
             slot == "sub" and slot_horiz or nil)
     local root = mexpru.horiz(fontset, {supsub_node}, sz)
     mexpru.update_positions(root)
-    return {
-        root = root,
-        cursor_pos = vc.wref_mexpr(slot_empty),
-        version = 0,
-    }
+    return mexpru.new_container(root, slot_empty)
 end
 
 --[[ A fresh container that is already one empty fraction, with the cursor in the numerator - what
@@ -1511,11 +1678,7 @@ function mformula_new.new_with_frac(fontset, sz)
     local frac_node = mexpru.frac(fontset, num_horiz, den_horiz, sz)
     local root = mexpru.horiz(fontset, {frac_node}, sz)
     mexpru.update_positions(root)
-    return {
-        root = root,
-        cursor_pos = vc.wref_mexpr(num_empty),
-        version = 0,
-    }
+    return mexpru.new_container(root, num_empty)
 end
 
 --[[ `formula.new_stack` in plain text: a brand-new formula that is one single-slot stack, cursor
@@ -1533,11 +1696,7 @@ function mformula_new.new_with_vert(fontset, sz)
     local slot_empty, slot_horiz = build_side(fontset, sz)
     local root = mexpru.horiz(fontset, {mexpru.vert(fontset, {slot_horiz}, sz)}, sz)
     mexpru.update_positions(root)
-    return {
-        root = root,
-        cursor_pos = vc.wref_mexpr(slot_empty),
-        version = 0,
-    }
+    return mexpru.new_container(root, slot_empty)
 end
 
 --[[ Arrow-key navigation. None of it touches the tree - only container.cursor_pos - and cursor
@@ -1774,10 +1933,11 @@ instead of make_supsub() itself.
 Exported alongside make_supsub(), same reasoning: directly testable without simulating key presses.
 @date 2026-09-08 09:30 ]]
 function mformula_new.make_frac(container, fontset, target_sz)
+    mexpru.check_container(container)
     local num_empty, num_horiz = build_side(fontset, target_sz)
     local _, den_horiz = build_side(fontset, target_sz)
-    insert_compound_at_cursor(container, fontset,
-            mexpru.frac(fontset, num_horiz, den_horiz, target_sz), target_sz, num_empty)
+    insert_compound_at_cursor(container, fontset, mexpru.frac(fontset, num_horiz, den_horiz,
+            target_sz), target_sz, num_empty)
 end
 
 --[[ '(' / '[' / '{' typed (bracket_type = OPEN_BRACKETS[ch]): builds the placeholder open-bracket
@@ -1792,13 +1952,14 @@ purple cursor (PENDING_BRACKET_CURSOR_COLOR) instead of the ordinary CURSOR_COLO
 @date 2026-09-08 09:00 ]]
 local function open_bracket(container, fontset, target, target_parent, target_is_horiz,
         target_is_empty, target_is_supsub_base, target_sz, bracket_type)
+    mexpru.check_container(container)
     local entry = bracket_entry(bracket_type, true)
     --[[ target_sz is LOGICAL - mapped to PHYSICAL only for the real construction call below, same as
     every other glyph this file builds (mexpru.rescale()'s own comment). The desc's own size boost is
     applied on top, which matters for exactly one bracket half so far: `\int` is drawn a few levels
     up from the text around it (char.size_delta_by_desc), and an integral opened without it came out
     the height of a letter. u(_).sz stays the surrounding NOMINAL level either way. ]]
-    local delta = char.size_delta_by_desc[entry.desc]
+    local delta = char.size_delta(entry.desc)
     local glyph_sz = target_sz
     if delta then
         glyph_sz = math.max(1, math.min(target_sz + delta, MAX_SIZE_INDEX))
@@ -1834,6 +1995,7 @@ pair it sits in.
 Forward-declared near PENDING_BRACKET_CURSOR_COLOR - see the note there for why.
 @date 2026-09-08 09:30 ]]
 function innermost_unclosed_open(container)
+    mexpru.check_container(container)
     local node = container.cursor_pos and container.cursor_pos:get_obj()
     if not node then
         return nil
@@ -1984,6 +2146,7 @@ pending slot go nil. Once the pending open is derived from the row instead of st
 slot to watch, so the honest signal is the one it should always have been.
 @date 2026-09-08 09:30 ]]
 local function try_close_bracket(container, fontset, bracket_type)
+    mexpru.check_container(container)
     -- The innermost unclosed open, found by the counter rule - see innermost_unclosed_open().
     local open_atom = innermost_unclosed_open(container)
     if not open_atom then
@@ -2141,8 +2304,8 @@ local function rescale_node(fontset, node, cursor_target)
         --[[ Rebuilt at the ZOOM's logical size, so `resupsub` cannot be used here - it keeps the
         node's own. The placements still have to travel, and forgetting them is what would move a
         limit out from under its operator on a zoom. ]]
-        new_node = mexpru.supsub(fontset, new_base, new_sup, new_sub, logical,
-                u.sup_place, u.sub_place)
+        new_node = mexpru.supsub(fontset, new_base, new_sup, new_sub, logical, u.sup_place,
+                u.sub_place)
         mapped = m1 or m2 or m3
     elseif u.kind == "frac" then
         local new_num, m1 = rescale_node(fontset, u.num, cursor_target)
@@ -2172,7 +2335,7 @@ local function rescale_node(fontset, node, cursor_target)
         is drawn several levels up from the text around it, and a zoom that re-derived it without
         the boost would shrink it to letter height. ]]
         local entry = bracket_entry(u.bracket.type, u.bracket.is_open)
-        local delta = char.size_delta_by_desc[entry.desc]
+        local delta = char.size_delta(entry.desc)
         local glyph_sz = logical
         if delta then
             glyph_sz = math.max(1, math.min(logical + delta, MAX_SIZE_INDEX))
@@ -2194,7 +2357,7 @@ local function rescale_node(fontset, node, cursor_target)
         -- glyph like \\int as a perfectly ordinary-sized one, since this branch used to just take
         -- `logical` at face value.
         local entry = char.find_by_ncod(node.symb.code)
-        local delta = entry and char.size_delta_by_desc[entry.desc]
+        local delta = entry and char.size_delta(entry.desc)
         local glyph_sz = delta and math.max(1, math.min(logical + delta, MAX_SIZE_INDEX)) or logical
         new_node = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz), code = node.symb.code}, true)
         mexpru.u(new_node).sz = logical
@@ -2225,14 +2388,11 @@ tree, which the copy has no matching nodes for. A half-typed bracket comes back 
 than dangling; that is the honest degradation.
 @date 2026-09-08 09:00 ]]
 function mformula_new.clone(container, fontset)
+    mexpru.check_container(container)
     local cursor_target = container.cursor_pos:get_obj()
     local new_root, mapped_cursor = rescale_node(fontset, container.root, cursor_target)
     mexpru.update_positions(new_root)
-    return {
-        root = new_root,
-        cursor_pos = vc.wref_mexpr(mapped_cursor or new_root),
-        version = container.version or 0,
-    }
+    return mexpru.new_container(new_root, mapped_cursor or new_root, container.version)
 end
 
 --[[ A deep copy of one node and everything under it - rescale_node with no cursor to map.
@@ -2264,6 +2424,7 @@ cursor is not reachable from the root (a dangling ref, or a node already spliced
 caller must treat as "no usable position" rather than as the root.
 @date 2026-09-08 09:00 ]]
 function mformula_new.cursor_path(container)
+    mexpru.check_container(container)
     local node = container.cursor_pos and container.cursor_pos:get_obj()
     if not node then
         return nil
@@ -2299,6 +2460,7 @@ structurally identical tree). Returns false, leaving the cursor alone, if the pa
 so a caller can fall back rather than land the cursor somewhere arbitrary.
 @date 2026-09-08 09:00 ]]
 function mformula_new.cursor_from_path(container, path)
+    mexpru.check_container(container)
     if not path then
         return false
     end
@@ -2327,6 +2489,7 @@ propagate_rebuild() cuts a superseded one, so the old tree lets go immediately i
 on the collector's schedule.
 @date 2026-09-08 09:30 ]]
 function mformula_new.rescale(container, fontset)
+    mexpru.check_container(container)
     local cursor_target = container.cursor_pos:get_obj()
     local old_root = container.root
     local new_root, mapped_cursor = rescale_node(fontset, old_root, cursor_target)
@@ -2416,6 +2579,7 @@ sometimes rests ON a compound (meaning "after the whole thing") rather than betw
 graph is what show_graph draws, and these four functions are what walk it.
 @date 2026-09-08 09:10 ]]
 function mformula_new.move_left(container)
+    mexpru.check_container(container)
     --[[ live_cursor(), not cursor_pos:get_obj() directly. A dangling cursor - a wref to a node
     some rebuild has since destroyed - makes get_obj() return nil, and every branch below then
     indexes it, so the FIRST thing an arrow key did was throw
@@ -2496,6 +2660,7 @@ end
 --[[ One position right - the mirror of move_left(), entering a compound from its left rather than
 its right. @date 2026-09-08 09:10 ]]
 function mformula_new.move_right(container)
+    mexpru.check_container(container)
     -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
     local target = live_cursor(container)
 
@@ -2664,6 +2829,7 @@ branch needs real keypresses, the same reason every other handle_input-adjacent 
 level down.
 @date 2026-09-08 09:00 ]]
 function mformula_new.collapse_empty_supsub(container, fontset)
+    mexpru.check_container(container)
     local supsub, mode, side = collapsible_supsub(container)
     if not supsub then
         return false
@@ -2759,6 +2925,7 @@ end
 cell of a stack. Where there is nothing below to enter, it climbs out to whatever contains this.
 @date 2026-09-08 09:10 ]]
 function mformula_new.move_down(container)
+    mexpru.check_container(container)
     -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
     local target = live_cursor(container)
 
@@ -2872,6 +3039,7 @@ end
 --[[ UP means "into the part above": a superscript, a numerator, the previous cell of a stack -
 the mirror of move_down(). @date 2026-09-08 09:10 ]]
 function mformula_new.move_up(container)
+    mexpru.check_container(container)
     -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
     local target = live_cursor(container)
 
@@ -3056,9 +3224,9 @@ underside of a hatted atom quietly dropped the hat.
 @date 2026-09-08 09:00 ]]
 local function dress_spec(u)
     if u.kind ~= "dress" then
-        return {}
+        return mexpru.dress_spec{}
     end
-    return {
+    return mexpru.dress_spec{
         above_kind = u.above_kind, above_recipe = u.above_recipe,
         bellow_kind = u.bellow_kind, bellow_recipe = u.bellow_recipe,
         dots = u.dots,
@@ -3086,6 +3254,7 @@ for the underside. `where` is
 replaces it; the other slot is never touched.
 @date 2026-09-08 09:00 ]]
 function mformula_new.toggle_accent(container, fontset, kind, where)
+    mexpru.check_container(container)
     local node = dressable_target(container)
     if not node then
         return
@@ -3124,8 +3293,8 @@ function mformula_new.toggle_accent(container, fontset, kind, where)
         end
     end
 
-    swap_atom(container, fontset, node, old_parent,
-            build_dress_spec(fontset, target, spec, mexpru.u(target).sz))
+    swap_atom(container, fontset, node, old_parent, build_dress_spec(fontset, target, spec,
+            mexpru.u(target).sz))
 end
 
 --[[ `math.dot_add` adds a dot, `math.dot_remove` takes one away. Removing the last undresses the
@@ -3133,6 +3302,7 @@ atom entirely,
 which is what makes Ctrl+, a complete undo of Ctrl+. rather than leaving an empty dress behind.
 @date 2026-09-08 09:00 ]]
 function mformula_new.adjust_dots(container, fontset, delta)
+    mexpru.check_container(container)
     local node = dressable_target(container)
     if not node then
         return
@@ -3153,8 +3323,8 @@ function mformula_new.adjust_dots(container, fontset, delta)
         -- BELOW is left exactly as it was.
         spec.above_kind, spec.above_recipe = nil, nil
     end
-    swap_atom(container, fontset, node, old_parent,
-            build_dress_spec(fontset, target, spec, mexpru.u(target).sz))
+    swap_atom(container, fontset, node, old_parent, build_dress_spec(fontset, target, spec,
+            mexpru.u(target).sz))
 end
 
 --[[ Turns what the cursor is on into a STACK, or gives the stack it is already in one more slot -
@@ -3171,6 +3341,7 @@ Delete are for, and letting the two mean the same thing at n=1 would make a stac
 keystroke aimed at its contents.
 @date 2026-09-08 09:30 ]]
 function mformula_new.make_vert(container, fontset, target_sz)
+    mexpru.check_container(container)
     local target = container.cursor_pos:get_obj()
 
     -- Already in a stack? Grow it instead of nesting another one inside it.
@@ -3191,8 +3362,8 @@ function mformula_new.make_vert(container, fontset, target_sz)
     -- uses - including its replace-an-empty-placeholder case, which is what stopped a fresh stack
     -- from being born with a blank gap to its left.
     local slot_empty, slot_horiz = build_side(fontset, target_sz)
-    insert_compound_at_cursor(container, fontset,
-            mexpru.vert(fontset, {slot_horiz}, target_sz), target_sz, slot_empty)
+    insert_compound_at_cursor(container, fontset, mexpru.vert(fontset, {slot_horiz}, target_sz),
+            target_sz, slot_empty)
 end
 
 --[[ `math.stack_shrink`: drop the slot the cursor is in. Refuses at one slot (see make_vert()) and
@@ -3201,6 +3372,7 @@ nothing at all outside a vert. The cursor lands in the slot that took the remove
 the one below, or the new last one if the bottom row was the one removed.
 @date 2026-09-08 09:00 ]]
 function mformula_new.shrink_vert(container, fontset)
+    mexpru.check_container(container)
     local vert, idx = vert_slot_of(container.cursor_pos:get_obj())
     if not vert or not idx then
         return
@@ -3249,6 +3421,7 @@ the supsub itself, and base <-> sup/sub round-trips. Where there is no non-recip
 reverse, these fall through to the plain move, so Alt+arrow is never a dead key.
 @date 2026-09-08 09:00 ]]
 function mformula_new.move_down_reverse(container)
+    mexpru.check_container(container)
     -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
     local target = live_cursor(container)
     local owner = frac_slot_owner(target, "num") or (select(1, vert_slot_of(target)))
@@ -3266,6 +3439,7 @@ That is the difference from move_up(), which goes UP the picture. Leaving a slot
 entered is a different intention from moving to whatever happens to sit above it.
 @date 2026-09-08 09:10 ]]
 function mformula_new.move_up_reverse(container)
+    mexpru.check_container(container)
     -- live_cursor(), not get_obj() - see move_left's own note on the dangling case.
     local target = live_cursor(container)
     local owner = frac_slot_owner(target, "den") or (select(1, vert_slot_of(target)))
@@ -3362,6 +3536,7 @@ been cut from the tree, or somehow ended up in a different horiz than the cursor
 happen, but a selection spanning two rows is exactly the thing this feature is defined not to do.
 @date 2026-09-08 09:00 ]]
 function mformula_new.selection_range(container)
+    mexpru.check_container(container)
     if not container.sel_anchor then
         return nil
     end
@@ -3412,6 +3587,7 @@ bracket confines the cursor, which is the one state cursor_pos_forbidden exists 
 select-all that teleported out of an unclosed bracket would be a way around it.
 @date 2026-09-12 00:40 ]]
 local function select_all(container)
+    mexpru.check_container(container)
     local root = container.root
     if not is_horiz(root) then
         return false
@@ -3523,6 +3699,15 @@ end
 
 -- Exported for testability only (same reason make_supsub()/make_frac() are - handle_input() itself
 -- is keypress-driven and can't be called headless).
+--[[ Does a Ctrl+arrow sprint STOP at this node?
+
+Core: the landmarks are brackets and operator symbols - the joints of an expression - so sprinting
+moves between the meaningful parts rather than by a fixed number of glyphs.
+
+Detail: reads THROUGH slot_atom, because `(a)^{2}` keeps its `)` as the supsub's BASE. Scanning
+siblings alone sees no bracket there and sprints past the whole group - reported live, "shift
+doesn't stop at )". The same blind spot surfaces in three other places; slot_atom carries the note.
+@date 2026-09-12 04:15 ]]
 function mformula_new.is_sprint_landmark(node)
     -- mexpru.slot_atom(): what this row slot actually carries, looking through a supsub to its own
     -- base. "(a)^{2}" keeps its ")" as the BASE, so a scan of siblings alone sees no bracket there
@@ -3709,6 +3894,7 @@ fontset and sz are needed because an edit builds real mexpr nodes as it goes rat
 them to a later layout pass, and a node cannot be built without knowing what it is drawn with.
 @date 2026-09-08 09:30 ]]
 function mformula_new.handle_input(container, fontset, sz)
+    mexpru.check_container(container)
     -- cursor_state() above derives all six; the typing loop below re-derives them per character.
     local target, target_parent, target_is_horiz, target_is_empty, target_is_supsub_base,
             target_sz = cursor_state(container)
@@ -4064,11 +4250,11 @@ function mformula_new.handle_input(container, fontset, sz)
             if not t then
                 return
             end
-            local new_glyph = mexpru.mexpr_symbol(fontset,
-                    {size = mexpru.physical_sz(target_sz), code = entry.ncod}, true)
+            local new_glyph = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(target_sz),
+                    code = entry.ncod}, true)
             mexpru.u(new_glyph).sz = target_sz
-            insert_glyph_at_cursor(container, fontset, t, tp, t_horiz, t_empty, t_base,
-                    target_sz, new_glyph)
+            insert_glyph_at_cursor(container, fontset, t, tp, t_horiz, t_empty, t_base, target_sz,
+                    new_glyph)
         end
         return
     end
@@ -4132,7 +4318,7 @@ function mformula_new.handle_input(container, fontset, sz)
                         handled = true
                         return
                     end
-                    local delta = char.size_delta_by_desc[entry.desc]
+                    local delta = char.size_delta(entry.desc)
                     local glyph_sz = delta and math.max(1, math.min(target_sz + delta, MAX_SIZE_INDEX)) or target_sz
                     local new_glyph = mexpru.mexpr_symbol(fontset,
                             {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
@@ -4908,13 +5094,30 @@ The gesture's question. Never moves the caret, and never answers for a glyph the
 actually on - see glyph_at above for why that differs from where a click would put the cursor.
 @date 2026-09-12 01:10 ]]
 function mformula_new.node_at(container, fontset, sz, click, wrap_width)
+    mexpru.check_container(container)
     return glyph_at(fontset, container.root,
             raw_point(container, fontset, sz, click, wrap_width))
 end
 
+--[[ Places the caret from a click, or extends a selection from a drag.
+
+Core: SNAPS TO THE NEAREST POSITION and therefore always lands - a click in the margin still puts
+the caret somewhere sensible. That is the opposite of node_at below, which answers only for a glyph
+the point is really on, and the reason both exist.
+
+Core: `extend` is a drag in progress. The anchor is kept and only the far end moves, CLAMPED TO THE
+ANCHOR'S OWN HORIZ - dragging up into a superscript would leave the row the selection started in,
+which selection is defined not to allow, so such a hit is ignored and the selection stays put rather
+than jumping slots. Without `extend`, any existing selection is dropped, which is what a fresh click
+should do.
+
+Params: `click` is already RELATIVE to the formula's own origin and `wrap_width` is a width, not an
+edge; editor.lua does that conversion. Mutates the container's cursor and returns nothing.
+@date 2026-09-12 04:15 ]]
 function mformula_new.hit_test(container, fontset, sz, click, wrap_width, extend)
-    local hit = hit_test_node(fontset, container.root,
-            raw_point(container, fontset, sz, click, wrap_width))
+    mexpru.check_container(container)
+    local hit = hit_test_node(fontset, container.root, raw_point(container, fontset, sz, click,
+            wrap_width))
 
     --[[ `extend` is a drag in progress (editor.lua holds the button state): keep the anchor and move
     only the far end, so sweeping the mouse grows a selection. Clamped to the anchor's OWN horiz -
@@ -4960,6 +5163,7 @@ the absolute edge made cursor_rect() see a column as wide as the whole screen, s
 wrapped while the glyphs they describe did. nil means "never wraps", as everywhere else.
 @date 2026-09-08 09:00 ]]
 function mformula_new.reachable_graph(container, fontset, sz, wrap_width)
+    mexpru.check_container(container)
     local cache = container._graph_cache
     if cache and cache.version == (container.version or 0) and cache.sz == sz
             and cache.wrap_width == wrap_width then
@@ -5076,6 +5280,7 @@ caller draws them in order and the overlap does the feathering. Empty list when 
 highlight.
 @date 2026-09-08 09:00 ]]
 function mformula_new.cursor_box(container, fontset, sz, wrap_width)
+    mexpru.check_container(container)
     local node = container.cursor_pos and container.cursor_pos:get_obj()
     if not node or is_horiz(node) then
         return {}
@@ -5123,6 +5328,7 @@ on.
 cursor_target() gives. It is kept for parity with the other per-frame signatures.
 @date 2026-09-08 09:30 ]]
 function mformula_new.slot_markers(container, fontset, sz)
+    mexpru.check_container(container)
     local node = live_cursor(container)
     if node.type ~= vc.MEXPR_TYPE_EMPTY_BOX and mexpru.u(node).kind ~= "horiz" then
         return {}

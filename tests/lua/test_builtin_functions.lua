@@ -140,7 +140,8 @@ function run_test()
 
         REFUSED, NOT SILENTLY DROPPED. check_declarations says why, so the editor can show it,
         rather than the definition simply never taking effect. ]]
-        local mine = {text = "sin(),(1)", name = "sin", arity = 1,
+        -- Through the creator: a declaration is a sealed type since 2026-09-12.
+        local mine = mexpr_ast.new_decl{text = "sin(),(1)", name = "sin", arity = 1,
                       tokens = {"sin()", "(1)"}, groups = {}}
 
         local res = mexpr_ast.check_declarations({mine})

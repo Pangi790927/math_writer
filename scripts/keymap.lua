@@ -1,3 +1,45 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+BINDINGS AS TEXT
+parse(text: string)                     -> bind | nil, reason
+parse_filter(text: string)              -> bind | nil, reason
+check_bind(bind: keymap.bind)           -> bind
+format(bind: keymap.bind)                      -> text
+    "Ctrl+Shift+K" both ways. parse_filter differs in one thing: a
+    chord with NO key is a legitimate answer, which is what the search
+    box means by "everything on Ctrl".
+filter_matches(bind: bind, filter)      -> boolean
+filter_ids(filter)                      -> {id = true}
+
+ASKING, PER FRAME
+begin_frame()                           -> nothing
+pressed(id: id)                         -> boolean
+mods()                                  -> ctrl, shift, alt
+    THE call. One refresh per frame backs both, so every question
+    asked in a frame gets one consistent answer.
+
+NAMES AND LABELS
+label(id: id) / key_name(id: id) / key_of(name: string) / key_label(name: string)
+owner_of(id: id)                        -> "cpp" | "lua"
+each(fn: function)                      -> nothing
+    In the registry's own order, which is what F1 prints and F2 lists.
+
+EDITING
+set_bind(id: id, index: number, text: string) -> ok, reason
+remove_bind(id: id, index: number)      -> ok
+conflicts(bind: bind, except_id)        -> {id, ...}
+reset(id: id)                           -> ok
+    reset with no id is "default all".
+
+PERSISTENCE
+serialize() / deserialize(text: string, warn)
+dirty() / clear_dirty()
+    One line per action that differs from the factory binds.
+
+--- internal, not on the module table --------------------------------------------------------------
+    DEFAULTS, the alias table, the live actions and the mod refresh
+@date 2026-09-12 03:45
+================================================================================================= ]]
+
 --[[
 keymap.lua - the one place that decides whether a key press means an ACTION.
 
@@ -32,6 +74,7 @@ a rebind should not reflow a paragraph - and the customiser shows them all.
 ]]
 
 local vc = require("virt_composer")
+local sealed = require("sealed")
 
 local keymap = {}
 
@@ -168,11 +211,45 @@ what a binding string means. It answers with whatever the text described, INCLUD
 key in it - deciding whether that is acceptable is the caller's business, and it is the only thing
 the two callers differ on.
 @date 2026-09-09 23:40 ]]
+--[[ THE `bind` CONTAINER - one key combination, parsed.
+
+WHAT A BIND IS, which nothing said before: the three modifiers as plain booleans, the key by its
+ImGuiKey NAME, and `any_mods` - the "+All" suffix, which means "this key whatever is held". Five
+fields, and every one of them is always present on a real bind: parse_tokens writes all five up
+front, so `bind.ctrl` is `false` rather than nil when Ctrl is not wanted. That matters, because the
+matching below compares them with `~=`, where nil and false are different answers.
+
+DECLARED AND SEALED because a bind crosses keymap, panel_keymap and the save file, and a typo
+reading one would be quietly permissive: `bind.shft` is nil, `nil ~= false` is true, and the
+binding stops matching for a reason nothing reports.
+
+NOT THE SAME THING AS `mod_state` further down, which is `{ctrl, shift, alt}` - what is held RIGHT
+NOW, with no key and no any_mods. The two look alike and are not interchangeable.
+@date 2026-09-12 16:40 ]]
+local BIND_FIELDS = {
+    ctrl     = "Ctrl is part of the combination",
+    shift    = "Shift is",
+    alt      = "Alt is",
+    any_mods = "the `+All` suffix: this key whatever modifiers are held",
+    key      = "the ImGuiKey NAME, or nil in a FILTER - `Ctrl+` is a finished search",
+}
+local BIND_SHAPE = sealed.declare("keymap", "bind", BIND_FIELDS)
+
+--[[ A fresh bind, with every field present. THE ONE CREATOR. @date 2026-09-12 16:40 ]]
+local function new_bind()
+    return BIND_SHAPE.wrap{ctrl = false, shift = false, alt = false, any_mods = false, key = nil}
+end
+
+--[[ Asserts that this is a parsed bind, for a function that takes one. Returns it. @date 2026-09-12 16:40 ]]
+function keymap.check_bind(bind)
+    return BIND_SHAPE.check(bind, "bind")
+end
+
 local function parse_tokens(text)
     if type(text) ~= "string" then
         return nil, "not text"
     end
-    local bind = {ctrl = false, shift = false, alt = false, any_mods = false, key = nil}
+    local bind = new_bind()
     local seen_key = nil
     -- Trailing "+" is how a half-typed combo looks ("Ctrl+"), so an empty final token is not an
     -- error, just an unfinished bind - reported as such.
@@ -294,10 +371,17 @@ modifiers by its own definition, so it answers any modifier filter - refusing it
 the bindings that are hardest to find by memory.
 @date 2026-09-09 23:40 ]]
 function keymap.filter_matches(bind, filter)
-    if not filter then
+    --[[ A NIL FILTER IS "EVERYTHING", which is the documented answer and the reason the customiser
+    can hand its own state straight through. A nil BIND is not an answer - it is a caller that lost
+    one - so the two nils are told apart rather than sharing a guard. ]]
+    if filter == nil then
         return true
     end
-    if not bind or not bind.key then
+    keymap.check_bind(bind)
+    keymap.check_bind(filter)
+    --[[ A bind with no key never matches: an action whose binding was emptied has nothing to
+    compare against. Distinct from the nil above - this one IS a bind. ]]
+    if not bind.key then
         return false
     end
     if filter.key and bind.key ~= filter.key then
@@ -320,6 +404,7 @@ same bind always reads the same way and two spellings of one combo cannot look d
 customiser.
 @date 2026-09-08 08:40 ]]
 function keymap.format(bind)
+    keymap.check_bind(bind)
     if not bind or not bind.key then
         return "(unbound)"
     end
@@ -405,14 +490,18 @@ where it must fire once per press (anything structural, or a panel toggle).
 @date 2026-09-08 08:40 ]]
 local DEFAULTS = {
     -- Panels and application ------------------------------------------------------------------
-    {id = "app.help",             desc = "Toggle the help panel",                    binds = {"F1"}},
-    {id = "app.customiser",       desc = "Toggle the keybind customiser",            binds = {"F2"}},
+    {id = "app.help",             desc = "Toggle the help panel",
+                               binds = {"F1"}},
+    {id = "app.customiser",       desc = "Toggle the keybind customiser",
+                       binds = {"F2"}},
     --[[ Escape closes whichever panel is open. "+All" like the other leave/cancel gestures, and a
     SEPARATE action from formula.exit even though both are Escape today: they can never both be
     live (content.handle_input returns early while a panel is open), and binding them together
     would mean rebinding one silently rebinds the other. ]]
-    {id = "panel.close",          desc = "Close the open panel",                     binds = {"Escape+All"}},
-    {id = "app.profiler",         desc = "Toggle the profiler overlay",              binds = {"F3"}},
+    {id = "panel.close",          desc = "Close the open panel",
+                                binds = {"Escape+All"}},
+    {id = "app.profiler",         desc = "Toggle the profiler overlay",
+                         binds = {"F3"}},
     {id = "app.ast",             desc = "Show the parse of the expression you are on", binds = {"F4"}},
     --[[ F6 and F4 share one corner and one panel, so each REPLACES the other rather than stacking -
     asked for that way, 2026-09-11: "replaces f4 (reciprocal f4 replaces f6 when pressed)". They
@@ -420,11 +509,15 @@ local DEFAULTS = {
     transformation would make of it, and showing both at once would say less than either. ]]
     {id = "app.ast_result",      desc = "Show what the transformation here would produce",
             binds = {"F6"}},
-    {id = "app.ast_string",      desc = "Show the ast.lua serialization of the expression you are on",
+    {id = "app.ast_string",
+                 desc = "Show the ast.lua serialization of the expression you are on",
             binds = {"F5"}},
-    {id = "app.profiler_reset",   desc = "Clear the profiler's worst frame",         binds = {"Shift+F3"}},
-    {id = "app.profiler_record",  desc = "Record slow frames to perf_spikes.log",    binds = {"Ctrl+F3"}},
-    {id = "doc.save",             desc = "Save the document",                        binds = {"Ctrl+S"}},
+    {id = "app.profiler_reset",   desc = "Clear the profiler's worst frame",
+                    binds = {"Shift+F3"}},
+    {id = "app.profiler_record",  desc = "Record slow frames to perf_spikes.log",
+               binds = {"Ctrl+F3"}},
+    {id = "doc.save",             desc = "Save the document",
+                                   binds = {"Ctrl+S"}},
 
     --[[ Chapter navigation on the help page. Real actions rather than the panel reading Up/Down
     directly, so they are rebindable like everything else - and separately from nav.up/nav.down,
@@ -438,8 +531,10 @@ local DEFAULTS = {
     outright; Up/Down scroll the page and only turn it once there is nothing left to scroll that
     way. Ruled 2026-09-07: "left/right in f1 jumps in between chapters, not scroll" - a long
     chapter was otherwise only navigable by holding an arrow through all of it. ]]
-    {id = "help.prev_chapter",    desc = "Previous help chapter",  repeat_ = true,   binds = {"Left"}},
-    {id = "help.next_chapter",    desc = "Next help chapter",      repeat_ = true,   binds = {"Right"}},
+    {id = "help.prev_chapter",    desc = "Previous help chapter",  repeat_ = true,
+              binds = {"Left"}},
+    {id = "help.next_chapter",    desc = "Next help chapter",      repeat_ = true,
+              binds = {"Right"}},
     {id = "help.scroll_up",       desc = "Scroll the help page up",   repeat_ = true, binds = {"Up"}},
     {id = "help.scroll_down",     desc = "Scroll the help page down", repeat_ = true, binds = {"Down"}},
 
@@ -448,37 +543,56 @@ local DEFAULTS = {
     -- Ctrl, so the Shift rides along unnoticed - and it is NOT carried over: ruled 2026-09-07,
     -- "keep only ctrl+up as the default for now". A deliberate behaviour change, and one an alt
     -- bind can restore in the customiser at any time.
-    {id = "box.prev",             desc = "Go to the previous box",                   binds = {"Ctrl+Up"}},
-    {id = "box.next",             desc = "Go to the next box",                       binds = {"Ctrl+Down"}},
+    {id = "box.prev",             desc = "Go to the previous box",
+                              binds = {"Ctrl+Up"}},
+    {id = "box.next",             desc = "Go to the next box",
+                                  binds = {"Ctrl+Down"}},
     --[[ Ctrl+Shift+Up/Down MOVES the box rather than the caret. These chords used to switch boxes
     by accident (content.lua tested only Ctrl, so the Shift rode along unnoticed) and were freed
     deliberately on 2026-09-07; this is what they were freed for. ]]
-    {id = "box.move_up",          desc = "Move this box up the stack",               binds = {"Ctrl+Shift+Up"}},
-    {id = "box.move_down",        desc = "Move this box down the stack",             binds = {"Ctrl+Shift+Down"}},
-    {id = "box.new",              desc = "New box after this one",                   binds = {"Ctrl+N"}},
-    {id = "box.close",            desc = "Close the current box",                    binds = {"Ctrl+W"}},
+    {id = "box.move_up",          desc = "Move this box up the stack",
+                          binds = {"Ctrl+Shift+Up"}},
+    {id = "box.move_down",        desc = "Move this box down the stack",
+                        binds = {"Ctrl+Shift+Down"}},
+    {id = "box.new",              desc = "New box after this one",
+                              binds = {"Ctrl+N"}},
+    {id = "box.close",            desc = "Close the current box",
+                               binds = {"Ctrl+W"}},
     --[[ Ctrl+D: derive a new formula box from this one by the identity - it holds the same thing
     and records where it came from. Ctrl+D is otherwise unused across every binding here. ]]
-    {id = "formula.derive",       desc = "Derive a formula box from this one",       binds = {"Ctrl+D"}},
+    {id = "formula.derive",       desc = "Derive a formula box from this one",
+                  binds = {"Ctrl+D"}},
 
     -- The radial new-box menu ------------------------------------------------------------------
     -- Escape takes "+All" everywhere it means LEAVE or CANCEL. Ruled 2026-09-07 for formula.exit
     -- ("this will be escape+all"); the other two are the same gesture and are loose today for the
     -- same accidental reason, so the wildcard preserves them rather than quietly tightening them.
-    {id = "radial.cancel",        desc = "Close the new-box menu",                   binds = {"Escape+All"}},
-    {id = "radial.text",          desc = "Pick a text box",                          binds = {"Up"}},
-    {id = "radial.formula",       desc = "Pick a formula box",                       binds = {"Left"}},
-    {id = "radial.definition",    desc = "Pick a definition box",                    binds = {"Right"}},
-    {id = "radial.dismiss",       desc = "Pick the cancel target",                   binds = {"Down"}},
-    {id = "radial.commit",        desc = "Create the selected box",                  binds = {"Enter+All", "KpEnter+All", "Space+All"}},
+    {id = "radial.cancel",        desc = "Close the new-box menu",
+                              binds = {"Escape+All"}},
+    {id = "radial.text",          desc = "Pick a text box",
+                                     binds = {"Up"}},
+    {id = "radial.formula",       desc = "Pick a formula box",
+                                  binds = {"Left"}},
+    {id = "radial.definition",    desc = "Pick a definition box",
+                               binds = {"Right"}},
+    {id = "radial.dismiss",       desc = "Pick the cancel target",
+                              binds = {"Down"}},
+    {id = "radial.commit",        desc = "Create the selected box",
+                             binds = {"Enter+All", "KpEnter+All", "Space+All"}},
 
     -- Clipboard and history --------------------------------------------------------------------
-    {id = "edit.undo",            desc = "Undo",                                     binds = {"Ctrl+Z"}},
-    {id = "edit.redo",            desc = "Redo",                                     binds = {"Ctrl+Shift+Z"}},
-    {id = "edit.select_all",      desc = "Select everything in the box",             binds = {"Ctrl+A"}},
-    {id = "edit.copy",            desc = "Copy",                                     binds = {"Ctrl+C"}},
-    {id = "edit.cut",             desc = "Cut",                                      binds = {"Ctrl+X"}},
-    {id = "edit.paste",           desc = "Paste",                                    binds = {"Ctrl+V"}},
+    {id = "edit.undo",            desc = "Undo",
+                                                binds = {"Ctrl+Z"}},
+    {id = "edit.redo",            desc = "Redo",
+                                                binds = {"Ctrl+Shift+Z"}},
+    {id = "edit.select_all",      desc = "Select everything in the box",
+                        binds = {"Ctrl+A"}},
+    {id = "edit.copy",            desc = "Copy",
+                                                binds = {"Ctrl+C"}},
+    {id = "edit.cut",             desc = "Cut",
+                                                 binds = {"Ctrl+X"}},
+    {id = "edit.paste",           desc = "Paste",
+                                               binds = {"Ctrl+V"}},
 
     -- Typing -----------------------------------------------------------------------------------
     -- Space and newline take the "+All" wildcard: they answer to any modifier today, nobody asked
@@ -486,8 +600,10 @@ local DEFAULTS = {
     -- Backspace and Delete deliberately do NOT - ruled 2026-09-07: "those would be exact, no 'any'
     -- added, I don't like all those modifiers on deletes". That IS an intentional behaviour change,
     -- and the asymmetry between the two pairs is the point, not an oversight.
-    {id = "text.space",           desc = "Insert a space",         repeat_ = true,   binds = {"Space+All"}},
-    {id = "text.newline",         desc = "New line",               repeat_ = true,   binds = {"Enter+All", "KpEnter+All"}},
+    {id = "text.space",           desc = "Insert a space",         repeat_ = true,
+              binds = {"Space+All"}},
+    {id = "text.newline",         desc = "New line",               repeat_ = true,
+              binds = {"Enter+All", "KpEnter+All"}},
     {id = "text.backspace",       desc = "Delete before the cursor", repeat_ = true, binds = {"Backspace"}},
     {id = "text.delete",          desc = "Delete after the cursor",  repeat_ = true, binds = {"Delete"}},
 
@@ -503,56 +619,99 @@ local DEFAULTS = {
 
     Why anyone holds Alt while navigating: it is the Greek-letter modifier, so it is down for whole
     runs of typing, and letting go of it to move one atom left is exactly the friction reported. ]]
-    {id = "nav.left",             desc = "Move left",              repeat_ = true,   binds = {"Left", "Alt+Left"}},
-    {id = "nav.right",            desc = "Move right",             repeat_ = true,   binds = {"Right", "Alt+Right"}},
-    {id = "nav.up",               desc = "Move up a line",         repeat_ = true,   binds = {"Up"}},
-    {id = "nav.down",             desc = "Move down a line",       repeat_ = true,   binds = {"Down"}},
-    {id = "nav.home",             desc = "Start of the line",      repeat_ = true,   binds = {"Home"}},
-    {id = "nav.end",              desc = "End of the line",        repeat_ = true,   binds = {"End"}},
-    {id = "nav.select_left",      desc = "Extend selection left",  repeat_ = true,   binds = {"Shift+Left"}},
-    {id = "nav.select_right",     desc = "Extend selection right", repeat_ = true,   binds = {"Shift+Right"}},
-    {id = "nav.select_up",        desc = "Extend selection up",    repeat_ = true,   binds = {"Shift+Up"}},
-    {id = "nav.select_down",      desc = "Extend selection down",  repeat_ = true,   binds = {"Shift+Down"}},
-    {id = "nav.select_home",      desc = "Select to line start",   repeat_ = true,   binds = {"Shift+Home"}},
-    {id = "nav.select_end",       desc = "Select to line end",     repeat_ = true,   binds = {"Shift+End"}},
-    {id = "nav.word_left",        desc = "Skip a word left",       repeat_ = true,   binds = {"Ctrl+Left"}},
-    {id = "nav.word_right",       desc = "Skip a word right",      repeat_ = true,   binds = {"Ctrl+Right"}},
-    {id = "nav.select_word_left", desc = "Select a word left",     repeat_ = true,   binds = {"Ctrl+Shift+Left"}},
-    {id = "nav.select_word_right",desc = "Select a word right",    repeat_ = true,   binds = {"Ctrl+Shift+Right"}},
+    {id = "nav.left",             desc = "Move left",              repeat_ = true,
+              binds = {"Left", "Alt+Left"}},
+    {id = "nav.right",            desc = "Move right",             repeat_ = true,
+              binds = {"Right", "Alt+Right"}},
+    {id = "nav.up",               desc = "Move up a line",         repeat_ = true,
+              binds = {"Up"}},
+    {id = "nav.down",             desc = "Move down a line",       repeat_ = true,
+              binds = {"Down"}},
+    {id = "nav.home",             desc = "Start of the line",      repeat_ = true,
+              binds = {"Home"}},
+    {id = "nav.end",              desc = "End of the line",        repeat_ = true,
+              binds = {"End"}},
+    {id = "nav.select_left",      desc = "Extend selection left",  repeat_ = true,
+              binds = {"Shift+Left"}},
+    {id = "nav.select_right",     desc = "Extend selection right", repeat_ = true,
+              binds = {"Shift+Right"}},
+    {id = "nav.select_up",        desc = "Extend selection up",    repeat_ = true,
+              binds = {"Shift+Up"}},
+    {id = "nav.select_down",      desc = "Extend selection down",  repeat_ = true,
+              binds = {"Shift+Down"}},
+    {id = "nav.select_home",      desc = "Select to line start",   repeat_ = true,
+              binds = {"Shift+Home"}},
+    {id = "nav.select_end",       desc = "Select to line end",     repeat_ = true,
+              binds = {"Shift+End"}},
+    {id = "nav.word_left",        desc = "Skip a word left",       repeat_ = true,
+              binds = {"Ctrl+Left"}},
+    {id = "nav.word_right",       desc = "Skip a word right",      repeat_ = true,
+              binds = {"Ctrl+Right"}},
+    {id = "nav.select_word_left", desc = "Select a word left",     repeat_ = true,
+              binds = {"Ctrl+Shift+Left"}},
+    {id = "nav.select_word_right",desc = "Select a word right",    repeat_ = true,
+              binds = {"Ctrl+Shift+Right"}},
 
     -- Formula embeds ---------------------------------------------------------------------------
-    {id = "formula.new",          desc = "Insert a formula here",                    binds = {"Ctrl+M"}},
-    {id = "formula.new_frac",     desc = "Insert a formula with a fraction",         binds = {"Ctrl+/"}},
-    {id = "formula.new_stack",    desc = "Insert a formula with a stack",            binds = {"Ctrl+="}},
-    {id = "formula.wrap_sub",     desc = "Subscript the character before",           binds = {"Ctrl+Shift+-"}},
-    {id = "formula.wrap_sup",     desc = "Superscript the character before",         binds = {"Ctrl+Shift+="}},
-    {id = "formula.exit",         desc = "Leave the formula",                        binds = {"Escape+All"}},
-    {id = "definition.exit_slot", desc = "Leave a definition's shorthand",            binds = {"Escape+All"}},
-    {id = "formula.exit_left",    desc = "Leave the formula to the left",            binds = {"Ctrl+Left"}},
-    {id = "formula.exit_right",   desc = "Leave the formula to the right",           binds = {"Ctrl+Right"}},
+    {id = "formula.new",          desc = "Insert a formula here",
+                               binds = {"Ctrl+M"}},
+    {id = "formula.new_frac",     desc = "Insert a formula with a fraction",
+                    binds = {"Ctrl+/"}},
+    {id = "formula.new_stack",    desc = "Insert a formula with a stack",
+                       binds = {"Ctrl+="}},
+    {id = "formula.wrap_sub",     desc = "Subscript the character before",
+                      binds = {"Ctrl+Shift+-"}},
+    {id = "formula.wrap_sup",     desc = "Superscript the character before",
+                    binds = {"Ctrl+Shift+="}},
+    {id = "formula.exit",         desc = "Leave the formula",
+                                   binds = {"Escape+All"}},
+    {id = "definition.exit_slot", desc = "Leave a definition's shorthand",
+                       binds = {"Escape+All"}},
+    {id = "formula.exit_left",    desc = "Leave the formula to the left",
+                       binds = {"Ctrl+Left"}},
+    {id = "formula.exit_right",   desc = "Leave the formula to the right",
+                      binds = {"Ctrl+Right"}},
 
     -- Inside a formula -------------------------------------------------------------------------
-    {id = "math.sup",             desc = "Superscript",                              binds = {"Ctrl+Shift+="}},
-    {id = "math.sub",            desc = "Subscript",                                 binds = {"Ctrl+Shift+-"}},
-    {id = "math.frac",           desc = "Insert a fraction",                         binds = {"Ctrl+/"}},
-    {id = "math.stack_grow",     desc = "Start a stack, or add a cell",              binds = {"Ctrl+="}},
-    {id = "math.stack_shrink",   desc = "Drop a cell from the stack",                binds = {"Ctrl+-"}},
+    {id = "math.sup",             desc = "Superscript",
+                                         binds = {"Ctrl+Shift+="}},
+    {id = "math.sub",            desc = "Subscript",
+                                            binds = {"Ctrl+Shift+-"}},
+    {id = "math.frac",           desc = "Insert a fraction",
+                                    binds = {"Ctrl+/"}},
+    {id = "math.stack_grow",     desc = "Start a stack, or add a cell",
+                         binds = {"Ctrl+="}},
+    {id = "math.stack_shrink",   desc = "Drop a cell from the stack",
+                           binds = {"Ctrl+-"}},
     --[[ [ IS BELOW AND ] IS ABOVE, swapped 2026-09-10 on the author's own reading of them.
     The pair mirrors math.sub/math.sup above it, where the UNSHIFTED-looking key of the pair is
     the lower one; a rebinding in the customiser overrides either, so this is only the default. ]]
-    {id = "math.limit_below",    desc = "Limit below (makes a big operator)",        binds = {"Ctrl+Shift+["}},
-    {id = "math.limit_above",    desc = "Limit above (makes a big operator)",        binds = {"Ctrl+Shift+]"}},
-    {id = "math.bar_bracket",    desc = "Open or close a | delimiter",               binds = {"Ctrl+Shift+\\"}},
-    {id = "math.accent_bar",     desc = "Bar above (press again to remove)",         binds = {"Ctrl+G"}},
-    {id = "math.accent_hat",     desc = "Hat above",                                 binds = {"Ctrl+6"}},
-    {id = "math.accent_tilde",   desc = "Tilde above",                               binds = {"Ctrl+`"}},
-    {id = "math.accent_bar_below",   desc = "Bar below",                             binds = {"Ctrl+Shift+G"}},
-    {id = "math.accent_hat_below",   desc = "Hat below",                             binds = {"Ctrl+Shift+6"}},
-    {id = "math.accent_tilde_below", desc = "Tilde below",                           binds = {"Ctrl+Shift+`"}},
-    {id = "math.dot_add",        desc = "Add a dot above (up to three)",             binds = {"Ctrl+."}},
-    {id = "math.dot_remove",     desc = "Remove a dot",                              binds = {"Ctrl+,"}},
-    {id = "math.vec",            desc = "Vector arrow, pointing right",              binds = {"Ctrl+Shift+."}},
-    {id = "math.vec_left",       desc = "Vector arrow, pointing left",               binds = {"Ctrl+Shift+,"}},
+    {id = "math.limit_below",    desc = "Limit below (makes a big operator)",
+                   binds = {"Ctrl+Shift+["}},
+    {id = "math.limit_above",    desc = "Limit above (makes a big operator)",
+                   binds = {"Ctrl+Shift+]"}},
+    {id = "math.bar_bracket",    desc = "Open or close a | delimiter",
+                          binds = {"Ctrl+Shift+\\"}},
+    {id = "math.accent_bar",     desc = "Bar above (press again to remove)",
+                    binds = {"Ctrl+G"}},
+    {id = "math.accent_hat",     desc = "Hat above",
+                                            binds = {"Ctrl+6"}},
+    {id = "math.accent_tilde",   desc = "Tilde above",
+                                          binds = {"Ctrl+`"}},
+    {id = "math.accent_bar_below",   desc = "Bar below",
+                                        binds = {"Ctrl+Shift+G"}},
+    {id = "math.accent_hat_below",   desc = "Hat below",
+                                        binds = {"Ctrl+Shift+6"}},
+    {id = "math.accent_tilde_below", desc = "Tilde below",
+                                      binds = {"Ctrl+Shift+`"}},
+    {id = "math.dot_add",        desc = "Add a dot above (up to three)",
+                        binds = {"Ctrl+."}},
+    {id = "math.dot_remove",     desc = "Remove a dot",
+                                         binds = {"Ctrl+,"}},
+    {id = "math.vec",            desc = "Vector arrow, pointing right",
+                         binds = {"Ctrl+Shift+."}},
+    {id = "math.vec_left",       desc = "Vector arrow, pointing left",
+                          binds = {"Ctrl+Shift+,"}},
     --[[ THE GESTURE. Right-click asks what can be done where the pointer is, and gets a menu -
     empty, when the answer is nothing, so that "understood, and there is nothing here" cannot be
     mistaken for a dead binding. It reads the formula without moving the caret
@@ -669,6 +828,11 @@ end
 
 -- The live modifier state, for the few places that genuinely need to ask (the Alt+letter Greek
 -- loop, which is a whole family of keys rather than one action).
+--[[ Which modifiers are held right now, as ctrl, shift, alt.
+
+Read through the same once-per-frame refresh `pressed` uses, so every question asked in one frame
+gets one consistent answer - a modifier cannot appear to change halfway through a frame's dispatch.
+@date 2026-09-12 03:45 ]]
 function keymap.mods()
     refresh_mods(frame_counter)
     return mod_state.ctrl, mod_state.shift, mod_state.alt
@@ -720,6 +884,11 @@ end
 
 -- Every action, in DEFAULTS order rather than a random hash walk, so the customiser's table and
 -- the help are stable between runs.
+--[[ Every action with its live binds, in the registry's own order.
+
+THE ORDER IS THE DEFAULTS TABLE'S, which is the order F1 prints and F2 lists, so both stay stable
+across runs and neither depends on how Lua hashes ids.
+@date 2026-09-12 03:45 ]]
 function keymap.each(fn)
     for _, entry in ipairs(DEFAULTS) do
         fn(entry.id, actions[entry.id])
@@ -730,6 +899,17 @@ end
 "everything", so the customiser can hand its own state straight through without a special case.
 @date 2026-09-09 23:40 ]]
 function keymap.filter_ids(filter)
+    --[[ CHECKED HERE even though filter_matches below checks it too, which is the one place that
+    rule bends. A bad filter would otherwise be caught only if some action happens to HAVE a bind:
+    the nil-filter branch never reaches filter_matches, and neither does an action with an empty
+    bind list. So a malformed filter over a keymap with nothing bound would come back `{}` - "nothing
+    matches" - which is exactly what a VALID filter matching nothing returns. An empty answer that
+    means two different things is the degradation this project refuses elsewhere.
+
+    nil is still "everything", which is what lets the customiser hand its own state straight in. ]]
+    if filter ~= nil then
+        keymap.check_bind(filter)
+    end
     local hits = {}
     for _, entry in ipairs(DEFAULTS) do
         local action = actions[entry.id]
@@ -798,6 +978,7 @@ end
 follows DEFAULTS, same as each().
 @date 2026-09-08 08:40 ]]
 function keymap.conflicts(bind, except_id)
+    keymap.check_bind(bind)
     local hits = {}
     for _, entry in ipairs(DEFAULTS) do
         if entry.id ~= except_id then
@@ -815,6 +996,12 @@ function keymap.conflicts(bind, except_id)
 end
 
 -- Back to factory, for one action or (with no id) all of them.
+--[[ Puts one action back to its factory binds, or the WHOLE map when given no id.
+
+The no-argument form is the customiser's "default all" - not undoable from inside the panel, which
+is why it is armed behind two clicks there. Returns true, or false for an id the registry does not
+know.
+@date 2026-09-12 03:45 ]]
 function keymap.reset(id)
     if not id then
         install_defaults()

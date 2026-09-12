@@ -13,6 +13,7 @@
 #include "char_draw_composer.h"
 #include "math_expr_composer.h"
 #include "imgui_composer.h"
+#include "path_composer.h"
 #include "app_mode.h"
 #include "perf_composer.h"
 #include "async_log_composer.h"
@@ -83,6 +84,7 @@ namespace vc = virt_composer;
 namespace charc = char_draw_composer;
 namespace mexpr = math_expr_composer;
 namespace imgc = imgui_composer;
+namespace pathc = path_composer;
 namespace perfc = perf_composer;
 namespace appm = app_mode;
 namespace alogc = async_log_composer;
@@ -158,6 +160,7 @@ int main(int argc, char const *argv[])
         ASSERT_FN(charc::register_meta(out.get()));
         ASSERT_FN(mexpr::register_meta(out.get()));
         ASSERT_FN(imgc::register_meta(out.get()));
+        ASSERT_FN(pathc::register_meta(out.get()));
         ASSERT_FN(perfc::register_meta(out.get()));
         ASSERT_FN(appm::register_meta(out.get()));
         ASSERT_FN(alogc::register_meta(out.get()));
@@ -414,6 +417,18 @@ int main(int argc, char const *argv[])
 
     if (appm::app_is_testing())
         debug_input_pipe::uninit();
+
+    /* BEFORE imgui_uninit(), and that order is the whole point. Lua's GC finalizers run inside
+    ~virt_state_t, and one of them drops the last reference to the fontset, whose ImFont
+    shared_ptrs delete through io.Fonts->RemoveFont() - so the ImGui context has to still exist
+    at that moment. Left to main()'s own unwinding `vs` dies AFTER imgui_uninit(), and that
+    deleter asserts inside ImGui::GetIO() with the context already gone: every run ended in
+    abort() rather than a clean exit. It went unnoticed because it lands after test_shutdown,
+    alog_close() and ImGui's own ini write, so nothing was actually lost - only the exit code
+    said so. Found 2026-09-12 from the crash stack. The reload path above never hit it: it
+    releases the old state mid-run, with the context alive, which is what the deleter expects. */
+    vs.reset();
+
     imgui_uninit();
     return 0;
 }

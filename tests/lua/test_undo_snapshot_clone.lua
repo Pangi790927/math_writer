@@ -57,7 +57,8 @@ function run_test()
         end
         local root = mexpru.horiz(fs, kids, SZ)
         mexpru.update_positions(root)
-        return {root = root, cursor_pos = vc.wref_mexpr(kids[#kids]), version = 0}
+        -- Through the creator: a container is a sealed type since 2026-09-12.
+        return mexpru.new_container(root, kids[#kids])
     end
 
     -- ---------------------------------------------------------------------------------------
@@ -111,7 +112,7 @@ function run_test()
         local sup = mexpru.horiz(fs, {glyph(fs, "2", SZ - 2)}, SZ - 2)
         local root = mexpru.horiz(fs, {open_atom, A, mexpru.supsub(fs, close_atom, sup, nil)}, SZ)
         mexpru.update_positions(root)
-        local container = {root = root, cursor_pos = vc.wref_mexpr(A), version = 3}
+        local container = mexpru.new_container(root, A, 3)
 
         local snap = mformula_new.clone(container, fs)
         check("a bracketed, exponent-carrying formula clones faithfully",

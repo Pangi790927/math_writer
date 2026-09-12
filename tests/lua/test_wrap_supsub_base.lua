@@ -69,7 +69,8 @@ local function build_pending(fs, sz, prefix_ascii)
 
     local root = mexpru.horiz(fs, kids, sz)
     mexpru.update_positions(root)
-    return {root = root, cursor_pos = vc.wref_mexpr(A), version = 0}, supsub_node, A, open_atom
+    -- Through the creator: a container is a sealed type since 2026-09-12.
+    return mexpru.new_container(root, A), supsub_node, A, open_atom
 end
 
 -- Mirrors try_close_bracket()'s own closing_onto_base splice: the ")" becomes the supsub's base and

@@ -52,14 +52,19 @@ function run_test()
         return c, node, ns, err
     end
 
-    --[[ Write `node` back and report both what it says and what it looks like. The container is the
-    minimum a parse needs, which is a root - the same shape mformula_latex.from_latex hands back. ]]
+    --[[ Write `node` back and report both what it says and what it looks like.
+
+    BUILT THROUGH mexpru.new_container SINCE 2026-09-12, not as a bare `{root = ..., version = 0}`.
+    The container became a SEALED type with one creator, and ast_mexpr.verify checks it was handed
+    one - so the old table, which happened to carry the two fields anything looked at, is no longer
+    a container. That is the change working rather than a test to paper over: "a table with a root
+    in it" was never the contract, it was just what nothing had checked. ]]
     local function write_back(source, ns, node)
         local root, err = ast_mexpr.build(fs, source.root, ns, node, SZ)
         if not root then
             return nil, err
         end
-        local rebuilt = {root = root, version = 0}
+        local rebuilt = mexpru.new_container(root, mexpru.u(root).children[1] or root)
         local ok, want, got = ast_mexpr.verify(fs, rebuilt, {}, ns, node)
         return {latex = mformula_latex.to_latex(rebuilt), ok = ok, want = want, got = got}
     end
@@ -96,7 +101,18 @@ function run_test()
         end
         check("setup: there is a sum to distribute", add ~= nil)
 
-        local result, err = transforms.distribute(ns, node, add.id)
+        --[[ THE PARAMS COME FROM THE OFFER as of 2026-09-12, not from a `{add = add.id}` written here.
+        distribute seals what its offer() builds and checks it on retrieval, so a hand-made table with
+        the right key is refused - the metatable is the type. That is not an assertion that stopped
+        holding either: it is the same assertion, made through the same door the right-click menu uses,
+        and it now also pins that offer and apply AGREE about the parameter, which two hand-written
+        tables could never have caught. ]]
+        local option = transforms.offers(ns, node, add)[1]
+        check("setup: distribute offers itself at the sum", option ~= nil)
+        if not option then
+            return false
+        end
+        local result, err = transforms.apply(option.id, ns, node, option.params)
         check("distribute produces a tree", result ~= nil, err)
         if result then
             local out, werr = write_back(src, ns, result)

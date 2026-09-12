@@ -19,6 +19,7 @@ Exit code is 0 if every test passed, 1 otherwise (including build failures) - su
 """
 
 import argparse
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,29 @@ TESTS_DIR = Path(__file__).resolve().parent
 LUA_DIR = TESTS_DIR / "lua"
 HARNESS_DIR = TESTS_DIR / "harness"
 BUILD_DIR = HARNESS_DIR / "build"
+
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+HARNESS_SCRIPTS = BUILD_DIR / "scripts"
+
+
+def sync_scripts():
+    """Mirror scripts/ into the harness's own directory, fresh on every run.
+
+    The harness binary lives in tests/harness/build/ but runs with the repository root as its
+    working directory, so the two ways a script gets found disagree: package.path's ./scripts/?.lua
+    resolves against the repo, while anything resolved against the EXECUTABLE's directory - which is
+    what vc.path_list_dir does, deliberately, so the app is independent of where it was launched
+    from - resolves against build/. scripts/transforms.lua enumerates its plugin folder that way, so
+    without this copy the harness would find no plugins while the app found them all.
+
+    Mirrored rather than merged: a file deleted from scripts/ has to disappear here too, or a plugin
+    removed from the project would go on being discovered by the tests alone. Rebuilt per run, so it
+    cannot drift from the sources within a run.
+    """
+    if HARNESS_SCRIPTS.exists():
+        shutil.rmtree(HARNESS_SCRIPTS)
+    shutil.copytree(SCRIPTS_DIR, HARNESS_SCRIPTS)
+
 
 UTILS = REPO_ROOT.parent / "utils"
 IMGUI = REPO_ROOT.parent / "imgui"
@@ -209,6 +233,11 @@ def main():
     if not HARNESS_EXE.exists():
         print(f"Harness not found at {HARNESS_EXE} - run without --no-build first.")
         return 1
+
+    # Always, including under --no-build: the scripts change far more often than the harness does,
+    # and a stale copy here is worse than no copy - it would test a version of the sources nobody
+    # is editing any more.
+    sync_scripts()
 
     print(f"Running {len(tests)} test(s)...\n")
     results = []

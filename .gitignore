@@ -12,3 +12,8 @@
 # Everything the TESTING instance (main.exe --test) writes - see app_mode.h. Its own document,
 # logs and ImGui state, kept out of the way of the presentation instance and out of git.
 test_run/
+
+# The per-run mirror of scripts/ that the test harness needs: it resolves plugin folders against
+# its OWN directory (vc.path_list_dir is app-local), while package.path resolves against the repo.
+# Written fresh by tests/run_tests.py sync_scripts() on every run - generated, never edited.
+tests/harness/build/scripts/

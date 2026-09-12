@@ -1,3 +1,58 @@
+--[[ ==================================== WHAT THIS FILE OFFERS ====================================
+THE PARSE
+build(fontset: fontset, container: mformula.container, decls: {decl}, ns: ast.ns)
+      -> node | nil, reason, ns
+    A ROW AS MEANING - the parser's actual output. Also tags each
+    mexpr node with the ast node it names (`u.ast_id`), which is how a
+    click later resolves to a node.
+describe(fontset: fontset, container: mformula.container, decls: {decl}) -> {line, ...}
+    The same parse as indented lines, for the F4 viewer.
+
+NAMES
+parse_name(fontset: fontset, container: mformula.container) -> pattern | nil, reason
+parse_use(fontset: fontset, container: mformula.container, decls: {decl}) -> use | nil, reason
+parse_use_units(units, decls: {decl}, opts: table) -> use | nil, reason
+    A declaration versus a use. Superscripts are refused in the first
+    and allowed in the second: `f^2` is not a name, but `f^2(x)` is a
+    use of one.
+match_use(use, decl_tokens)             -> args | nil
+resolve_use(use, decls: {decl})         -> {candidate, ...}, verdict
+check_declarations(decls: {decl})       -> accepted, refused
+    Checked AS A SET: the question is whether two collide, so a name
+    that is fine alone can still be refused beside another.
+
+BUILT-INS
+builtin_functions() / named_operators() -> {name = arity} sorted
+new_decl(fields: table)                 -> decl
+DECL_SHAPE                              the declaration's shape
+    One declaration as the document hands it over. Declared here rather
+    than in editor_definition, which builds it: this is the layer that
+    decides what a declaration IS, and the dependency runs this way.
+
+builtin_declarations(fontset: fontset)  -> {decl, ...}
+is_builtin_name(fontset: fontset, text: string) -> reason | nil
+is_builtin_word(name: string)           -> boolean
+    The consecrated names, as REAL DECLARATIONS in the same shape a
+    definition box hands out, so resolution has one path and not two.
+
+PIECES
+MARK_STATUSES                           {status -> meaning}
+    The three a parse mark may carry: ok, work, bad. Declared here and
+    checked by the drawing side at load, so the two cannot drift.
+
+parse_number(text: string)              -> node | nil, reason
+parse_domain(fontset: fontset, container: mformula.container) -> name, set | nil, reason
+    A parameter cell, which must be a membership and nothing else.
+
+--- internal, not on the module table --------------------------------------------------------------
+    new_parse_ctx() THE ONE creator for the `ctx_parse` the cascade carries down
+    unit()         the ONE creator for the parser's per-slot container - a DIFFERENT
+                   table from mexpru's `u`, despite both being called `u` in use
+    the unit list, the parser cascade (build_sum -> build_product ->
+    read_factor), the pattern trie and the ast tagging
+@date 2026-09-12 03:45
+================================================================================================= ]]
+
 --[[
 mexpr_ast.lua - the bridge from the EDITED tree (mexpr) to MEANING.
 
@@ -56,6 +111,7 @@ declaration will not match.
 local vc = require("virt_composer")
 local char = require("char")
 local mexpru = require("mexpru")
+local sealed = require("sealed")
 local ast = require("ast")
 --[[ For building the built-in declarations by PARSING them - see builtin_declarations. No cycle:
 mformula_latex knows about vc/char/mexpru and nothing about this file. ]]
@@ -114,7 +170,7 @@ BY DESC, through char.greek_letters, which is the catalog's own answer rather th
 formed here. Only the LETTERS: `\\sum` and `\\prod` are operators that happen to be drawn as Greek
 capitals, they carry their own descs, and they are not in that set. @date 2026-09-11 08:10 ]]
 local function is_letter(d)
-    return is_ascii_letter(d) or (d ~= nil and char.greek_letters[d] == true)
+    return is_ascii_letter(d) or (d ~= nil and char.is_greek_letter(d))
 end
 
 local function is_digit(d)
@@ -225,6 +281,120 @@ local function leaf_drawn_by(u0)
     return u0.node
 end
 
+--[[ THE `ctx_parse` CONTAINER - what the parser cascade carries down, and THE ONE CREATOR for it.
+
+NAMED `ctx_parse`, NOT `ctx`, for the reason ast_mexpr's `ctx_write` is named that: three different
+containers here were called `ctx`, and `ctx.ns` meant something different in each. The plugin one
+(transforms.ctx) keeps the bare name because it is the one that crosses files.
+
+Its fields:
+    ns          the namespace every node built by this parse is minted into
+    decls       what is in scope: the document's declarations, with the built-ins added
+    vars        name -> VAR node, the variables this parse has created so far
+    free_order  DELIBERATELY ABSENT HERE. It is a bigop's harvesting side-channel, and its being
+                nil is the OFF state - read_constraints sets it to {} for the span it wants
+                collected and restores it after. Creating it here would make "when present" always
+                true and every free variable would be harvested by nobody. Caught while writing
+                this creator; no test covers that path.
+
+`vars` starts EMPTY and fills as the parse proceeds - it is the parse's accumulating state, not its
+input, which is why it is not a parameter here.
+
+NOT SEALED: built here, read only inside this file, dropped when the parse ends. The same note
+`unit` carries a few hundred lines up.
+@date 2026-09-12 14:30 ]]
+local CTX_PARSE_SHAPE = sealed.declare("mexpr_ast", "ctx_parse", {
+    ns         = "the namespace every node built by this parse is minted into",
+    decls      = "what is in scope: the document's declarations, with the built-ins added",
+    vars       = "name -> VAR node, the variables this parse has created so far",
+    free_order = "a bigop's harvesting side-channel; ABSENT is the off state - see below",
+})
+
+local function new_parse_ctx(ns, decls)
+    return CTX_PARSE_SHAPE.wrap{ns = ns, decls = decls, vars = {}}
+end
+
+--[[ THE `unit` CONTAINER - one row slot, as the parser sees it. THE ONE CREATOR for it.
+
+A DIFFERENT CONTAINER FROM mexpru's `u` TABLE, and the collision of names is worth stating plainly
+because both are called `u` at their call sites: `u.sz` is a node's logical size, `u0.sup` is this
+container's superscript slot. They are unrelated tables. This one is built here, lives only for the
+length of one parse, and is never attached to a node.
+
+Its fields, which is what a reader comes here for:
+
+    atom      what the slot actually carries, looked through any dress or supsub (slot_atom)
+    node      the OUTERMOST node, never the undressed one - dress_suffix reads the decoration off
+              it, and the decoration is part of a name's identity
+    base      the supsub's base, carried for leaf_drawn_by alone
+    sup, sub  the supsub's own rows, when the slot is one
+    call      set by read_pattern on a base unit it owns - the one field anything downstream mutates
+    quoted, quoted_nodes, quote_open, prime
+              set while reading a declaration's pattern; see read_pattern
+
+NOT SEALED, unlike `u` and `ctx_parse`. Those two span files and are written by several; this one is
+built, read and dropped inside this file, so a typo on it is visible in the same screenful that
+created it. If it ever leaves mexpr_ast, it should be sealed the same way.
+@date 2026-09-12 05:00 ]]
+--[[ The `unit` container's declared fields. Sealed like every other container here - author,
+2026-09-12, on take_quoted: "u is of a type no? and it is not checked".
+
+`quote_open` has no entry among the constructor's own fields because it is written LATER, while a
+quoted name is being read. Declared-but-unset is the normal state for most of these: a plain letter
+carries `atom` and `node` and nothing else.
+@date 2026-09-12 19:45 ]]
+local UNIT_SHAPE = sealed.declare("mexpr_ast", "unit", {
+    atom         = "what the slot carries, looked through any dress or supsub (slot_atom)",
+    node         = "the OUTERMOST node - dress_suffix reads the decoration off it",
+    base         = "the supsub's base, carried for leaf_drawn_by alone",
+    sup          = "the supsub's superscript row, when the slot is one",
+    sub          = "its subscript row",
+    call         = "set by read_pattern on a base unit it owns",
+    quoted       = "the text between a pair of quotes, when this slot opens one",
+    quoted_nodes = "the nodes that text came from",
+    quote_open   = "the opening quote's own node, written when the pair is closed",
+    prime        = "this slot is a prime mark",
+})
+
+--[[ The `decl` container - one declaration, as the document hands it to the parser.
+
+DECLARED HERE THOUGH IT IS BUILT IN editor_definition, because this is the layer that decides what a
+declaration IS for resolution, and because editor_definition requires this file rather than the
+other way round - declaring it there and checking it here would be a cycle.
+
+`arity` is not stored: it is `#vars` on the pattern this came from, and two places holding one
+number is how they come to disagree. `box_index` is added by content.declarations_before, which is
+the only thing that knows where a declaration sits in the document.
+@date 2026-09-12 20:00 ]]
+mexpr_ast.DECL_SHAPE = sealed.declare("mexpr_ast", "decl", {
+    text       = "the pattern as serialized text - the KEY a use resolves against",
+    name       = "the declared name on its own",
+    arity      = "how many arguments it takes",
+    tokens     = "the pattern's token list, carried rather than re-split from `text`",
+    groups     = "its argument groups, carried for the same reason",
+    box_index  = "which box declared it; added by content.declarations_before",
+    builtin    = "this is a CONSECRATED name, not one the document wrote - set by "
+                 .. "builtin_declarations and by nothing else",
+})
+
+--[[ Builds one. THE ONE CREATOR, called by editor_definition.declaration.
+@date 2026-09-12 20:00 ]]
+function mexpr_ast.new_decl(fields)
+    return mexpr_ast.DECL_SHAPE.wrap(fields)
+end
+
+--[[ The `use` container - a row read as a USE of a name. Sealed; it is what match_use and
+resolve_use are handed, and `use.tokens` versus `use.args` is the whole of the matching.
+@date 2026-09-12 19:45 ]]
+local USE_SHAPE = sealed.declare("mexpr_ast", "use", {
+    key      = "the pattern text this use spells, which is what a declaration is keyed by",
+    tokens   = "its token list, walked against a declaration's position by position",
+    args     = "the expression in each argument slot, in order",
+    sups     = "powers applied to the reference, for the expression parser to re-apply",
+    marks    = "the parse marks this read produced",
+    consumed = "how many units it got through - only meaningful with opts.partial",
+})
+
 local function unit(child)
     --[[ THROUGH ANY DRESS FIRST, so both spellings of one thing arrive here as the same shape -
     see mexpru.undressed. A supsub reached this way is the same supsub whether the accent sat over
@@ -233,11 +403,40 @@ local function unit(child)
     if u and u.kind == "supsub" then
         --[[ `base` is carried for leaf_drawn_by alone: the leaf's own ink is the base when a power
         rides on the slot. Nothing else reads it. ]]
-        return {atom = mexpru.slot_atom(child), sup = u.sup, sub = u.sub, base = u.base, node = child}
+        return UNIT_SHAPE.wrap{atom = mexpru.slot_atom(child), sup = u.sup, sub = u.sub,
+                base = u.base, node = child}
     end
     --[[ `node` is the OUTERMOST node, never the undressed one: dress_suffix reads the decoration
     off it, and the decoration is part of a name's identity. ]]
-    return {atom = mexpru.slot_atom(child), node = child}
+    return UNIT_SHAPE.wrap{atom = mexpru.slot_atom(child), node = child}
+end
+
+--[[ A declaration LIST, every element checked.
+
+What a caller passes as "what is in scope". The elements are walked - `d.tokens` position by
+position - so a wrong one is dereferenced rather than merely carried, which is why the list is
+checked through rather than at the top. nil is refused here; the callers that allow an absent list
+test for it themselves, because for them nil means something ("just the built-ins") rather than
+nothing.
+@date 2026-09-12 20:40 ]]
+local function check_decls(decls, what)
+    assert(type(decls) == "table", (what or "decls") .. " must be a declaration list")
+    for i, d in ipairs(decls) do
+        mexpr_ast.DECL_SHAPE.check(d, (what or "decls") .. "[" .. i .. "]")
+    end
+    return decls
+end
+
+--[[ Every element of a unit list, checked. Lists are built by row_units and sliced by the parser,
+so a wrong element means a slice went wrong upstream rather than a caller mistyping - and the
+element that is not a unit is the one worth naming, not the list.
+@date 2026-09-12 20:20 ]]
+local function check_units(units, what)
+    assert(type(units) == "table", (what or "units") .. " must be a unit list")
+    for i, u in ipairs(units) do
+        UNIT_SHAPE.check(u, (what or "units") .. "[" .. i .. "]")
+    end
+    return units
 end
 
 --[[ What may stand inside a quoted name. Spaces are content here and layout everywhere else, which
@@ -523,6 +722,22 @@ local function new_parser()
                          no_sups = true}, Parser)
 end
 
+--[[ THE THREE MARK STATUSES - the whole set, declared once so both sides of it agree.
+
+WHY DECLARED AT ALL. A status is a magic string that leaves this file: editor_definition draws a
+mark by looking its status up in MARK_COLORS, and a name that is not a key there yields nil, which
+its `if color then` skips. So a typo - `"wrk"` - does not fail, it makes the mark silently not
+appear, on the one feature whose whole job is telling the user where the parse went wrong.
+
+Exported so the drawing side can be checked against it at load rather than agreeing by coincidence.
+@date 2026-09-12 17:10 ]]
+mexpr_ast.MARK_STATUSES = sealed.declare("mexpr_ast", "mark status", {
+    ok   = "read and accepted",
+    work = "inside something unfinished - an unclosed bracket, an unterminated quote. Not wrong "
+           .. "yet, which is what most of typing looks like.",
+    bad  = "this is the thing that breaks the rule",
+})
+
 --[[ Records what the parser made of one atom, for the editor to paint behind it:
 
     "ok"    read and accepted
@@ -535,6 +750,10 @@ keyed by node, because a Lua table cannot be keyed by an mexpr_p - node identity
 mexpru.same(), so there is no usable key.
 @date 2026-09-08 08:55 ]]
 function Parser:mark(node, status)
+    --[[ THE STATUS IS CHECKED; the node is not required. A node the parser never reached is simply
+    absent and stays unpainted, which is why nil is an ordinary argument here - but a status outside
+    the three is not a quieter mark, it is an invisible one. ]]
+    mexpr_ast.MARK_STATUSES.check_name(status, "status")
     if node then
         self.marks[#self.marks + 1] = {node = node, status = status}
     end
@@ -544,12 +763,18 @@ end
 was typed, and none of it is wrong yet.
 @date 2026-09-08 08:55 ]]
 function Parser:mark_rest(units, i)
+    check_units(units)
     for j = i, #units do
         self:mark(units[j].node, "work")
     end
 end
 
 function Parser:fail(msg, node)
+    --[[ `node` is OPTIONAL - `parse_argument` fails with none when the argument is empty, since
+    there is no glyph to point at. Checked when given. ]]
+    if node ~= nil then
+        mexpru.check_node(node, "node")
+    end
     self.err, self.err_node = msg, node
     self:mark(node, "bad")
     return nil
@@ -571,6 +796,10 @@ shows the name with a dot at each parameter, and the only way to draw a position
 boxes occupy it. Callers that have no boxes to offer pass nothing and lose nothing.
 @date 2026-09-11 02:10 ]]
 function Parser:free_var(name, nodes)
+    assert(type(name) == "string", "a free variable's name must be a string")
+    for i, node in ipairs(nodes or {}) do
+        mexpru.check_node(node, "nodes[" .. i .. "]")
+    end
     self.vars[#self.vars + 1] = name
     self.var_nodes[#self.vars] = nodes
     self:emit("(" .. #self.vars .. ")")
@@ -587,6 +816,7 @@ answers false whenever there is nothing to resolve against, which keeps a parse 
 reading exactly as it did before there was a rule at all.
 @date 2026-09-10 09:10 ]]
 function Parser:group_is_name_part(units)
+    check_units(units)
     if not self.decls or #self.decls == 0 then
         return false
     end
@@ -614,14 +844,19 @@ The marks are why this exists rather than the caller just reading `.quoted`: the
 paints per character, so it needs to say which atoms were accepted and which one broke the rule.
 That survived the packing precisely because `.quoted_nodes` kept them.
 @date 2026-09-10 11:20 ]]
+--[[ PRECONDITION: `u.quoted` is set. Both callers test `first.quoted` before coming here, and
+`quoted_nodes` is written on the same line as `quoted` (row_units), so the two are never apart.
+Stated rather than checked: this is a Parser method, and the checks in this project live at the API
+edge, not on the locals behind it. @date 2026-09-12 17:30 ]]
 function Parser:take_quoted(u)
+    UNIT_SHAPE.check(u, "u")
     --[[ NOTHING BUT SPACES IS NOT A NAME. `'  '` has two characters of content and identifies
     nothing, and packing made this the only place left to say so: `''` never arrives here at all,
     since a pair with nothing between it lexes as a second rather than as a name. ]]
     if u.quoted:match("^ *$") then
         return self:fail("empty quoted name", u.node)
     end
-    for i, node in ipairs(u.quoted_nodes) do
+    for _, node in ipairs(u.quoted_nodes) do
         local d = atom_desc(node and mexpru.slot_atom(node))
         --[[ Underscore included, and spaces: a quoted name is the only way to write a
         multi-character name, `max_lim` is how people spell those, and an underscore cannot be typed
@@ -631,7 +866,6 @@ function Parser:take_quoted(u)
                     .. "spaces", node)
         end
         self:mark(node, "ok")
-        i = i
     end
     -- Both quotes are punctuation and do not survive into the pattern; they are marked as read.
     self:mark(u.quote_open, "ok")
@@ -681,6 +915,7 @@ end
 parameter) or a free variable, and which may itself carry decorations that recurse.
 @date 2026-09-08 08:55 ]]
 function Parser:parse_argument(units)
+    check_units(units)
     if #units == 0 then
         return self:fail("empty argument", nil)
     end
@@ -832,6 +1067,7 @@ scanning to the matching bracket, and re-deriving them from their nodes would un
 that happened on the way in.
 @date 2026-09-10 11:20 ]]
 function Parser:parse_arg_units(units)
+    check_units(units)
     -- An untouched slot holds a single empty placeholder; that is "no arguments yet", not an error
     -- worth stopping the whole parse for - the caller sees arity 0 for it.
     if #units == 1 and units[1].atom and units[1].atom.type == vc.MEXPR_TYPE_EMPTY_BOX then
@@ -876,9 +1112,12 @@ expression parser will act on exactly the list this leaves behind. Groundwork re
 parsing names, but actioned on when looking at real expressions".
 @date 2026-09-10 01:45 ]]
 function Parser:decorations(u)
-    if not u then
-        return true
-    end
+    UNIT_SHAPE.check(u, "u")
+    --[[ `if not u then return true end` is gone. It could not fire from either caller - one passes
+    `units[last_i]` with last_i a valid index, and the other's `base_unit` is set on every branch
+    that does not return first - and what it did if it ever had was worse than nothing: `true` means
+    "the decorations are fine", so a name whose base was never found would have been accepted. A nil
+    here now errors on the next line, at the caller that lost it. ]]
     if u.sup then
         self.sups[#self.sups + 1] = {node = u.node, row = u.sup}
         if self.no_sups then
@@ -1213,7 +1452,20 @@ local function read_pattern(p, units)
     }
 end
 
+--[[ A row read as the DECLARATION of a name.
+
+The left-hand side of a definition: the pattern, its literals and its numbered free variables.
+Superscripts are REFUSED here - a name has no exponent, so `f^2` is not a name - which is the
+asymmetry parse_use exists on the other side of.
+
+Returns the pattern, or nil plus the reason it is not a name.
+@date 2026-09-12 03:45 ]]
 function mexpr_ast.parse_name(fontset, container)
+    mexpru.check_container(container)
+    --[[ `fontset` IS NOT USED. It is here so every public entry in this file reads the same way -
+    build() and parse_domain() do need one - and because removing it would renumber the arguments at
+    every call site. Flagged 2026-09-12 rather than quietly kept: it is a parameter that does
+    nothing, and a reader is entitled to know that before passing one. ]]
     local p = new_parser()
     return read_pattern(p, row_units(container.root))
 end
@@ -1262,6 +1514,14 @@ matching a literal against a placeholder in the other direction: a declaration's
 of its NAME, so a use that wrote something else has named something else.
 @date 2026-09-10 05:40 ]]
 function mexpr_ast.match_use(use, decl_tokens)
+    --[[ `use` is dereferenced on the next line, so it is required. `decl_tokens` is not: a
+    declaration with no tokens is a real thing to test against, and `{}` matches only another empty
+    one, which is the correct answer rather than a special case.
+
+    The `use` container - {tokens, args, sups, consumed} - stays unsealed because it never leaves
+    this file; parse_use_units builds it and resolve_use and this function read it. The note `unit`
+    carries applies: if it ever crosses a file boundary it should be sealed. ]]
+    USE_SHAPE.check(use, "use")
     local ut, dt = use.tokens or {}, decl_tokens or {}
     if #ut ~= #dt then
         return nil, "different shape"
@@ -1330,6 +1590,9 @@ several extents of a row and treats the ones that do not resolve as "read this s
 which would bury an ambiguity as "not declared" if it could only see that resolution failed.
 @date 2026-09-10 05:10 ]]
 function mexpr_ast.resolve_use(use, decls)
+    --[[ `use` is only FORWARDED to match_use, which checks it. The declarations are not: this
+    walks `d.tokens` on each, so a wrong element is dereferenced here. ]]
+    check_decls(decls, "decls")
     local hits = {}
     for _, d in ipairs(decls or {}) do
         local args, _, spec = mexpr_ast.match_use(use, d.tokens)
@@ -1379,6 +1642,20 @@ function mexpr_ast.resolve_use(use, decls)
     return best
 end
 
+--[[ THE `opts` parse_use_units TAKES - every option it understands, and nothing else.
+
+Declared through sealed.lua like every other container here, and checked with `check_keys` rather
+than `wrap`: an options table arrives already built from a call-site literal, so its keys - misspelt
+ones included - are present before a seal could fire on them. See that function for why.
+
+A misspelt option here is silently PERMISSIVE, which is what makes it worth checking at all:
+`no_call` missed means a call IS read, and the use resolves against the wrong declaration.
+@date 2026-09-12 18:30 ]]
+local USE_OPTS = sealed.declare("mexpr_ast", "use opts", {
+    no_call = "do not read a bracket group as a call - the caller knows it is not one",
+    partial = "accept a use that stops early; `consumed` says how far it got",
+})
+
 --[[ Reads a row as a USE of a name rather than a declaration of one, and hands back the exact keys
 it might be, most specific first.
 
@@ -1412,6 +1689,9 @@ building both live above, because both need a namespace and a declaration table 
 cannot supply. See docs/phase2_design.md, "Case 1 in full".
 @date 2026-09-10 03:45 ]]
 function mexpr_ast.parse_use_units(units, decls, opts)
+    assert(type(units) == "table", "parse_use_units needs a unit list, as row_units builds")
+    assert(decls == nil or type(decls) == "table", "decls must be a declaration list, or nil")
+    USE_OPTS.check_keys(opts, "opts")
 
     --[[ POWERS ARE ALLOWED HERE AND REFUSED IN A DECLARATION, and the asymmetry is the point:
     `f^2(x)` is a use of `f`, so the power is an operation ON the reference and comes back in
@@ -1434,13 +1714,24 @@ function mexpr_ast.parse_use_units(units, decls, opts)
     if not res then
         return nil, err, node, marks
     end
-    return {key = res.text, tokens = res.tokens, args = res.exprs or {},
+    return USE_SHAPE.wrap{key = res.text, tokens = res.tokens, args = res.exprs or {},
             sups = res.sups or {}, marks = res.marks, consumed = res.consumed}
 end
 
 -- The whole row, which is what a caller with a container has. Both halves exist because a
 -- relation's SIDE is a unit list with no container of its own.
+--[[ A whole row read as a USE of a name.
+
+The container form of parse_use_units below, which carries the reasoning; this only turns the row
+into units first. Powers ARE allowed here and refused in a declaration - `f^2(x)` is a use of `f`
+with an operation on it.
+@date 2026-09-12 03:45 ]]
 function mexpr_ast.parse_use(fontset, container, decls)
+    mexpru.check_container(container)
+    --[[ `fontset` IS NOT USED. It is here so every public entry in this file reads the same way -
+    build() and parse_domain() do need one - and because removing it would renumber the arguments at
+    every call site. Flagged 2026-09-12 rather than quietly kept: it is a parameter that does
+    nothing, and a reader is entitled to know that before passing one. ]]
     return mexpr_ast.parse_use_units(row_units(container.root), decls)
 end
 
@@ -1510,7 +1801,7 @@ local function relation_at(units, i)
     if not d then
         return nil
     end
-    if char.adv_by_desc[d] == 0 then
+    if char.advance_of(d) == 0 then
         local nd = units[i + 1] and atom_desc(units[i + 1].atom)
         local by = OVERPRINT_RELATIONS[d]
         local op = by and nd and by[nd]
@@ -1535,13 +1826,13 @@ Every mention is a VREF to one VAR, which is what `x f(x)` needs: two occurrence
 not two variables. ast.new_vref takes an id rather than a name, so the AST enforces this shape - a
 name cannot become a reference without a variable to point at.
 @date 2026-09-10 06:20 ]]
-local function var_ref(ctx, name)
-    local v = ctx.vars[name]
+local function var_ref(ctx_parse, name)
+    local v = ctx_parse.vars[name]
     if not v then
-        v = ast.new_var(ctx.ns, name)
-        ctx.vars[name] = v
+        v = ast.new_var(ctx_parse.ns, name)
+        ctx_parse.vars[name] = v
     end
-    return ast.new_vref(ctx.ns, v)
+    return ast.new_vref(ctx_parse.ns, v)
 end
 
 --[[ THE EXPRESSION CASCADE, one layer per precedence level:
@@ -1593,7 +1884,7 @@ A SUBSCRIPT IS REFUSED rather than ignored. On a declared name a subscript is pa
 and read_pattern has already consumed it; anywhere else it means something nobody has decided yet,
 and dropping it would build a tree for a formula that was not written.
 @date 2026-09-10 04:30 ]]
-local function apply_power(ctx, node, u)
+local function apply_power(ctx_parse, node, u)
     if not u then
         return node
     end
@@ -1601,21 +1892,21 @@ local function apply_power(ctx, node, u)
         return nil, "not parsed yet: a subscript on something that is not a declared name"
     end
     if u.sup then
-        local exp, err = build_expr(ctx, units_of(row_children(u.sup)))
+        local exp, err = build_expr(ctx_parse, units_of(row_children(u.sup)))
         if not exp then
             return nil, err
         end
-        return ast.new_exp(ctx.ns, node, exp)
+        return ast.new_exp(ctx_parse.ns, node, exp)
     end
     return node
 end
 
 --[[ A resolved name-use, as a node: its arguments built, and its powers wrapped around the result.
 @date 2026-09-10 04:30 ]]
-local function build_named(ctx, use, hit)
+local function build_named(ctx_parse, use, hit)
     local args = {}
     for _, a in ipairs(hit.args) do
-        local node, aerr = build_expr(ctx, a)
+        local node, aerr = build_expr(ctx_parse, a)
         if not node then
             return nil, aerr
         end
@@ -1627,18 +1918,18 @@ local function build_named(ctx, use, hit)
     and the key is what identifies it across the two. ]]
     local node
     if #args == 0 then
-        node = var_ref(ctx, hit.decl.text)
+        node = var_ref(ctx_parse, hit.decl.text)
     else
-        node = ast.new_call(ctx.ns, hit.decl.text, table.unpack(args))
+        node = ast.new_call(ctx_parse.ns, hit.decl.text, table.unpack(args))
     end
 
     -- Powers wrap what they are applied to, innermost first.
     for i = #use.sups, 1, -1 do
-        local exp, eerr = build_expr(ctx, units_of(row_children(use.sups[i].row)))
+        local exp, eerr = build_expr(ctx_parse, units_of(row_children(use.sups[i].row)))
         if not exp then
             return nil, eerr
         end
-        node = ast.new_exp(ctx.ns, node, exp)
+        node = ast.new_exp(ctx_parse.ns, node, exp)
     end
     return node
 end
@@ -1772,14 +2063,14 @@ local ASYMMETRIC_SPAWN_SIDE = {
 reachable through the ineligible side of a membership/inclusion relation somewhere above it, in
 which case that whole branch is never descended into at all. Not a resolution walk - it does not
 care whether a name is free or declared, only whether it is mentioned in an eligible position -
-`read_constraints` intersects this with `ctx.free_order` to answer "and was it actually free".
+`read_constraints` intersects this with `ctx_parse.free_order` to answer "and was it actually free".
 @date 2026-09-10 ]]
 local function harvest_eligible(ns, node, out)
     if type(node) ~= "table" or not node.type then
         return
     end
     if node.type == ast.VREF then
-        local target = ns.by_id[node[1]]
+        local target = ast.node_of(ns, node[1])
         if target and target.type == ast.VAR then
             out[target[1]] = true
         end
@@ -1798,25 +2089,25 @@ end
 --[[ Builds every constraint row a sub or sup slot holds, and harvests the free names that showed up
 in each - both sides of an ordinary relation, no left/right role assigned to either (§18c "Bigop
 scoping"), but only the eligible side of a membership/inclusion relation wherever one appears
-(harvest_eligible above). `ctx.free_order` is reset per constraint and drained into one ordered,
+(harvest_eligible above). `ctx_parse.free_order` is reset per constraint and drained into one ordered,
 deduped list per call - order is first-seen, which only matters for determinism, since the caller
 unions this with nothing that cares about order (sub-minus-sup is a plain set operation).
 @date 2026-09-10 ]]
-local function read_constraints(ctx, container)
+local function read_constraints(ctx_parse, container)
     local rows = constraint_rows(container)
     local nodes, free_list, seen = {}, {}, {}
-    local outer = ctx.free_order
+    local outer = ctx_parse.free_order
     for _, row in ipairs(rows) do
-        ctx.free_order = {}
-        local node, err = build_relation(ctx, row)
+        ctx_parse.free_order = {}
+        local node, err = build_relation(ctx_parse, row)
         if not node then
-            ctx.free_order = outer
+            ctx_parse.free_order = outer
             return nil, err
         end
         nodes[#nodes + 1] = node
 
         local eligible = {}
-        harvest_eligible(ctx.ns, node, eligible)
+        harvest_eligible(ctx_parse.ns, node, eligible)
 
         --[[ WALKED IN FIRST-SEEN ORDER, and that is load-bearing rather than tidy. These names
         become the operator's variables in THIS order, filling slots 4..4+N, so the order is part of
@@ -1830,14 +2121,14 @@ local function read_constraints(ctx, container)
         A LIST WITH DUPLICATES IS ENOUGH, which is why there is no companion set: `seen` below
         already collapses a name mentioned twice, and it keeps the FIRST occurrence, which is the
         order wanted anyway. ]]
-        for _, name in ipairs(ctx.free_order) do
+        for _, name in ipairs(ctx_parse.free_order) do
             if eligible[name] and not seen[name] then
                 seen[name] = true
                 free_list[#free_list + 1] = name
             end
         end
     end
-    ctx.free_order = outer
+    ctx_parse.free_order = outer
     return nodes, nil, free_list
 end
 
@@ -1850,7 +2141,7 @@ variable - the integral gets its variable from the differential instead.
 
 nil, with no error, when there is no bound at all: an indefinite integral is a real integral.
 @date 2026-09-11 03:30 ]]
-local function read_bound(ctx, container, which, glyph)
+local function read_bound(ctx_parse, container, which, glyph)
     local rows = constraint_rows(container)
     if #rows == 0 then
         return nil, nil
@@ -1859,7 +2150,7 @@ local function read_bound(ctx, container, which, glyph)
         return nil, glyph .. "'s " .. which .. " bound is a stack - an integral takes one value "
                 .. "there, not a list"
     end
-    local node, err = build_expr(ctx, rows[1])
+    local node, err = build_expr(ctx_parse, rows[1])
     if not node then
         return nil, err
     end
@@ -1887,7 +2178,7 @@ WHAT AN UNPAIRED `\\int` GETS: a refusal naming the reason. One arrives from a d
 the halves were paired, or from pasted LaTeX, since the tags do not survive serialization yet - so
 the message says what to do rather than blaming the formula.
 @date 2026-09-11 03:30 ]]
-local function read_integral(ctx, units, i, glyph, sub_container, sup_container)
+local function read_integral(ctx_parse, units, i, glyph, sub_container, sup_container)
     local open = bracket_of(units[i])
     if not open or not open.is_open or not open.peer then
         return nil, nil, glyph .. " has no differential paired with it - retype it so its `d` is "
@@ -1922,16 +2213,16 @@ local function read_integral(ctx, units, i, glyph, sub_container, sup_container)
     integrates over `x\\vec`, which is not `x`. See var_ref's own callers. ]]
     local vname = vd .. dress_suffix(units[var_i].node)
 
-    local body, body_err = build_expr(ctx, slice(units, i + 1, close_i - 1))
+    local body, body_err = build_expr(ctx_parse, slice(units, i + 1, close_i - 1))
     if not body then
         return nil, nil, glyph .. " needs an integrand: " .. tostring(body_err)
     end
 
-    local from, from_err = read_bound(ctx, sub_container, "lower", glyph)
+    local from, from_err = read_bound(ctx_parse, sub_container, "lower", glyph)
     if from_err then
         return nil, nil, from_err
     end
-    local to, to_err = read_bound(ctx, sup_container, "upper", glyph)
+    local to, to_err = read_bound(ctx_parse, sup_container, "upper", glyph)
     if to_err then
         return nil, nil, to_err
     end
@@ -1939,7 +2230,7 @@ local function read_integral(ctx, units, i, glyph, sub_container, sup_container)
     --[[ ast.new_int DECLARES the variable and catches the body's free mentions of it - so `x` in
     the integrand stops being free and starts meaning this integral's `x`. Built last for that
     reason: catching needs the body to exist. ]]
-    local node = ast.new_int(ctx.ns, vname, to, from, body)
+    local node = ast.new_int(ctx_parse.ns, vname, to, from, body)
     --[[ Stops after the variable, unlike a group operator, which eats the rest of its term. The
     differential is a closing bracket and a closing bracket ends a factor, so `\\int_0^1 x dx \\cdot y`
     leaves `y` for build_product exactly as `(...)y` would. ]]
@@ -1979,17 +2270,17 @@ need a `bigop_of` to read a second shape off `u0.atom` directly, and a `slot_ato
 unwrap it; there is only one shape now. Only where the limits are DRAWN differs, and that was never this
 parser's question.
 @date 2026-09-10 ]]
-local function read_bigop(ctx, units, i, glyph, sub_container, sup_container)
+local function read_bigop(ctx_parse, units, i, glyph, sub_container, sup_container)
     local node_type = BIGOP_BY_SPELLING[glyph]
     if not node_type then
         return nil, nil, "not parsed yet: " .. tostring(glyph)
     end
 
-    local subs, sub_err, sub_free = read_constraints(ctx, sub_container)
+    local subs, sub_err, sub_free = read_constraints(ctx_parse, sub_container)
     if not subs then
         return nil, nil, sub_err
     end
-    local sups, sup_err, sup_free = read_constraints(ctx, sup_container)
+    local sups, sup_err, sup_free = read_constraints(ctx_parse, sup_container)
     if not sups then
         return nil, nil, sup_err
     end
@@ -2010,27 +2301,27 @@ local function read_bigop(ctx, units, i, glyph, sub_container, sup_container)
     end
 
     local rest = slice(units, i + 1, #units)
-    local body, body_err = build_product(ctx, rest, false)
+    local body, body_err = build_product(ctx_parse, rest, false)
     if not body then
         return nil, nil, glyph .. " needs a body: " .. tostring(body_err)
     end
 
     -- The body consumed everything remaining in this term - nothing is left for build_product's
     -- own caller to read after this factor.
-    return ast.new_group_bigop(ctx.ns, node_type, vars, sups, subs, body), #units + 1
+    return ast.new_group_bigop(ctx_parse.ns, node_type, vars, sups, subs, body), #units + 1
 end
 
-local function name_extents(ctx, units, i)
+local function name_extents(ctx_parse, units, i)
     local tail = slice(units, i, #units)
     local out = {}
-    local greedy = mexpr_ast.parse_use_units(tail, ctx.decls, {partial = true})
+    local greedy = mexpr_ast.parse_use_units(tail, ctx_parse.decls, {partial = true})
     if greedy then
         out[#out + 1] = greedy
     end
     --[[ Only worth asking when the greedy read swallowed a call: without one the two readings are
     the same, and `f(x)` would otherwise be offered twice and report itself as ambiguous. ]]
     if greedy and greedy.consumed and greedy.consumed > 1 then
-        local bare = mexpr_ast.parse_use_units(tail, ctx.decls, {partial = true, no_call = true})
+        local bare = mexpr_ast.parse_use_units(tail, ctx_parse.decls, {partial = true, no_call = true})
         if bare and bare.consumed ~= greedy.consumed then
             out[#out + 1] = bare
         end
@@ -2038,10 +2329,10 @@ local function name_extents(ctx, units, i)
     return out
 end
 
-local function read_factor(ctx, units, i)
+local function read_factor(ctx_parse, units, i)
     local hits = {}
-    for _, use in ipairs(name_extents(ctx, units, i)) do
-        local hit, why, count = mexpr_ast.resolve_use(use, ctx.decls)
+    for _, use in ipairs(name_extents(ctx_parse, units, i)) do
+        local hit, why, count = mexpr_ast.resolve_use(use, ctx_parse.decls)
         if hit then
             hits[#hits + 1] = {use = use, hit = hit, stop = i + use.consumed - 1}
         elseif count and count > 1 then
@@ -2060,7 +2351,7 @@ local function read_factor(ctx, units, i)
         return nil, nil, "two readings of this factor: " .. table.concat(names, " / ")
     end
     if #hits == 1 then
-        local node, err = build_named(ctx, hits[1].use, hits[1].hit)
+        local node, err = build_named(ctx_parse, hits[1].use, hits[1].hit)
         if not node then
             return nil, nil, err
         end
@@ -2078,28 +2369,28 @@ local function read_factor(ctx, units, i)
         (u0.atom not unwrapped by slot_atom) carries its glyph on bg.base; an ordinary supsub-kind
         one (e.g. `\sum_{i=1}^{n}` with no `\limits`) is already unwrapped, so `d` IS the glyph. ]]
         if d == "\\int" or d == "\\oint" then
-            return read_integral(ctx, units, i, d, u0.sub, u0.sup)
+            return read_integral(ctx_parse, units, i, d, u0.sub, u0.sup)
         end
         --[[ A GLYPH OR A WORD, asked in that order only because atom_desc is the cheaper question.
         `operator_name` answers for a 1-tall vert of letters, which is how this app writes `lim` and
         `argmax` (its own comment for why they are a container rather than loose letters). ]]
         local spelling = d or operator_name(u0.atom)
         if spelling and BIGOP_BY_SPELLING[spelling] then
-            return read_bigop(ctx, units, i, spelling, u0.sub, u0.sup)
+            return read_bigop(ctx_parse, units, i, spelling, u0.sub, u0.sup)
         end
     end
 
     -- ---- CASE 3b: a fraction bar, which is a division whether or not \div was ever typed -----
     if fr then
-        local num, nerr = build_expr(ctx, row_units(fr.num))
+        local num, nerr = build_expr(ctx_parse, row_units(fr.num))
         if not num then
             return nil, nil, nerr
         end
-        local den, derr = build_expr(ctx, row_units(fr.den))
+        local den, derr = build_expr(ctx_parse, row_units(fr.den))
         if not den then
             return nil, nil, derr
         end
-        local node, err = apply_power(ctx, ast.new_div(ctx.ns, num, den), u0)
+        local node, err = apply_power(ctx_parse, ast.new_div(ctx_parse.ns, num, den), u0)
         if not node then
             return nil, nil, err
         end
@@ -2133,7 +2424,7 @@ local function read_factor(ctx, units, i)
 
         build_connective is the top of the cascade, so the contents of a bracket are parsed exactly
         as a whole row would be. ]]
-        local body, err = build_connective(ctx, inner)
+        local body, err = build_connective(ctx_parse, inner)
         if not body then
             return nil, nil, err
         end
@@ -2142,7 +2433,7 @@ local function read_factor(ctx, units, i)
         them. `(a+b)^2` needs its brackets to mean what it says, so they are required by
         precedence and never become a CELL. ]]
         local node
-        node, err = apply_power(ctx, body, units[j - 1])
+        node, err = apply_power(ctx_parse, body, units[j - 1])
         if not node then
             return nil, nil, err
         end
@@ -2162,7 +2453,7 @@ local function read_factor(ctx, units, i)
     refusing one here would be a rule nobody asked for.
     @date 2026-09-11 09:00 ]]
     if d == "\\infty" then
-        local node, err = apply_power(ctx, ast.new_num(ctx.ns, 1, 0, 1), u0)
+        local node, err = apply_power(ctx_parse, ast.new_num(ctx_parse.ns, 1, 0, 1), u0)
         if not node then
             return nil, nil, err
         end
@@ -2191,13 +2482,13 @@ local function read_factor(ctx, units, i)
         if not v then
             return nil, nil, "`" .. text .. "` is not a number"
         end
-        local num = tag_ast(u0, ast.new_num(ctx.ns, v.m, v.n, v.sign))
+        local num = tag_ast(u0, ast.new_num(ctx_parse.ns, v.m, v.n, v.sign))
         --[[ EVERY DIGIT OF THE RUN names it, not only the first: `123` is one number and clicking
         any of its three glyphs is the same gesture. ]]
         for k = i, j - 1 do
             tag_ast(units[k], num)
         end
-        local node, err = apply_power(ctx, num, units[j - 1])
+        local node, err = apply_power(ctx_parse, num, units[j - 1])
         if not node then
             return nil, nil, err
         end
@@ -2230,7 +2521,7 @@ local function read_factor(ctx, units, i)
         product - which is also the reading that says something true about `a`, because a letter
         with no declaration is an independent variable, and an independent variable is not
         applicable to anything. ]]
-        --[[ `ctx.free_order`, when present, is a bigop's own harvesting side-channel (see
+        --[[ `ctx_parse.free_order`, when present, is a bigop's own harvesting side-channel (see
         `read_constraints` below) - the ONLY reader of "was this specific mention free, or did it
         resolve against a declaration". The tree itself cannot answer that after the fact: a free
         `n` and a declared bare `n` both end up as the identical VREF shape, since both go through
@@ -2242,18 +2533,18 @@ local function read_factor(ctx, units, i)
         arrive - so the order is part of the tree rather than an implementation detail. It was a set
         until 2026-09-10, and draining a set means a hash walk.
         @date 2026-09-10 ]]
-        if ctx.free_order then
-            ctx.free_order[#ctx.free_order + 1] = d
+        if ctx_parse.free_order then
+            ctx_parse.free_order[#ctx_parse.free_order + 1] = d
         end
         --[[ WITH ITS DECORATIONS, exactly as a declared name carries them. `ec{F}` and `F` are
         two different things, and a free variable is no more exempt from that than a declared one -
         dropping the accent here made them the same VREF, which is the same silent collision that
         made `\hat{a}` and `a` one name before decorations reached the pattern at all. ]]
-        local ref = tag_ast(u0, var_ref(ctx, d .. dress_suffix(u0.node)))
+        local ref = tag_ast(u0, var_ref(ctx_parse, d .. dress_suffix(u0.node)))
         --[[ Recorded BEFORE the power wraps it: the reference is drawn by the letter, the power by
         the whole slot, and afterwards there is no way to tell those apart. ]]
         tag_draws(leaf_drawn_by(u0), ref)
-        local node, err = apply_power(ctx, ref, u0)
+        local node, err = apply_power(ctx_parse, ref, u0)
         if not node then
             return nil, nil, err
         end
@@ -2291,14 +2582,14 @@ parentheses carry no arrangement to preserve.
 @date 2026-09-10 07:05 ]]
 local CELL_LEAF = {[ast.NUM] = true, [ast.VAR] = true, [ast.VREF] = true}
 
-local function maybe_cell(ctx, node, in_product)
+local function maybe_cell(ctx_parse, node, in_product)
     if in_product and node.type == ast.ADD then
         return node
     end
     if CELL_LEAF[node.type] then
         return node
     end
-    return ast.new_cell(ctx.ns, node)
+    return ast.new_cell(ctx_parse.ns, node)
 end
 
 --[[ ONE TERM: the factors juxtaposed in `units`, multiplied together, with the term's sign applied.
@@ -2313,7 +2604,9 @@ quoted, and a named operator is written as a 1-tall vert (operator_name), so `bb
 a single name. That is what those two constructs are FOR - without them this layer would be
 guessing.
 @date 2026-09-10 04:30 ]]
-function build_product(ctx, units, negative, neg_unit)
+function build_product(ctx_parse, units, negative, neg_unit)
+    CTX_PARSE_SHAPE.check(ctx_parse, "ctx_parse")
+    check_units(units)
     local factors, bracketed, i = {}, {}, 1
     while i <= #units do
         local d = atom_desc(units[i].atom)
@@ -2326,7 +2619,7 @@ function build_product(ctx, units, negative, neg_unit)
                 return nil, "a multiplication sign with nothing after it"
             end
         end
-        local node, next_i, err, from_brackets = read_factor(ctx, units, i)
+        local node, next_i, err, from_brackets = read_factor(ctx_parse, units, i)
         if not node then
             return nil, err
         end
@@ -2341,12 +2634,12 @@ function build_product(ctx, units, negative, neg_unit)
     if negative then
         local f = factors[1]
         if f.type == ast.NUM then
-            factors[1] = tag_ast(neg_unit, ast.new_num(ctx.ns, f[1], f[2], -f[3]))
+            factors[1] = tag_ast(neg_unit, ast.new_num(ctx_parse.ns, f[1], f[2], -f[3]))
         else
             --[[ The sign becomes a factor, so the product it makes is what decides whether the
             other factors' brackets were required: `-(a+b)` is MUL(NUM(-1), ADD(...)) and those
             brackets are load-bearing, exactly as in `c(a+b)`. Hence the shift below. ]]
-            table.insert(factors, 1, tag_ast(neg_unit, ast.new_num(ctx.ns, 1, 1, -1)))
+            table.insert(factors, 1, tag_ast(neg_unit, ast.new_num(ctx_parse.ns, 1, 1, -1)))
             table.insert(bracketed, 1, false)
         end
     end
@@ -2355,14 +2648,14 @@ function build_product(ctx, units, negative, neg_unit)
     local in_product = #factors > 1
     for k = 1, #factors do
         if bracketed[k] then
-            factors[k] = maybe_cell(ctx, factors[k], in_product)
+            factors[k] = maybe_cell(ctx_parse, factors[k], in_product)
         end
     end
 
     if #factors == 1 then
         return factors[1]
     end
-    return ast.new_mul(ctx.ns, table.unpack(factors))
+    return ast.new_mul(ctx_parse.ns, table.unpack(factors))
 end
 
 --[[ CASE 2. Splits the row into terms on the top-level `+` and `-`, each term a product.
@@ -2374,7 +2667,7 @@ separate treatment.
 
 TOP LEVEL ONLY, by bracket depth, so the `+` in `f(a+b)` belongs to the argument.
 @date 2026-09-10 04:30 ]]
-local function build_sum(ctx, units)
+local function build_sum(ctx_parse, units)
     if is_untouched(units) then
         return nil, "empty"
     end
@@ -2419,7 +2712,7 @@ local function build_sum(ctx, units)
         if #t.units == 0 then
             return nil, "a sign with nothing after it"
         end
-        local node, err = build_product(ctx, t.units, t.negative, t.neg_unit)
+        local node, err = build_product(ctx_parse, t.units, t.negative, t.neg_unit)
         if not node then
             return nil, err
         end
@@ -2430,7 +2723,7 @@ local function build_sum(ctx, units)
     end
     --[[ EVERY `+` NAMES THE ONE ADD. A right-click on any of them reaches the same node, which is
     what makes "distribute this sum" a gesture on the operator rather than on a span. ]]
-    local add = ast.new_add(ctx.ns, table.unpack(nodes))
+    local add = ast.new_add(ctx_parse.ns, table.unpack(nodes))
     for _, pu in ipairs(plus_units) do
         tag_ast(pu, add)
     end
@@ -2468,7 +2761,9 @@ local CONNECTIVES = {
     ["\\Leftrightarrow"] = ast.new_iff,
 }
 
-function build_connective(ctx, units)
+function build_connective(ctx_parse, units)
+    CTX_PARSE_SHAPE.check(ctx_parse, "ctx_parse")
+    check_units(units)
     local depth = 0
     for i = 1, #units do
         local b = bracket_of(units[i])
@@ -2482,23 +2777,25 @@ function build_connective(ctx, units)
                 if #lhs == 0 or #rhs == 0 then
                     return nil, "an implication needs something on both sides"
                 end
-                local l, lerr = build_relation(ctx, lhs)
+                local l, lerr = build_relation(ctx_parse, lhs)
                 if not l then
                     return nil, lerr
                 end
                 -- The REST of the row, not just the next relation - see right-associative above.
-                local r, rerr = build_connective(ctx, rhs)
+                local r, rerr = build_connective(ctx_parse, rhs)
                 if not r then
                     return nil, rerr
                 end
-                return tag_ast(units[i], make(ctx.ns, l, r))
+                return tag_ast(units[i], make(ctx_parse.ns, l, r))
             end
         end
     end
-    return build_relation(ctx, units)
+    return build_relation(ctx_parse, units)
 end
 
-function build_relation(ctx, units)
+function build_relation(ctx_parse, units)
+    CTX_PARSE_SHAPE.check(ctx_parse, "ctx_parse")
+    check_units(units)
     local depth, at = 0, nil
     local i = 1
     while i <= #units do
@@ -2530,7 +2827,7 @@ function build_relation(ctx, units)
         i = i + 1
     end
     if not at then
-        return build_expr(ctx, units)
+        return build_expr(ctx_parse, units)
     end
 
     local lhs, rhs = {}, {}
@@ -2540,17 +2837,17 @@ function build_relation(ctx, units)
         return nil, "a relation needs something on both sides"
     end
 
-    local l, lerr = build_relation(ctx, lhs)
+    local l, lerr = build_relation(ctx_parse, lhs)
     if not l then
         return nil, lerr
     end
-    local r, rerr = build_relation(ctx, rhs)
+    local r, rerr = build_relation(ctx_parse, rhs)
     if not r then
         return nil, rerr
     end
     --[[ The relation's own glyph names the node it makes - clicking the `=` selects the equality,
     which is the gesture every relation-level transform will want. ]]
-    return tag_ast(units[at.i], at.rel.op(ctx.ns, l, r))
+    return tag_ast(units[at.i], at.rel.op(ctx_parse.ns, l, r))
 end
 
 --[[ THE PARSER'S ACTUAL OUTPUT: a real ast.lua node for `container`, or nil plus the reason.
@@ -2662,8 +2959,8 @@ function mexpr_ast.builtin_declarations(fontset)
                 "\\" .. word .. " (" .. table.concat(names, ",") .. ")")
         local pat = c and mexpr_ast.parse_name(fontset, c)
         if pat then
-            out[#out + 1] = {text = pat.text, name = pat.name, arity = pat.arity,
-                             tokens = pat.tokens, groups = pat.groups, builtin = true}
+            out[#out + 1] = mexpr_ast.new_decl{text = pat.text, name = pat.name,
+                    arity = pat.arity, tokens = pat.tokens, groups = pat.groups, builtin = true}
         end
     end
     table.sort(out, function(a, b) return a.text < b.text end)
@@ -2720,18 +3017,41 @@ function mexpr_ast.is_builtin_name(fontset, text)
     return false
 end
 
---[[ `decls` is what the DOCUMENT declares; the built-ins are added here rather than by the caller,
-so being in scope is a property of the language and not something a call site can forget. ]]
+--[[ THE PARSER'S ACTUAL OUTPUT: a row as a real ast.lua tree.
+
+Core: the top of the cascade - build_connective, since the connectives sit above the relations - and
+the place the mexpr-to-ast tags are written as it goes, so a click on a glyph can later name the
+node it produced.
+
+Params: `decls` is what the DOCUMENT declares; the built-ins are added HERE rather than by the
+caller, so being in scope is a property of the language and not something a call site can forget.
+`ns` is optional and a fresh namespace is made when it is missing.
+
+Returns ALWAYS THREE VALUES in the same order, success or not: `node, err, ns`. Returning
+`node, ns` on success and `nil, err, ns` on failure would put the namespace in a different slot
+depending on the outcome, and a caller destructuring all three would silently bind `ns` to nil on
+the happy path - which is exactly what happened here first.
+@date 2026-09-12 03:50 ]]
 function mexpr_ast.build(fontset, container, decls, ns)
+    mexpru.check_container(container)
+    --[[ `decls` is OPTIONAL - with_builtins turns nil into just the built-ins, which is what a
+    document with no definitions above this row really has. `ns` is optional too and a fresh one
+    is made below. Each checked only when given. ]]
+    if decls ~= nil then
+        check_decls(decls, "decls")
+    end
+    if ns ~= nil then
+        ast.check_ns(ns)
+    end
     ns = ns or ast.new_ns()
-    local ctx = {ns = ns, decls = with_builtins(fontset, decls or {}), vars = {}}
+    local ctx_parse = new_parse_ctx(ns, with_builtins(fontset, decls or {}))
     --[[ ALWAYS three values, in the same order, success or not: `node, err, ns`. Returning
     `node, ns` on success and `nil, err, ns` on failure would put the namespace in a different
     slot depending on the outcome, and a caller that destructured all three would silently bind
     `ns` to nil on the happy path - which is exactly what happened here first. ]]
     --[[ build_connective, not build_relation: the connectives sit ABOVE the relations, so this is
     the real top of the cascade now. ]]
-    local node, err = build_connective(ctx, row_units(container.root))
+    local node, err = build_connective(ctx_parse, row_units(container.root))
     if not node then
         return nil, err, ns
     end
@@ -2879,7 +3199,7 @@ local function render(ns, node, depth, out, prefix)
     if t == ast.VREF then
         --[[ Shown by the NAME it points at, not the id: an id is meaningless to a reader, and the
         var is in the namespace precisely so this lookup is possible. ]]
-        local target = ns.by_id[node[1]]
+        local target = ast.node_of(ns, node[1])
         line({{text = "REF", role = "bind_sym"}, {text = " "},
               {text = string.format("%q", target and target[1] or ("#" .. tostring(node[1]))),
                role = "ref_name"}})
@@ -3059,7 +3379,17 @@ function mexpr_ast.is_builtin_word(name)
     return name ~= nil and BUILTIN_ARITY[name] ~= nil
 end
 
+--[[ Which of these declarations may coexist, and why the rest may not.
+
+Core: the document's declarations are checked AS A SET, not one at a time, because the question is
+whether two of them collide - a name that is fine alone is refused beside one it is ambiguous with.
+Returns accepted and refused lists, each refusal carrying its reason so the editor can say it.
+
+Detail: a consecrated name is refused FIRST, before any conflict question, because the answer is
+different in kind - not "this collides with another definition" but "that word is not available".
+@date 2026-09-12 03:45 ]]
 function mexpr_ast.check_declarations(decls)
+    check_decls(decls, "decls")
     local root, accepted, refused = trie_node(), {}, {}
     for _, d in ipairs(decls or {}) do
         --[[ A CONSECRATED NAME IS REFUSED FIRST, before any trie question: it is not that this
@@ -3162,6 +3492,7 @@ than leaving them blank is deliberate: they were read, they are simply not yet u
 painting them as unreached would be a lie about how far the parse got.
 @date 2026-09-08 08:55 ]]
 function mexpr_ast.parse_domain(fontset, container)
+    mexpru.check_container(container)
     local p = new_parser()
     local units = row_units(container.root)
 
