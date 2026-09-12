@@ -1,9 +1,9 @@
-text 2267
+text 2306
 $$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)$$ 
 
 $$\vec{a}\ \vec{m}\ \vec{F}\ \vec{I}$$
 
-$$F(x)=\frac{T}{2\pi }\int ^{X}_{0}xdx;\ (a+b)^{2}=a^{2}+2ab+b^{2};\ x^{a}\ =\ \frac{\dot{a}+b}{\frac{a+b+c+4}{b+3}}\ $$ 
+$$F(x)=\frac{T}{2\pi }{\int \limits_{0}}^{1}x\,dx;\ (a+b)^{2}=a^{2}+2ab+b^{2};\ x^{a}\ =\ \frac{\dot{a}+b}{\frac{a+b+c+4}{b+3}}\ $$ 
 
 $$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$$$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$$$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$
 
@@ -13,7 +13,7 @@ $$a\bar{a}\ =\ |a|^{2}\ a\ \not =\ b$$
 
 $$\frac{df(x)}{dx}\ =\ \mathop{\lim }\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D$$$$\Delta ABC\ \equiv \ \Delta BGD\ $$
 
-$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ $$$$\int \limits^{+\infty }_{-\infty }ax^{2}+bx+c\ \,dx$$$$\sum \limits^{N}_{\begin{matrix}i=0\\j<i\end{matrix}}ji^{2}\pi $$$$\lim \limits_{x\rightarrow 0}\left\lvert \frac{x}{y}\right\rvert \ \ $$
+$$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ $$$$\int \limits^{+\infty }_{-\infty }ax^{2}+bx+c\ \,dx$$$$\sum \limits^{N}_{\begin{matrix}i=0\\j<i\end{matrix}}ji^{2}\pi $$$$\lim \limits_{x\rightarrow 0}\left\lvert \frac{x}{y}\right\rvert \ \ $$$$\left(\frac{a}{b}\right)$$
 deeccasdabcdef abcdefgf
 $$\frac{x^{2}}{y}+\frac{2\pi }{T}$$
 

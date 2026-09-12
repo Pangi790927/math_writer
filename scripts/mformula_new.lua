@@ -2287,15 +2287,41 @@ local function rescale_node(fontset, node, cursor_target)
 
     if u.kind == "horiz" then
         local new_children = {}
+        --[[ `placed` is what THIS loop put in each slot. horiz() below may swap a slot for a
+        different node, and comparing against what we put there is the only way to notice. ]]
+        local placed, mapped_idx = {}, nil
         for i, child in ipairs(u.children) do
             local nc, m = rescale_node(fontset, child, cursor_target)
             new_children[i] = nc
-            mapped = mapped or m
+            placed[i] = nc
+            if m and not mapped then
+                mapped = m
+                mapped_idx = i
+            end
         end
         -- Before horiz(), because its resolve_bracket_pairs() is what reads these peers. The atoms
         -- above were rebuilt peerless on purpose; this is what re-links them (mexpru.lua).
         mexpru.transfer_bracket_peers(u.children, new_children)
         new_node = mexpru.horiz(fontset, new_children, logical)
+        --[[ THE CURSOR'S SLOT MAY HAVE JUST BEEN REPLACED, and re-pointing it is the whole of
+        this block. horiz() runs resolve_bracket_pairs over the list it is handed, IN PLACE, and a
+        pair that needs a taller tier is swapped for one - so the node `mapped` names above can be
+        exactly the node that just went away. It was rebuilt peerless a few lines up precisely so
+        that could happen; the mapping was simply recorded before it did.
+
+        WHAT IT COST: cursor_pos became a weak ref to a discarded node, live_cursor() found it
+        dangling and recovered to the formula root - so zooming or undoing with the caret on a
+        bracket moved the caret to the START of the formula, and the next character typed landed
+        there. Typing "(a/b)" then zooming then "Z" gave "Z(a/b)". Found 2026-09-13; the WARN it
+        left in the flight recorder had been firing six times per undo on a real document.
+
+        A slot the pass did not touch compares equal and keeps the node it already had, which is
+        every horiz with no bracket in it. When the cursor was DEEP inside a replaced slot - a
+        bracket carrying an exponent, where replace_slot_atom rebuilds the whole supsub - the node
+        it named is genuinely gone, and the slot itself is the closest honest answer. ]]
+        if mapped_idx and not mexpru.same(new_children[mapped_idx], placed[mapped_idx]) then
+            mapped = new_children[mapped_idx]
+        end
     elseif u.kind == "supsub" then
         local new_base, m1 = rescale_node(fontset, u.base, cursor_target)
         local new_sup, new_sub, m2, m3
