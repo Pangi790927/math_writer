@@ -1,38 +1,42 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-new()                                   -> state_definition
-    A fresh, empty definition.
-
-declaration(state_definition: editor_definition.state_definition) -> {text, arity, ...} | nil
-    WHAT THIS BOX DECLARES, for anything outside that has to resolve a
-    reference to it. nil while the name slot is empty.
-
-name_drawings(pat: pattern, name_slot: mexpru.container) -> lhs, rhs
-    The two LaTeX strings the derived rows are DRAWN from, taken off
-    the boxes the name is made of rather than re-rendered from its
-    text - which is what keeps an accent over the letter.
-
-draw(state_definition: editor_definition.state_definition, fontset: fontset, pos: {x,y}, sz: size,
-     width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean)
-     -> height
-    Every slot down the box from `pos`; returns total content height.
-
-handle_input(state_definition: editor_definition.state_definition, fontset: fontset, sz: size)
-             -> changed
-    Routes a click or drag to whichever slot it landed in, then hands
-    the frame to the slot holding the caret. Routing and dispatch are
-    separate passes and nothing may return between them.
-
-rescale(state_definition: editor_definition.state_definition, fontset: fontset) -> nothing
-    After a zoom. Also drops every cached node reference, which the
-    rebuild invalidates.
-
-to_text(state_definition: editor_definition.state_definition) / from_text(state_definition: editor_definition.state_definition, text: string, fontset: fontset)
-    The save format: a length-prefixed list of slot LaTeX.
-
---- internal, not on the module table --------------------------------------------------------------
-    slot layout, the derived rows, arity syncing and click routing
-@date 2026-09-12 03:25
-================================================================================================= ]]
+-- | new()                                   -> editor_definition.state_definition
+-- |     A fresh, empty definition.
+-- |
+-- | declaration(state_definition: editor_definition.state_definition) -> mexpr_ast.decl | nil
+-- |     WHAT THIS BOX DECLARES, for anything outside that has to resolve a
+-- |     reference to it. nil until the name slot has parsed once.
+-- |
+-- | name_drawings(pat: pattern, name_slot: mexpru.container) -> base, row
+-- |     The two LaTeX strings the derived rows are DRAWN from, taken off
+-- |     the boxes the name is made of rather than re-rendered from its
+-- |     text - which is what keeps an accent over the letter.
+-- |
+-- | draw(state_definition: editor_definition.state_definition, fontset: fontset, pos: {x,y},
+-- |      sz: size, width_limit: number, show_cursor: boolean, show_wireframe: boolean,
+-- |      show_graph: boolean) -> height
+-- |     Every slot down the box from `pos`; returns total content height.
+-- |
+-- | handle_input(state_definition: editor_definition.state_definition, fontset: fontset, sz: size)
+-- |              -> changed
+-- |     Routes a click or drag to whichever slot it landed in, then hands
+-- |     the frame to the slot holding the caret. Routing and dispatch are
+-- |     separate passes and nothing may return between them.
+-- |
+-- | rescale(state_definition: editor_definition.state_definition, fontset: fontset) -> nothing
+-- |     After a zoom. Also drops every cached node reference, which the
+-- |     rebuild invalidates.
+-- |
+-- | to_text(state_definition: editor_definition.state_definition) -> text
+-- | from_text(state_definition: editor_definition.state_definition, text: string,
+-- |           fontset: fontset) -> nothing
+-- |     The save format: a length-prefixed list of slot LaTeX.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     slot layout, the derived rows, arity syncing and click routing
+-- |
+-- | @date 2026-09-13 20:00
+-- | ===============================================================================================
+--]]
 
 --[[
 editor_definition.lua - the editor inside a DEFINITION box (the green one).
@@ -167,25 +171,31 @@ local function color_parameter_dots(node)
     end
 end
 
---[[ The two LaTeX strings the derived rows are DRAWN from, taken off the boxes the name is made of.
-
-    base   `\\vec{F}`                    the name alone, for the signature line
-    row    `\\vec{F}_{\\cdot}`             the whole pattern, a dot at each parameter
-
-BOTH COME FROM THE USER'S OWN MEXPR, and that is the entire point. They used to be built from the
-parser's internal name instead - `pattern.name` ("F\\vec") for the first and `pattern.text`
-("F\\vec,sub,(1),end") for the second - which were then handed to from_latex as though they were
-LaTeX. They are not: they are a token walk that happens to look like it. An accent came out as a
-loose glyph AFTER its letter rather than above it, in both rows at once. Reported live, 2026-09-11:
-"the vector is not drawn above the F, but right of it", and then, on where to get it right from:
-"just draw the mexpr already present at the base?".
-
-COMPUTED AT PARSE TIME, not at draw time, because both strings name particular NODES and those nodes
-only exist while the tree that holds them does. `state_definition.pattern` is deliberately held across the
-keystrokes where a name does not parse (sync_arity's own rule), so a draw-time read would be pairing
-a stale node list against a live tree - the substitution would silently miss and the dots would
-vanish while typing. Strings do not go stale.
-@date 2026-09-11 02:10 ]]
+--[[ @brief The two LaTeX strings the derived rows are DRAWN from, taken off the name's own boxes.
+-- |
+-- |     base   `\\vec{F}`                    the name alone, for the signature line
+-- |     row    `\\vec{F}_{\\cdot}`             the whole pattern, a dot at each parameter
+-- |
+-- | BOTH COME FROM THE USER'S OWN MEXPR, and that is the entire point. Built from the parser's
+-- | internal name instead - "F\\vec", "F\\vec,sub,(1),end" - they were a token walk handed to
+-- | from_latex as though it were LaTeX, and an accent came out AFTER its letter rather than above
+-- | it. Reported live, 2026-09-11: "the vector is not drawn above the F, but right of it".
+-- |
+-- | COMPUTED AT PARSE TIME, not at draw time: both strings name particular NODES, which exist only
+-- | while their tree does. `pattern` is deliberately held across keystrokes where a name does not
+-- | parse, so a draw-time read would pair a stale node list with a live tree and the dots would
+-- | vanish while typing. Strings do not go stale.
+-- |
+-- | @details Each parameter position becomes one dot, however many boxes it spans. The base drops
+-- |          the arguments by writing `pat.base_drop` - the supsub carrying them - as its own base.
+-- |
+-- | @param pat        pattern - the parse of `name_slot`, as mexpr_ast.parse_name returns it;
+-- |                   required
+-- | @param name_slot  mexpru.container - checked; the slot `pat` was parsed from
+-- | @return string | nil, string - `base` (nil when the pattern recorded no base nodes), then `row`
+-- |
+-- | @date 2026-09-13 20:00
+--]]
 function editor_definition.name_drawings(pat, name_slot)
     --[[ `if not pat or not name_slot then return nil, nil end` is gone. It could never fire from
     the only caller - sync_arity returns before this on a failed parse - and if it ever had, nil
@@ -309,11 +319,17 @@ local STATE_FIELDS = {
 }
 local STATE_SHAPE = sealed.declare("editor_definition", "state_definition", STATE_FIELDS)
 
---[[ A fresh, empty definition. The slots are NOT built here: constructing a formula needs a
-fontset, and content.lua's insert_box() has never taken one (content.new(), deserialize() and every
-test call it without). ensure() below fills them in on the first draw or keystroke, both of which
-have a fontset to hand.
-@date 2026-09-08 08:12 ]]
+--[[ @brief A fresh, empty definition.
+-- |
+-- | THE SLOTS ARE NOT BUILT HERE: constructing a formula needs a fontset, and content.lua's
+-- | insert_box() has never taken one. ensure() fills them in on the first draw or keystroke, both
+-- | of which have a fontset to hand.
+-- |
+-- | @return editor_definition.state_definition - sealed, with empty undo/redo stacks and the caret
+-- |         in slot 1; everything derived from the name starts nil
+-- |
+-- | @date 2026-09-13 20:00
+--]]
 function editor_definition.new()
     return STATE_SHAPE.wrap{
         undo = {},        -- stack of snapshots, newest last
@@ -457,23 +473,25 @@ local function pattern_latex(state_definition)
     return state_definition.pattern and (state_definition.pattern.row_tex or state_definition.pattern.text) or nil
 end
 
---[[ WHAT THIS BOX DECLARES, for anything outside that needs to resolve a reference to it:
-
-    {text = "f(),(1)", name = "f", arity = 1}
-
-or nil while the name slot does not parse. `text` is the identity - the same string a use site
-builds for itself (docs/phase2_design.md, "Answered: a use is a REF"), so resolving is a string
-compare rather than a tree match.
-
-A DELIBERATELY SMALL SHAPE,
-        not `state_definition.pattern` itself: that table is the name parser's own result
-and carries its marks, its token list and its declined superscripts, none of which is any business
-of a caller asking "what is declared here". Handing it out whole would couple every reader to the
-parser's internals and make either one hard to change.
-
-Held from the last VALID parse, like everything else derived from the name (see pattern_latex
-below), so a reference does not break for the keystrokes it takes to retype a name.
-@date 2026-09-10 02:30 ]]
+--[[ @brief WHAT THIS BOX DECLARES, for anything outside that needs to resolve a reference to it.
+-- |
+-- |     {text = "f(),(1)", name = "f", arity = 1, tokens = {...}, groups = {...}}
+-- |
+-- | `text` IS THE IDENTITY - the same string a use site builds for itself (docs/phase2_design.md,
+-- | "Answered: a use is a REF"), so resolving is a string compare rather than a tree match.
+-- |
+-- | A DELIBERATELY SMALL SHAPE, not `pattern` itself: that is the name parser's own result, with
+-- | marks and declined superscripts no caller has any business with. `tokens` and `groups` ride
+-- | along only because re-deriving them from the text would be a second definition of each.
+-- |
+-- | HELD FROM THE LAST VALID PARSE, like everything else derived from the name, so a reference does
+-- | not break for the keystrokes it takes to retype a name.
+-- |
+-- | @param state_definition  editor_definition.state_definition - checked
+-- | @return mexpr_ast.decl | nil - a fresh one each call; nil until the name has parsed once
+-- |
+-- | @date 2026-09-13 20:00
+--]]
 function editor_definition.declaration(state_definition)
     STATE_SHAPE.check(state_definition)
     local pat = state_definition and state_definition.pattern
@@ -742,25 +760,31 @@ local function signature_row(nslots)
     return row
 end
 
---[[ Draws every slot down the box from `pos`, and returns the total content height so the caller
-can size the box around it.
-
-mformula's measure()/draw() work in a BASELINE frame: `top` is NEGATIVE (how far the content
-reaches above the baseline) and `bottom` positive. So a slot whose top edge should land at `y` is
-drawn with its baseline at `y - m.top`, and occupies `m.bottom - m.top`. Getting that backwards
-puts the formula above its own box, which is exactly what it looks like.
-
-It also records the click geometry every frame - `state_definition.hitboxes` per slot,
-        `row.hit` per derived
-row - because handle_input() runs in a separate call and cannot re-derive where anything landed.
-
-  pos             top-left of the content; each line's baseline comes from its own measure
-  sz              the logical size to draw at
-  width_limit     how far right a DERIVED row may reach; the signature line is never wrapped
-  show_cursor     this box is the active one: outlines the current slot and draws its caret
-  show_wireframe  passed through to editor.draw_formula (mexpr's debug boxes)
-  show_graph      passed through: the reachable-position graph
-@date 2026-09-08 08:12 ]]
+--[[ @brief Draws every slot down the box from `pos`, and returns the total content height.
+-- |
+-- | THE PARSE IS BROUGHT UP TO DATE FIRST: the slots are built if missing, and the arity, the
+-- | domains and the derived rows are re-synced against what the slots now say.
+-- |
+-- | IT RECORDS THE CLICK GEOMETRY every frame - `hitboxes` per slot, `row.hit` per derived row -
+-- | because handle_input() runs in a separate call and cannot re-derive where anything landed.
+-- |
+-- | @details mformula works in a BASELINE frame: `top` is NEGATIVE and `bottom` positive, so a slot
+-- |          whose top edge lands at `y` is drawn with its baseline at `y - m.top`. Backwards, the
+-- |          formula draws above its own box.
+-- |
+-- | @param state_definition  editor_definition.state_definition - checked; read and written
+-- | @param fontset           fontset
+-- | @param pos               {x, y} - top-left of the content
+-- | @param sz                size - the logical size to draw at
+-- | @param width_limit       number - how far right a DERIVED row may reach; the signature line is
+-- |                          never wrapped
+-- | @param show_cursor       boolean - the active box: outlines the current slot, draws its caret
+-- | @param show_wireframe    boolean - passed through: mexpr's debug boxes
+-- | @param show_graph        boolean - passed through: the reachable-position graph
+-- | @return number - the total content height, so the caller can size the box around it
+-- |
+-- | @date 2026-09-13 20:00
+--]]
 function editor_definition.draw(state_definition, fontset, pos, sz, width_limit, show_cursor,
         show_wireframe, show_graph)
     STATE_SHAPE.check(state_definition)
@@ -950,14 +974,28 @@ local function click_targets(state_definition)
     return t
 end
 
---[[ One frame of input for the definition: route a click or drag to whichever slot it landed in,
-then hand the frame to the slot that has the caret.
-
-Returns true if the keystroke actually CHANGED a slot's tree, as opposed to only moving the
-cursor. That is the signal undo is built on - here through begin_edit/commit_edit below, in
-editor_text.lua through its own snapshots - and it is handed back to the caller as well, so
-content.lua can tell an edit from a click without re-deriving it.
-@date 2026-09-08 08:12 ]]
+--[[ @brief One frame of input: route a click or drag to a slot, then hand the frame to the caret's.
+-- |
+-- | ROUTING, THEN DISPATCH, and nothing may return between them. The shorthand's input used to run
+-- | before hit-testing and return, so once the caret was in it every later click was swallowed -
+-- | "I can't deselect it".
+-- |
+-- | ONE UNDO STEP PER KEYSTROKE THAT CHANGED A TREE, through begin_edit/commit_edit; cursor moves
+-- | and clicks make none. Undo and redo themselves are checked first, wherever the caret is.
+-- |
+-- | A DERIVED ROW IS READ-ONLY: selection and Ctrl+C work in it, an edit is discarded by rebuilding
+-- | it from the cells, and Escape (definition.exit_slot) puts the caret back in the name slot.
+-- |
+-- | @param state_definition  editor_definition.state_definition - checked
+-- | @param fontset           fontset
+-- | @param sz                size
+-- | @return boolean - true when a keystroke CHANGED a slot's tree, so content.lua can tell an edit
+-- |         from a click
+-- |
+-- | @note Undo and redo return false, though they do change the slots.
+-- |
+-- | @date 2026-09-13 20:00
+--]]
 function editor_definition.handle_input(state_definition, fontset, sz)
     STATE_SHAPE.check(state_definition)
     local slots = ensure(state_definition, fontset)
@@ -1068,18 +1106,22 @@ function editor_definition.handle_input(state_definition, fontset, sz)
     return changed
 end
 
---[[ After a zoom change, so already-built content catches up with the new size rather than only
-newly-typed content being affected (mformula.rescale()'s own comment). ]]
---[[ Re-lays-out every slot after a zoom, and drops what the old layout left behind.
-
-Core: mformula.rescale REBUILDS a container's tree out of new nodes rather than resizing the old
-ones, so everything cached against the previous tree is stale the moment this runs - and stale here
-means pointing at a discarded tree, at pre-zoom positions. The clearing below is not tidying; it is
-the other half of rescaling.
-
-Params: `state_definition` may have no slots yet,
-        which is an ordinary early state_definition and returns quietly.
-@date 2026-09-12 03:25 ]]
+--[[ @brief Re-lays-out every slot after a zoom, and drops what the old layout left behind.
+-- |
+-- | mformula.rescale REBUILDS a container's tree out of new nodes rather than resizing the old
+-- | ones, so everything cached against the previous tree is stale the moment this runs - pointing
+-- | at a discarded tree, at pre-zoom positions. The clearing is not tidying; it is the other half
+-- | of rescaling: the parse marks and stamps, the hitboxes, and the derived rows all go, and are
+-- | rebuilt on the next draw.
+-- |
+-- | @details A caret in a derived row moves to slot 1, since that row is about to be replaced.
+-- |
+-- | @param state_definition  editor_definition.state_definition - checked; one with no slots yet is
+-- |                          an ordinary early state, and returns untouched
+-- | @param fontset           fontset
+-- |
+-- | @date 2026-09-13 20:00
+--]]
 function editor_definition.rescale(state_definition, fontset)
     STATE_SHAPE.check(state_definition)
     if not state_definition.slots then
@@ -1117,16 +1159,21 @@ function editor_definition.rescale(state_definition, fontset)
     end
 end
 
---[[ The whole definition as text, for saving: a length-prefixed LIST of slot LaTeX, counted up
-front.
-
-    <count>\n  then count times  <len>\n<latex>
-
-Length-prefixed rather than delimited for the same reason content.lua's own box list is: a LaTeX
-string can contain any character, so no separator is guaranteed not to collide with real content.
-The COUNT is also where the arity lives - there is no separate number written down, so a saved
-definition cannot disagree with itself about how many parameters it has.
-@date 2026-09-08 08:12 ]]
+--[[ @brief The whole definition as text, for saving.
+-- |
+-- |     <count>\n  then count times  <len>\n<latex>
+-- |
+-- | LENGTH-PREFIXED rather than delimited, for the same reason content.lua's own box list is: a
+-- | LaTeX string can contain any character, so no separator is guaranteed not to collide.
+-- |
+-- | THE COUNT IS WHERE THE ARITY LIVES - no separate number is written down, so a saved definition
+-- | cannot disagree with itself about how many parameters it has.
+-- |
+-- | @param state_definition  editor_definition.state_definition - checked
+-- | @return string - "0\n" for a box whose slots were never built
+-- |
+-- | @date 2026-09-13 20:00
+--]]
 function editor_definition.to_text(state_definition)
     STATE_SHAPE.check(state_definition)
     local slots = state_definition.slots or {}
@@ -1138,11 +1185,23 @@ function editor_definition.to_text(state_definition)
     return table.concat(parts)
 end
 
---[[ Inverse of to_text(). Lenient in the same way every other loader here is: a body that does not
-parse leaves the state_definition with no slots at all,
-        and ensure() then hands it a fresh empty one on the
-next frame - a corrupt or foreign definition costs you that definition, never the whole document.
-@date 2026-09-08 08:12 ]]
+--[[ @brief Reads back what to_text() wrote, into this box.
+-- |
+-- | LENIENT, like every other loader here: a corrupt or foreign definition costs that definition,
+-- | never the whole document. A body yielding no slots leaves the box's slots as they were - none,
+-- | for a fresh box, so ensure() builds an empty one on the next frame.
+-- |
+-- | @details A truncated entry stops the read; the slots read so far are kept.
+-- |
+-- | @param state_definition  editor_definition.state_definition - checked
+-- | @param text              string - a saved body
+-- | @param fontset           fontset - each slot is built immediately
+-- |
+-- | @note Only the slots are restored. Undo history, the parse and the derived rows start empty and
+-- |       are rebuilt on the next draw.
+-- |
+-- | @date 2026-09-13 20:00
+--]]
 function editor_definition.from_text(state_definition, text, fontset)
     STATE_SHAPE.check(state_definition)
     local slots = {}

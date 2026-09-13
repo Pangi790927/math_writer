@@ -1,49 +1,53 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-new()                                   -> state_text
-to_text(state_text: editor_text.state_text) / from_text(state_text: editor_text.state_text,
-        text: string, fontset: fontset)
-rescale(state_text: editor_text.state_text, fontset: fontset) -> nothing
-    A text box: a flat stream of characters with FORMULAS EMBEDDED in
-    it. The stream is this file's half; each embed is an mformula
-    container driven through editor.lua.
-
-THE FRAME
-draw(state_text: editor_text.state_text, fontset: fontset, pos: {x,y}, sz: size,
-     width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean)
-     -> height
-handle_input(state_text: editor_text.state_text, fontset: fontset, sz: size) -> changed
-nearest_position(state_text: editor_text.state_text, mpos: {x,y}) -> index
-formula_at(state_text: editor_text.state_text, pos: {x,y}, only: node|nil) -> {container, hb} | nil
-    `only` restricts the search to ONE formula - "did this click land
-    inside the formula that currently has input", as against "which
-    formula is here". Both questions are asked in this file.
-
-ENTERING AND LEAVING A FORMULA
-begin_formula_edit(state_text: editor_text.state_text) -> nothing
-commit_formula_edit(state_text: editor_text.state_text, cursor_path: path) -> nothing
-    A formula edit is ONE undo step, not one per keystroke: begin
-    takes a baseline, commit turns it into a step if the tree moved.
-
-UNDO
-push_undo(state_text: editor_text.state_text, coalesce_key: string)
-undo(state_text: editor_text.state_text) / redo(state_text: editor_text.state_text)
-    The whole char stream is snapshotted, formulas included - which is
-    why undo lives here and not in editor.lua, where a definition box
-    has no stream to snapshot.
-
-LAYOUT, EXPORTED FOR TESTS ONLY
-formula_line_fit(m: metrics, width_limit: number, used: number, run_width: number) -> boolean
-run_moves_down(width_limit: number, used: number, run_width: number) -> boolean
-measure_runs(state_text: editor_text.state_text, fontset: fontset, sz: size) -> {run}
-wrapped_formula_x(width_limit: number, run_width: number) -> number
-FORMULA_WRAP_ROWS                       constant
-    The passes that call these live inside draw(), which needs a real
-    ImGui frame - the same convention mformula_new's make_supsub uses.
-
---- internal, not on the module table --------------------------------------------------------------
-    the char stream, the wrapping passes and the embed layout
-@date 2026-09-12 04:10
-================================================================================================= ]]
+-- | new()                                   -> editor_text.state_text
+-- | to_text(state_text: editor_text.state_text) -> text
+-- | from_text(state_text: editor_text.state_text, text: string, fontset: fontset) -> nothing
+-- | rescale(state_text: editor_text.state_text, fontset: fontset) -> nothing
+-- |     A text box: a flat stream of characters with FORMULAS EMBEDDED in
+-- |     it. The stream is this file's half; each embed is an mformula
+-- |     container driven through editor.lua.
+-- |
+-- | THE FRAME
+-- | draw(state_text: editor_text.state_text, fontset: fontset, pos: {x,y}, sz: size,
+-- |      width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean)
+-- |      -> height, width
+-- | handle_input(state_text: editor_text.state_text, fontset: fontset, sz: size) -> nothing
+-- | nearest_position(state_text: editor_text.state_text, mpos: {x,y}) -> index | nil
+-- | formula_at(state_text: editor_text.state_text, pos: {x,y}, only: node|nil)
+-- |      -> {container, hb} | nil
+-- |     `only` restricts the search to ONE formula - "did this click land
+-- |     inside the formula that currently has input", as against "which
+-- |     formula is here". Both questions are asked in this file.
+-- |
+-- | ENTERING AND LEAVING A FORMULA
+-- | begin_formula_edit(state_text: editor_text.state_text) -> path
+-- | commit_formula_edit(state_text: editor_text.state_text, cursor_path: path) -> nothing
+-- |     A formula edit is ONE undo step, not one per keystroke: begin
+-- |     takes a baseline, commit turns it into a step if the tree moved.
+-- |
+-- | UNDO
+-- | push_undo(state_text: editor_text.state_text, coalesce_key: string | nil)
+-- | undo(state_text: editor_text.state_text) / redo(state_text: editor_text.state_text)
+-- |     The whole char stream is snapshotted, formulas included - which is
+-- |     why undo lives here and not in editor.lua, where a definition box
+-- |     has no stream to snapshot.
+-- |
+-- | LAYOUT, EXPORTED FOR TESTS ONLY
+-- | formula_line_fit(m: metrics, width_limit: number, used: number, run_width: number)
+-- |      -> break_line, column
+-- | run_moves_down(width_limit: number, used: number, run_width: number) -> boolean
+-- | measure_runs(state_text: editor_text.state_text, fontset: fontset, sz: size) -> {run}
+-- | wrapped_formula_x(width_limit: number, run_width: number) -> number
+-- | FORMULA_WRAP_ROWS                       constant
+-- |     The passes that call these live inside draw(), which needs a real
+-- |     ImGui frame - the same convention mformula_new's make_supsub uses.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     the char stream, the wrapping passes and the embed layout
+-- |
+-- | @date 2026-09-13 20:15
+-- | ===============================================================================================
+--]]
 
 --[[
 editor_text.lua - THE FLAT TEXT EDITOR. Renamed from editor.lua 2026-09-06, when `editor.lua`
@@ -190,16 +194,20 @@ local function new_item(t)
     return ITEM_SHAPE.wrap(t)
 end
 
---[[ A fresh, empty text box.
-
-Core: the state_text is a FLAT CHARACTER STREAM (`chars`) with a cursor index into it. A formula is one
-entry in that stream carrying its own mformula container, which is what lets text and mathematics
-share one caret and one undo history.
-
-Detail: several fields are filled in by draw() and read by handle_input() on the NEXT frame -
-`last_positions`, `last_cursor_y`, `last_cursor_h`. Every hit test here is therefore against what
-was last drawn, which is correct: that is what the user actually clicked on.
-@date 2026-09-12 04:15 ]]
+--[[ @brief A fresh, empty text box.
+-- |
+-- | A FLAT CHARACTER STREAM (`chars`) with a cursor index into it. A formula is one entry in that
+-- | stream carrying its own mformula container, which is what lets text and mathematics share one
+-- | caret and one undo history.
+-- |
+-- | @details Several fields are filled in by draw() and read on the NEXT frame - `last_positions`,
+-- |          `last_cursor_y`, `last_cursor_h`, `last_formula_boxes`. Every hit test here is against
+-- |          what was last drawn, which is correct: that is what the user actually clicked on.
+-- |
+-- | @return editor_text.state_text - sealed; empty stream, cursor at 0, empty undo and redo stacks
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.new()
     return STATE_SHAPE.wrap{
         chars = {},
@@ -383,23 +391,35 @@ local function insert_text(state_text, text, fontset)
     end
 end
 
---[[ The whole buffer as text (selection_to_text() over every char) - content.lua's own save
-format is exactly this, one per box, so a save is indistinguishable from "select all, copy" and a
-load from "select all, delete, paste" (undo history included, since it goes through the same
-push_undo() call sites paste already does).
-@date 2026-09-08 08:20 ]]
+--[[ @brief The whole buffer as text - selection_to_text() over every char.
+-- |
+-- | THE SAVE FORMAT IS THE CLIPBOARD FORMAT: content.lua saves exactly this, one per box, so a save
+-- | is indistinguishable from "select all, copy". Formulas come out as $$...$$.
+-- |
+-- | @param state_text  editor_text.state_text - checked
+-- | @return string
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.to_text(state_text)
     STATE_SHAPE.check(state_text)
     return selection_to_text(state_text, 0, #state_text.chars)
 end
 
---[[ Replaces the ENTIRE buffer with `text` (insert_text()'s own $$.../escape handling included) -
-content.lua's own load, and this file's own undo/redo's restore path (see undo_or_redo()) both
-go through wholesale state_text.chars replacement already; this is that same operation exposed for a
-fresh (or about to be cleared) editor_text.new() instead of a snapshot table. Does NOT go through
-push_undo() itself - loading a save file replaces the state_text a box STARTS with, there's nothing
-before it to undo back to.
-@date 2026-09-08 08:20 ]]
+--[[ @brief Replaces the ENTIRE buffer with `text`, the way a paste would read it.
+-- |
+-- | content.lua's LOAD. It goes through insert_text(), so $$...$$ becomes a formula and escapes are
+-- | honoured exactly as on paste.
+-- |
+-- | NO UNDO STEP: loading a save file sets what a box STARTS with, and there is nothing before it
+-- | to undo back to. The existing undo stack is left as it is.
+-- |
+-- | @param state_text  editor_text.state_text - checked; chars, cursor and selection are reset
+-- | @param text        string
+-- | @param fontset     fontset - formulas are built immediately
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.from_text(state_text, text, fontset)
     STATE_SHAPE.check(state_text)
     state_text.chars = {}
@@ -408,12 +428,17 @@ function editor_text.from_text(state_text, text, fontset)
     insert_text(state_text, text, fontset)
 end
 
---[[ Rescales every formula embed in state_text.chars at the CURRENT global zoom (mexpru.set_zoom(), set
-by content.lua just before calling this) - content.lua's own Ctrl+MouseWheel handler calls this for
-every box any time the zoom actually changes, so already-typed formula content visibly
-catches up (mformula_new.rescale()'s own comment - plain text needs no equivalent call here, it's
-never baked into anything, always measured/drawn fresh from the live `sz` passed to draw() itself).
-@date 2026-09-08 08:20 ]]
+--[[ @brief Rescales every formula embed at the CURRENT global zoom, after it changed.
+-- |
+-- | ONLY FORMULAS NEED IT. content.lua's Ctrl+MouseWheel handler sets the zoom (mexpru.set_zoom)
+-- | and calls this for every box, so already-typed formulas catch up. Plain text is never baked
+-- | into anything - it is measured fresh from the `sz` passed to draw().
+-- |
+-- | @param state_text  editor_text.state_text - checked
+-- | @param fontset     fontset
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.rescale(state_text, fontset)
     STATE_SHAPE.check(state_text)
     for _, item in ipairs(state_text.chars) do
@@ -423,29 +448,29 @@ function editor_text.rescale(state_text, fontset)
     end
 end
 
---[[ Nearest recorded glyph-gap position (index into state_text.chars) to a screen point, using the
-positions the previous frame's draw() recorded. Used by both click-to-place and drag-to-select.
-
-LINE FIRST, THEN COLUMN, and strictly in that order - never one blended distance. Pick the line
-whose band the click is in (or the nearest band), then the nearest gap ON THAT LINE, with the
-horizontal distance unable to influence the first choice at all.
-
-It used to be a weighted sum: |dx| + dy, plus a large penalty once dy passed one line height. Two
-things are wrong with that and only the second is obvious. The penalty compares against ONE line
-height for the whole box, so a line grown to hold a formula reaches outside its own threshold and a
-click low in it scores as "some other line". And even between two lines both inside the threshold,
-a big enough |dx| difference outvotes dy - so clicking just under a short line, above a long one,
-lands on the short line because there was a gap nearer the pointer up there. Requested 2026-09-09:
-"when you click your cursor goes to the nearest line first, nearest column after".
-
-THIS IS THE TEXT EDITOR'S RULE ONLY. Inside a formula the cursor moves through a tree, where "the
-line above" is not a meaningful place and a click means the nearest NODE - mformula.hit_test() owns
-that and is deliberately untouched. Author's own words, same day: "this is different of how it
-works and should work inside formulas".
-
-Line identity is compared with ==, which is exact rather than lucky: every position on one line is
-handed the same `line_top` upvalue by draw(), so they carry bit-identical numbers.
-@date 2026-09-09 23:05 ]]
+--[[ @brief The glyph-gap nearest a screen point, from the positions the last draw() recorded.
+-- |
+-- | LINE FIRST, THEN COLUMN, strictly in that order - never one blended distance. The line whose
+-- | band the point is in (or the nearest band), then the nearest gap ON THAT LINE. Requested
+-- | 2026-09-09: "when you click your cursor goes to the nearest line first, nearest column after".
+-- |
+-- | THE TEXT EDITOR'S RULE ONLY. Inside a formula the cursor moves through a tree and a click means
+-- | the nearest NODE - mformula.hit_test() owns that. Author, same day: "this is different of how
+-- | it works and should work inside formulas".
+-- |
+-- | @details Ties go to the topmost line. Line identity is compared with ==, exactly: every
+-- |          position on one line carries draw()'s same `line_top` value.
+-- |
+-- | @param state_text  editor_text.state_text - not checked; exported for tests
+-- | @param mpos        {x, y} - a screen point
+-- | @return integer | nil - an index into `chars` (0 is before the first); nil before any draw
+-- |
+-- | @note It used to be a weighted sum, |dx| + dy with a penalty past one line height. A line grown
+-- |       to hold a formula overran that threshold, and a big enough |dx| outvoted dy - so a click
+-- |       just under a short line landed on it because a gap up there was nearer the pointer.
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 local function nearest_position(state_text, mpos)
     if not state_text.last_positions then
         return nil
@@ -604,12 +629,26 @@ local function commit_undo(state_text, snap, coalesce_key)
     state_text.undo_coalesce_key = coalesce_key
 end
 
---[[ Convenience for the common case: snapshot state_text right now, then commit it. The one call site
-that needs to know whether an edit actually happened BEFORE deciding to commit (the active-formula
-case in handle_input,
-        keyed off mformula's own state_text.version) builds the snapshot up front instead
-and calls commit_undo() directly.
-@date 2026-09-08 08:20 ]]
+--[[ @brief Records the box as it is RIGHT NOW as an undo step - call it just before an edit.
+-- |
+-- | THE COMMON CASE of commit_undo: snapshot, then commit. A formula edit, which only knows whether
+-- | anything changed AFTER the fact, goes through begin/commit_formula_edit instead.
+-- |
+-- | COALESCING: when `coalesce_key` matches the key the last step used, this edit extends that step
+-- | instead of starting one - every character of one typing run shares "type", so one Ctrl+Z undoes
+-- | the run. nil never coalesces. Any new step clears the redo stack.
+-- |
+-- | @details Tags the profiler frame with "edit:<key>", since every mutating action funnels through
+-- |          here. The stack keeps the newest UNDO_STACK_LIMIT steps.
+-- |
+-- | @param state_text    editor_text.state_text - not checked; exported for tests
+-- | @param coalesce_key  string | nil - the action's name, or nil for a structural edit
+-- |
+-- | @note Coalescing drops the NEW snapshot: the step that stays is the one taken before the run
+-- |       began, which is what undoing the whole run needs.
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 local function push_undo(state_text, coalesce_key)
     --[[ Every mutating action in this file funnels through here, which makes it the one place worth
     tagging the frame from (prof.lua / perf_composer.h). A spike frame's report then reads
@@ -664,20 +703,23 @@ local function undo_or_redo(state_text, is_redo)
     state_text._undo_baseline = nil      -- the state_text just changed wholesale; any cached one is stale
 end
 
---[[ The two halves of one frame of editing INSIDE a formula, called by handle_input() around
-mformula.handle_input() and exported so a test can drive the same sequence (that branch itself needs
-real keypresses).
-
-begin: make sure a pre-edit baseline exists - CACHED, not rebuilt per frame, because rebuilding it
-means cloning every formula tree and that made the editor visibly lag - and return where the caret
-is RIGHT NOW, as a path.
-
-The split exists because those two have different lifetimes, which is the bug that produced it: the
-baseline stays valid until an edit changes the tree, but the caret moves freely without bumping
-version, so the caret position inside a cached baseline goes stale immediately. commit stamps the
-freshly-captured path onto the baseline before recording it, so Ctrl+Z restores the tree AND puts
-the caret back where the undone edit started, not where the previous one left it.
-@date 2026-09-08 08:20 ]]
+--[[ @brief Opens a frame of editing INSIDE a formula: ensures a baseline, returns the caret's path.
+-- |
+-- | THE FIRST HALF OF A PAIR, called by handle_input() around mformula.handle_input() and exported
+-- | so a test can drive the same sequence. commit_formula_edit is the second half.
+-- |
+-- | THE BASELINE IS CACHED, not rebuilt per frame: rebuilding clones every formula tree, and that
+-- | made the editor visibly lag. It stays valid until an edit changes the stream.
+-- |
+-- | THE CARET IS NOT: it moves without bumping any version, so a caret inside a cached baseline
+-- | goes stale at once. That is why the path is returned separately, for commit to stamp onto the
+-- | baseline - so Ctrl+Z puts the caret back where the undone edit started.
+-- |
+-- | @param state_text  editor_text.state_text - checked; must have an active formula
+-- | @return path - where the caret is RIGHT NOW in the active formula
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.begin_formula_edit(state_text)
     STATE_SHAPE.check(state_text)
     if not state_text._undo_baseline then
@@ -686,19 +728,22 @@ function editor_text.begin_formula_edit(state_text)
     return mformula.cursor_path(state_text.active_formula)
 end
 
---[[ Closes the undo step that begin_formula_edit opened.
-
-Core - ONE FORMULA EDIT IS ONE UNDO STEP, not one per keystroke. begin takes a baseline snapshot and
-this turns it into a step, so undoing after typing inside a formula returns to before you entered it
-rather than unpicking it character by character.
-
-Params: `cursor_path` is where the caret was in the formula, restored onto the SNAPSHOT's copy of it
-- the snapshot holds different node objects, so a raw cursor reference would point into the live
-tree and the undone state_text would open with the caret somewhere it never was.
-
-Does nothing when no baseline is open, which is the ordinary case for anything that was not a
-formula edit.
-@date 2026-09-12 04:15 ]]
+--[[ @brief Records begin_formula_edit's baseline as an undo step. Call it when the tree moved.
+-- |
+-- | ONE STEP PER EDIT, NEVER COALESCED: every keystroke that changes a formula's tree is its own
+-- | undo step, restoring the formula and the caret as they were before that keystroke.
+-- |
+-- | @details The baseline is used up, so the next frame takes a fresh one.
+-- |
+-- | @param state_text   editor_text.state_text - checked
+-- | @param cursor_path  path - from begin_formula_edit; restored onto the SNAPSHOT's copy of the
+-- |                     formula, since a raw cursor would point into the live tree instead
+-- |
+-- | @note Does nothing when no baseline is open. The caller decides whether the tree moved;
+-- |       committing after a plain cursor move would record a step that changes nothing.
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.commit_formula_edit(state_text, cursor_path)
     STATE_SHAPE.check(state_text)
     local snap = state_text._undo_baseline
@@ -718,26 +763,42 @@ handle_input()'s own Ctrl+Z branch is the real entry point, and it needs real ke
 that wants to undo something has to reach the machinery directly.
 @date 2026-09-08 08:20 ]]
 editor_text.push_undo = push_undo
---[[ Steps the undo history back, and forward.
-
-THE WHOLE CHAR STREAM IS SNAPSHOTTED, formulas included, which is why undo lives in this file rather
-than in editor.lua: a definition box has no stream to snapshot, so what a step even IS differs per
-owner. A formula edit counts as one step - see commit_formula_edit above.
-@date 2026-09-12 04:15 ]]
+--[[ @brief Steps the undo history back one step.
+-- |
+-- | THE WHOLE CHAR STREAM IS SNAPSHOTTED, formulas included, which is why undo lives in this file
+-- | rather than in editor.lua: what a step even IS differs per owner.
+-- |
+-- | UNDO RESTORES CONTENT, NOT MODE. Whether a formula owns input stays as it was; only WHICH
+-- | formula is taken from the snapshot, so undoing inside a formula leaves you inside it.
+-- |
+-- | @param state_text  editor_text.state_text - not checked
+-- |
+-- | @note A no-op on an empty stack.
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.undo(state_text) undo_or_redo(state_text, false) end
---[[ The same history, stepped forward. Cleared by any new edit, so a branch is never re-entered.
-@date 2026-09-12 04:15 ]]
+--[[ @brief Steps the same history forward. Any new edit clears it, so a branch is never re-entered.
+-- |
+-- | @param state_text  editor_text.state_text - not checked
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.redo(state_text) undo_or_redo(state_text, true) end
 
---[[ The formula embed under a screen point, as {container, hb}, or nil.
-
-WHAT A POINTER CAN LAND ON in this box, asked once. The boxes come from the last draw
-(`last_formula_boxes`), which is what every click here has always hit-tested against.
-
-`only` restricts the search to ONE formula - the caret-owning one, when the question is "did this
-click land inside the formula that currently has input" rather than "which formula is here". Both
-questions are asked in this file and they used to be two copies of the same loop.
-@date 2026-09-11 21:40 ]]
+--[[ @brief The formula embed under a screen point.
+-- |
+-- | WHAT A POINTER CAN LAND ON in this box, asked once. The boxes come from the last draw
+-- | (`last_formula_boxes`), which is what every click here hit-tests against.
+-- |
+-- | @param state_text  editor_text.state_text - checked
+-- | @param pos         {x, y} | nil - a screen point
+-- | @param only        mexpru.container | nil - restricts the search to that one formula: "did this
+-- |                    click land inside the formula that has input", not "which formula is here"
+-- | @return {container, hb} | nil - the first match in stream order
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.formula_at(state_text, pos, only)
     STATE_SHAPE.check(state_text)
     for _, fb in ipairs(state_text.last_formula_boxes or {}) do
@@ -752,10 +813,28 @@ end
 -- Input handling
 -- #################################################################################################
 
---[[ `fontset`/`sz` are only needed for the one thing keyboard-only input handling never needed
-before: hit-testing a click against an active formula's own drawn geometry (mformula.hit_test()
-has to rebuild/measure rows to know where they land on screen, same as draw() does).
-@date 2026-09-08 08:20 ]]
+--[[ @brief One frame of input for a text box: undo, formulas, typing, editing and moving.
+-- |
+-- | UNDO AND REDO FIRST, ahead of even the active-formula dispatch, so they work the same wherever
+-- | the caret is.
+-- |
+-- | A FORMULA THAT OWNS INPUT gets the frame through editor.lua, between begin_formula_edit and
+-- | commit_formula_edit, until an exit key or a click outside it hands control back to the stream.
+-- |
+-- | OUT IN THE STREAM, every mutating action records an undo step through push_undo before it
+-- | edits: typing coalesces per run, everything structural is a step of its own.
+-- |
+-- | @details `fontset` and `sz` are needed only to hit-test a click against an active formula's
+-- |          drawn geometry. Clicks are tested against what the last draw() recorded.
+-- |
+-- | @param state_text  editor_text.state_text - checked
+-- | @param fontset     fontset - also parked on the state for snapshot()
+-- | @param sz          size
+-- |
+-- | @note Returns nothing; there is no "changed" answer to hand back, unlike the other box editors.
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.handle_input(state_text, fontset, sz)
     STATE_SHAPE.check(state_text)
     -- Parked for snapshot()'s benefit (see its own comment) - "_"-prefixed, so deep_copy() never
@@ -1405,21 +1484,20 @@ dont jump multiple rows".
 @date 2026-09-09 22:05 ]]
 local FORMULA_WRAP_ROWS = 2
 
---[[ Where on its own row a formula that WAS MOVED by the wrapper sits: hard against the right
-margin, not at the left where everything else starts.
-
-It is a signal, not decoration. A formula alone on a row is ambiguous - it reads exactly the same
-whether somebody typed it there on purpose or the wrapper pushed it down out of the line above,
-and those mean different things to whoever is reading the document back. Author's own words,
-2026-09-09: "you can't really tell if a formulas is by itself, or it was moved by the wrapper, so,
-it would be way more visible at the right end". Left edge therefore means "this is where it was
-put", right edge means "this was moved".
-
-`run_width` is the formula's whole advance, margins included, so the returned offset puts its right
-margin on the column's right margin. Clamped at zero because the caller also breaks for a formula
-too wide for any line at all (the MIN_FORMULA_COLUMN_LINES guard, not the fit rule) - that one
-starts at the left and wraps inside its own column, which is the only thing it can do.
-@date 2026-09-09 22:40 ]]
+--[[ @brief Where a formula MOVED by the wrapper sits on its row: hard against the right margin.
+-- |
+-- | A SIGNAL, NOT DECORATION. A formula alone on a row reads the same whether it was typed there or
+-- | pushed down by the wrapper, and those mean different things. Author, 2026-09-09: "you can't
+-- | really tell if a formulas is by itself, or it was moved by the wrapper, so, it would be way
+-- | more visible at the right end". Left edge means "put here", right edge "moved here".
+-- |
+-- | @param width_limit  number | nil - the line width
+-- | @param run_width    number | nil - the formula's whole advance, margins included
+-- | @return number - the x offset from the line start; 0 when either is nil, and clamped at 0 for a
+-- |         formula wider than the line, which starts at the left and wraps in its own column
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 local function wrapped_formula_x(width_limit, run_width)
     if not width_limit or not run_width then
         return 0
@@ -1427,21 +1505,21 @@ local function wrapped_formula_x(width_limit, run_width)
     return math.max(0, width_limit - run_width)
 end
 
---[[ THE RULE BOTH KINDS OF UNBREAKABLE RUN FOLLOW: a run that does not fit in what is left of
-this line moves to the next one - but ONLY if the next line can actually hold it.
-
-A run is anything the layout must keep whole: a formula, or a word (see measure_runs). `used` is
-how far along the line the layout has already advanced, `run_width` how much the run will advance
-it by, both in the same units.
-
-The "only if it fits" half is what stops the rule eating itself. A run WIDER than a whole line
-fits nowhere, so moving it down gains nothing and would repeat on every line forever; it stays
-put and is cut the way it always was - a word by the per-glyph check that follows this one, a
-formula by wrapping inside its own column. False at the start of a line for that same reason.
-
-Answering false is always safe: it means "leave it where it is", which is what this editor did
-before the rule existed.
-@date 2026-09-09 21:51 ]]
+--[[ @brief Should a run that does not fit here move down a line? Only if that line can hold it.
+-- |
+-- | THE RULE BOTH KINDS OF UNBREAKABLE RUN FOLLOW - a formula, or a word (see measure_runs).
+-- |
+-- | "ONLY IF IT FITS" STOPS THE RULE EATING ITSELF. A run WIDER than a whole line fits nowhere, so
+-- | moving it down would repeat on every line forever; it stays put and is cut as before - a word
+-- | per glyph, a formula inside its own column. False at the start of a line for the same reason.
+-- |
+-- | @param width_limit  number | nil - the line width; nil means no wrapping
+-- | @param used         number - how far along the line the layout has already advanced
+-- | @param run_width    number | nil - how far the run will advance it, same units
+-- | @return boolean - false is always safe: it means "leave it where it is"
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 local function run_moves_down(width_limit, used, run_width)
     if not width_limit or not run_width or used <= 0 then
         return false
@@ -1452,26 +1530,30 @@ local function run_moves_down(width_limit, used, run_width)
     return run_width <= width_limit     -- ...and the next line is only better if it fits there
 end
 
---[[ Where a formula goes on the line it is currently on. `used` is how far along that line the
-layout has already advanced (pass 1's lx, pass 2's x - pos.x); returns (break_line, column):
-
-  break_line - start a new line before drawing it, FORMULA_WRAP_ROWS of them (see there - a
-               formula lands two rows down, not one). Two independent reasons, either one
-               enough: what is left of the line is too narrow to be a legal column at all (the
-               hang guard above), or run_moves_down() says the formula would sit better on the
-               next line. Never true at the start of a line.
-  column     - the CONTENT width to hand down, floored at MIN_FORMULA_COLUMN_LINES worth so it is positive
-               even in a box too narrow to hold one - see MIN_FORMULA_COLUMN_LINES.
-
-`run_width` is this formula's whole advance - its natural, UNWRAPPED width plus both margins, as
-measure_runs() reports it. Natural, not wrapped: the question being asked is "how much room does
-it want", and a formula measured inside the column it is trying to escape has already answered
-"exactly the column", which would make the rule a no-op. Pass nil and the fit rule is skipped,
-leaving the pre-2026-09-09 behaviour.
-
-Both passes call this rather than each doing the arithmetic, because a disagreement between them
-about which line a formula lands on is its own class of bug (see pass 1's own comment).
-@date 2026-09-09 21:51 ]]
+--[[ @brief Where a formula goes on the line it is on: whether to break first, and its column width.
+-- |
+-- | BOTH OF draw()'S PASSES CALL THIS rather than each doing the arithmetic, because a disagreement
+-- | between them about which line a formula lands on is its own class of bug.
+-- |
+-- | A BREAK HAS TWO INDEPENDENT REASONS, either enough: what is left of the line is too narrow to
+-- | be a legal column at all (the hang guard), or run_moves_down() says the formula sits better on
+-- | the next line. Never at the start of a line.
+-- |
+-- | @param m            metrics - get_metrics'; its line_height sizes the minimum column
+-- | @param width_limit  number | nil - the line width; nil means no wrapping, and no break
+-- | @param used         number - how far along the line the layout has advanced (pass 1's lx,
+-- |                     pass 2's x - pos.x)
+-- | @param run_width    number | nil - the formula's NATURAL, unwrapped advance plus both margins,
+-- |                     as measure_runs() reports it. nil skips the fit rule
+-- | @return boolean, number | nil - break_line: start FORMULA_WRAP_ROWS new rows before drawing it;
+-- |         column: the CONTENT width to hand down, floored at MIN_FORMULA_COLUMN_LINES worth so it
+-- |         stays positive in a box too narrow for one. nil when not wrapping
+-- |
+-- | @note Natural width, not wrapped: measured inside the column it is trying to escape, a formula
+-- |       has already answered "exactly the column", and the rule would never fire.
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 local function formula_line_fit(m, width_limit, used, run_width)
     if not width_limit then
         return false, nil
@@ -1486,26 +1568,27 @@ local function formula_line_fit(m, width_limit, used, run_width)
     return false, math.max(min_col, remaining)
 end
 
---[[ How wide is everything that has to stay whole on one line, measured ONCE for both of draw()'s
-passes. Keyed by the item's own index in state_text.chars, set only on the item that STARTS a run:
-
-  a formula - its natural width plus both margins, i.e. exactly what lx/x advance by.
-  a word    - a maximal run of items with no whitespace, no newline and no formula in it, summed
-              over each glyph's own advance at its own effective size (item.size_off).
-
-WHY A WORD IS A NON-WHITESPACE RUN and not a run of is_alnum(): "end." has to travel as one thing.
-Splitting on anything finer orphans the punctuation onto the next line by itself, which is the
-same defect this rule was asked to remove, in a smaller size.
-
-WHY MEASURED HERE rather than inside each pass: the two passes have to agree about which line
-every item lands on, and pass 1's own comment records what happens when they don't. Both reading
-one table makes them agree by construction, instead of by both doing the same arithmetic right.
-
-Costs one extra mformula.measure() per formula per draw - the passes still measure again, at the
-column they are granted, for the height. Against the profiler's own lua.ce.total that is noise; if
-it ever stops being noise, this natural measure can be reused whenever the formula turns out to
-fit its column, because content_extent() returns the same numbers in that case.
-@date 2026-09-09 21:51 ]]
+--[[ @brief How wide everything that must stay whole on one line is, measured ONCE for both passes.
+-- |
+-- | MEASURED HERE, not inside each pass: the two passes have to agree about which line every item
+-- | lands on, and both reading one table makes them agree by construction.
+-- |
+-- | A WORD IS A NON-WHITESPACE RUN, not a run of is_alnum(): "end." has to travel as one thing, or
+-- | the punctuation is orphaned onto the next line by itself.
+-- |
+-- | @details Costs one extra mformula.measure() per formula per draw - noise against the profiler's
+-- |          lua.ce.total. If it stops being noise, this natural measure can be reused whenever the
+-- |          formula fits its column.
+-- |
+-- | @param state_text  editor_text.state_text - not checked; exported for tests
+-- | @param fontset     fontset
+-- | @param sz          size
+-- | @return {[index] = number} - keyed only by the index of the item that STARTS a run: a formula's
+-- |         natural width plus both margins, or a word's summed glyph advances at each glyph's own
+-- |         effective size
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 local function measure_runs(state_text, fontset, sz)
     local runs, i, n = {}, 1, #state_text.chars
     while i <= n do
@@ -1545,20 +1628,29 @@ local FORMULA_ACTIVE_BORDER_COLOR = 0xff00ffff
 -- used them, so all three editors share one look instead of drifting apart. Their local copies
 -- here went with them; nothing in this file draws either any more. -- @date 2026-09-08 08:20
 
---[[ Draws state_text onto the current ImGui window, starting at `pos`, using font size `sz`,
-soft-wrapping lines wider than `width_limit` (pass nil/false to disable soft-wrap). The blinking
-caret is only drawn when `show_cursor` is true (or omitted) - a caller managing several editors
-(e.g. content.lua's boxes) should pass false for every editor that isn't the active one.
-`show_wireframe` (default false) is forwarded to every inline formula's own mformula.draw() - the
-debug bounding-box overlay (vc.mexpr_draw's draw_bb), off by default so it's only on when actually
-visually debugging (content.lua's own wireframe-toggle button).
-`show_graph` (default false) gates the ACTIVE formula's own reachable-position graph (mformula.
-reachable_graph(), carried over from the old row-based editor) - off by default, same
-reasoning as show_wireframe, content.lua's own graph-toggle button flips it on.
-@return the total content height in pixels (bottom of the last line, relative to pos.y), and the
-widest any single line's own content actually reached (relative to pos.x - may exceed width_limit,
-see max_x's own comment below) - lets a caller (e.g. content.lua's boxes) size itself to fit both.
-@date 2026-09-08 08:20 ]]
+--[[ @brief Draws the box - text, embedded formulas, selection and caret - and returns its extent.
+-- |
+-- | TWO PASSES: the first measures every line without drawing, so a line holding a tall formula
+-- | knows how far it reaches before anything is placed; the second draws. Both place runs through
+-- | measure_runs and formula_line_fit, so they cannot disagree about which line an item lands on.
+-- |
+-- | IT RECORDS WHAT THE NEXT FRAME HIT-TESTS: glyph-gap positions, formula boxes, and where the
+-- | caret is - read by handle_input() and by content.lua's scroll-into-view.
+-- |
+-- | @param state_text      editor_text.state_text - checked; read and written
+-- | @param fontset         fontset
+-- | @param pos             {x, y} - top-left of the content
+-- | @param sz              size - the font size index
+-- | @param width_limit     number | nil - soft-wrap width; nil or false disables wrapping
+-- | @param show_cursor     boolean | nil - draw the caret; nil means true. A caller with several
+-- |                        boxes passes false for every one that is not active
+-- | @param show_wireframe  boolean | nil - forwarded to every formula: mexpr's debug boxes
+-- | @param show_graph      boolean | nil - the ACTIVE formula's reachable-position graph
+-- | @return number, number - the content height (bottom of the last line, from pos.y), and the
+-- |         widest any line actually reached (from pos.x; may exceed width_limit)
+-- |
+-- | @date 2026-09-13 20:15
+--]]
 function editor_text.draw(state_text, fontset, pos, sz, width_limit, show_cursor, show_wireframe,
         show_graph)
     STATE_SHAPE.check(state_text)

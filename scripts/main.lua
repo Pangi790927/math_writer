@@ -1,21 +1,25 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-NOTHING. This is the application's entry script, not a module: it returns no table and nothing
-requires it. virt_composer loads it as `main_script` (see math_writer.yaml) and calls the globals
-below, which are the interface - to the C++ side rather than to any Lua caller.
-
-    test_init()     builds the fontset and the content state, and reads the document back along
-                    with the three config files. main.cpp:178 calls it.
-    test_draw()     one frame: input, then drawing. Called every frame; main.cpp keeps running
-                    when it throws, so Ctrl+Q still works while it is erroring.
-    test_shutdown() saves the document and the config on the way out. Runs before a Ctrl+R reload
-                    too, which is how the reloaded instance opens on what was on screen.
-
-It also owns the SAVE PATHS. math_writer.save, keymap.save, glyphmap.save and transforms.save are
-concatenated here from vc.app_data_prefix(), so a --test instance writes them all under test_run/
-and cannot touch the presentation instance's files. A module that needs persisting hands main.lua
-text through serialize/deserialize rather than opening a file itself.
-@date 2026-09-12 03:25
-================================================================================================= ]]
+-- | NOTHING. This is the application's entry script, not a module: it returns no table and nothing
+-- | requires it. virt_composer loads it as `main_script` (see math_writer.yaml) and calls the
+-- | globals below, which are the interface - to the C++ side rather than to any Lua caller.
+-- |
+-- |     test_init()     builds the fontset and the content state, and reads the document back
+-- |                     along with the three config files. main.cpp:178 calls it.
+-- |     test_draw()     one frame: input, then drawing. Called every frame; main.cpp keeps running
+-- |                     when it throws, so Ctrl+Q still works while it is erroring. Also writes a
+-- |                     changed config file once the F2 customiser is closed.
+-- |     test_shutdown() saves the document and closes the flight recorder on the way out. Runs
+-- |                     before a Ctrl+R reload too, which is how the reloaded instance opens on
+-- |                     what was on screen.
+-- |
+-- | It also owns the SAVE PATHS. math_writer.save, keymap.save, glyphmap.save and transforms.save
+-- | are concatenated here from vc.app_data_prefix(), so a --test instance writes them all under
+-- | test_run/ and cannot touch the presentation instance's files. A module that needs persisting
+-- | hands main.lua text through serialize/deserialize rather than opening a file itself.
+-- |
+-- | @date 2026-09-13 16:45
+-- | ===============================================================================================
+--]]
 
 package.path = package.path .. ";./scripts/?.lua"
 
@@ -120,14 +124,23 @@ if mformula_new_warn_sink == nil then
     mformula_new_warn_sink = true
 end
 
---[[ Called ONCE by main.cpp before the first frame: builds the fonts, loads the document, and
-loads the two configuration files beside it.
-
-Every load is optional. A missing or unreadable file is a normal first run - the document falls
-back to content.new()'s single empty box, and the keymap and glyph map to their factory tables -
-so nothing here is a special case that has to be spelled out at each site. Both configurations are
-marked clean afterwards, because loading is not an edit and must not make the app write them back.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Starts the app: builds the fonts, loads the document and the three config files.
+-- |
+-- | Called ONCE by main.cpp before the first frame, and again after a Ctrl+R reload.
+-- |
+-- | EVERY LOAD IS OPTIONAL. A missing or unreadable file is a normal first run - the document
+-- | falls back to content.new()'s single empty box, the keymap and glyph map to their factory
+-- | tables, and the plugins to their own `default_active` - so nothing here is a special case that
+-- | has to be spelled out at each site.
+-- |
+-- | LOADING IS NOT AN EDIT. Every configuration is clean afterwards, so the app does not write
+-- | back what it just read: keymap and glyphmap are cleared here, transforms.load clears its own.
+-- |
+-- | @details The plugin list is applied after the folder scan (requiring transforms.lua ran it),
+-- |          and the recorder is opened last.
+-- |
+-- | @date 2026-09-13 16:45
+--]]
 function test_init()
     fontset = char.load_font_set()
     local saved = read_file(SAVE_PATH)
@@ -170,14 +183,26 @@ local function save_document()
     input_recorder.log_event("saved " .. SAVE_PATH)
 end
 
---[[ ONE FRAME, called by main.cpp: poll the recorder, then run the app inside a pcall.
-
-input_recorder.poll() runs UNCONDITIONALLY and FIRST, so whatever was just typed is already on disk
-even if this same frame goes on to throw. The rest is wrapped in its own pcall, so a Lua error is
-logged - frame number, the recent actions already written, and the message - instead of vanishing
-into virt_composer's C++-side log. That does not, and cannot, decide what the process does about
-the error; it only makes it inspectable afterwards.
-@date 2026-09-08 08:45 ]]
+--[[ @brief One frame: records input, saves what is due, then handles input and draws the document.
+-- |
+-- | Called every frame by main.cpp.
+-- |
+-- | THE RECORDER FIRST, UNCONDITIONALLY. input_recorder.poll() runs before anything else, so
+-- | whatever was just typed is already on disk even if this same frame goes on to throw.
+-- |
+-- | SAVES BEFORE THE WORK. Ctrl+S writes the document, and a changed keymap, glyph map or plugin
+-- | list is written once the F2 customiser is closed - all before the pcall below, so a setting
+-- | is safely on disk even if the next frame of editing throws.
+-- |
+-- | THE APP RUNS INSIDE A pcall. A Lua error from handle_input or draw is logged - frame number,
+-- | the recent actions already written, and the message - instead of vanishing into
+-- | virt_composer's C++-side log.
+-- |
+-- | @note The pcall does not, and cannot, decide what the process does about the error; it only
+-- |       makes it inspectable afterwards. What runs before it is not covered.
+-- |
+-- | @date 2026-09-13 16:45
+--]]
 function test_draw()
     prof.begin("lua.input_recorder.poll")
     input_recorder.poll()
@@ -246,10 +271,20 @@ function test_draw()
     end
 end
 
---[[ Called once, after the main loop exits but before the window actually closes (see main.cpp) -
-writes every box's content back out in the same $$LaTeX$$ format Ctrl+C already uses, so the file
-this produces is exactly what "select all, copy" across every box would have given you.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Stops the app: saves the document and closes the flight recorder.
+-- |
+-- | Called once by main.cpp, after the main loop exits but before the window closes - and before a
+-- | Ctrl+R reload, which is how the reloaded instance opens on what was on screen.
+-- |
+-- | THE DOCUMENT GOES THROUGH save_document, the same path Ctrl+S uses, in the same $$LaTeX$$
+-- | format Ctrl+C uses - so the file is exactly what "select all, copy" across every box would
+-- | have given.
+-- |
+-- | @note The config files are NOT written here. test_draw writes each one when it changes and the
+-- |       customiser closes; an edit made with the customiser still open at exit is not saved.
+-- |
+-- | @date 2026-09-13 16:45
+--]]
 function test_shutdown()
     save_document()
     -- Flush and close the flight recorder explicitly rather than leaving it to the Lua state's own

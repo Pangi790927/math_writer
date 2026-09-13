@@ -1,109 +1,112 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-
-NAMESPACES AND NODES
-new_ns()                                -> ns
-node_of(ns: ast.ns, id: id)             -> node | nil
-    THE ONLY WAY TO READ A NAMESPACE - `by_id` is the storage, this is
-    the lookup, and it CHECKS what it found. A miss is nil; an entry
-    that is not a node raises.
-check_ns(ns: ast.ns)                    -> ns
-check_node(node: node, what: string)    -> node
-    Assert a namespace or a node, for a function in another file that
-    takes one - the shapes are declared here and are local to here.
-ns_insert_object(ns: ast.ns, id: id, obj: node) -> id
-new(ns: ast.ns, type: ast type, id: id)           -> node
-    A namespace owns ids; every node is minted into one and answers to
-    `ns.by_id[id]`. The id IS the name (phase2 section 10), so two
-    nodes may never share one.
-
-copy(ns: ast.ns, node: node, new_ns: ast.ns, keep_vars: boolean) -> node
-copy_fresh(ns: ast.ns, node: node)      -> node
-    The same tree somewhere else, versus a second tree that looks the
-    same. copy_fresh mints new ids in the SAME namespace - what a
-    transformation needs when a subtree lands in two places.
-ns_import_ast(dst_ns: ast.ns, src_ns: ast.ns, node: node) -> NOT IMPLEMENTED
-    A stub with an empty body since it was written. It RAISES; it does
-    not return a node. See the TODO on it for what is undecided.
-
-parent_map(root: node)                  -> {child id -> parent node}
-    Computed per call and thrown away; never stored on a node, because
-    a tree is shared and two trees would disagree about the parent.
-
-RELATIONS
-new_eq(ns: ast.ns, expr1: node, expr2: node) -> node
-new_ineq_less(ns: ast.ns, expr1: node, expr2: node) -> node
-new_ineq_leq(ns: ast.ns, expr1: node, expr2: node) -> node
-new_ineq_neq(ns: ast.ns, expr1: node, expr2: node) -> node
-new_ineq_greater(ns: ast.ns, expr1: node, expr2: node) -> node
-new_ineq_geq(ns: ast.ns, expr1: node, expr2: node) -> node
-new_tends(ns: ast.ns, expr1: node, expr2: node) -> node
-new_implies(ns: ast.ns, expr1: node, expr2: node) -> node
-new_iff(ns: ast.ns, expr1: node, expr2: node) -> node
-    Each is two operands and nothing else. Both are CHECKED to be nodes.
-
-SET RELATIONS
-new_in(ns: ast.ns, expr1: node, expr2: node) -> node
-new_ni(ns: ast.ns, expr1: node, expr2: node) -> node
-new_subset(ns: ast.ns, expr1: node, expr2: node) -> node
-new_subseteq(ns: ast.ns, expr1: node, expr2: node) -> node
-new_supset(ns: ast.ns, expr1: node, expr2: node) -> node
-new_supseteq(ns: ast.ns, expr1: node, expr2: node) -> node
-    The same shape; membership and containment, both directions.
-
-ARITHMETIC
-new_add(ns: ast.ns, ...: node)          -> node
-new_mul(ns: ast.ns, ...: node)          -> node
-    N-ary and order-preserving: `a+b+c` is ONE node with three
-    children, and multiplication is not assumed commutative. EVERY
-    operand is checked, which is where a stray nil would otherwise go
-    unnoticed - nothing downstream reads the arity back.
-new_div(ns: ast.ns, expr1: node, expr2: node)   -> node
-new_exp(ns: ast.ns, base: node, exponent: node) -> node
-new_int(ns: ast.ns, name: string, sup: node, sub: node, body: node) -> node
-new_group_bigop(ns: ast.ns, node_type: ast type, vars: {name}, sups: {node}, subs: {node},
-                body: node)             -> node
-    The explicit form. `vars` is a list of NAMES, not nodes.
-
-new_sum / new_prod / new_union / new_intersect / new_lim / new_limsup / new_liminf / new_min /
-new_max / new_sup / new_inf / new_argmin / new_argmax
-    (ns: ast.ns, vars: {name}, sups: {node}, subs: {node}, body: node) -> node
-    GENERATED, one per row of GROUP_BIGOP_SYMBOL, in a loop rather than
-    typed out - so there is no `function ast.new_sum(...)` line
-    anywhere. They are otherwise identical to new_group_bigop with the
-    type already chosen, and each carries the same argument checks.
-
-LEAVES AND STRUCTURE
-new_num(ns: ast.ns, m: number, n: number, sign: number) -> node
-    A RATIONAL, not a float: numerator, denominator and sign kept
-    apart, so a third stays a third. The sign lives on the number.
-num_text(node: node)                    -> text
-new_var(ns: ast.ns, name: string)       -> node   the declaration
-new_vref(ns: ast.ns, ref: node)         -> node   a USE of one
-new_call(ns: ast.ns, fn: node | key, ...: node)  -> node
-    `fn` may be a STRING - a declaration's key, when it lives in
-    another box's namespace. The arguments must be nodes.
-new_vec(ns: ast.ns, ...: node)                  -> node
-new_cell(ns: ast.ns, expr: node)                -> node
-new_mat(ns: ast.ns, rows: number, cols: number, ...: node) -> node
-new_null(ns: ast.ns)                            -> node
-
-TEXT
-to_string(ns: ast.ns, node: node)       -> text
-to_string_lines(ns: ast.ns, node: node, depth: number, out: {string}) -> {text, ...}
-from_string(ns: ast.ns, s: string)      -> node | nil
-    A pair: what to_string writes, from_string reads back. Ids are in
-    it, so it cannot compare two trees across namespaces.
-shape(ns: ast.ns, node: node)           -> text
-    THE COMPARISON KEY, id-free, for asking whether two trees in
-    different namespaces are the same expression.
-type_name(node_type: ast type)          -> text | nil
-
---- internal ---------------------------------------------------------------------------------------
-    new_ns()       THE ONE creator for a namespace - see it for the `ns` shape
-    new()          THE ONE creator for a node - see it for the `node` shape
-    new_bigop, and the type/symbol tables
-@date 2026-09-12 03:05
-================================================================================================= ]]
+-- |
+-- | NAMESPACES AND NODES
+-- | new_ns()                                -> ns
+-- | node_of(ns: ast.ns, id: id)             -> node | nil
+-- |     THE ONLY WAY TO READ A NAMESPACE - `by_id` is the storage, this is
+-- |     the lookup, and it CHECKS what it found. A miss is nil; an entry
+-- |     that is not a node raises.
+-- | check_ns(ns: ast.ns)                    -> ns
+-- | check_node(node: node, what: string)    -> node
+-- |     Assert a namespace or a node, for a function in another file that
+-- |     takes one - the shapes are declared here and are local to here.
+-- | ns_insert_object(ns: ast.ns, id: id, obj: node) -> nothing
+-- | new(ns: ast.ns, type: ast type, id: id | nil)   -> node
+-- |     A namespace owns ids; every node is minted into one and answers to
+-- |     `ns.by_id[id]`. The id IS the name (phase2 section 10), so two
+-- |     nodes may never share one.
+-- |
+-- | copy(ns: ast.ns, node: node, new_ns: ast.ns, keep_vars: boolean) -> node
+-- | copy_fresh(ns: ast.ns, node: node)      -> node
+-- |     The same tree somewhere else, versus a second tree that looks the
+-- |     same. copy_fresh mints new ids in the SAME namespace - what a
+-- |     transformation needs when a subtree lands in two places.
+-- | ns_import_ast(dst_ns: ast.ns, src_ns: ast.ns, node: node) -> NOT IMPLEMENTED
+-- |     A stub with an empty body since it was written. It RAISES; it does
+-- |     not return a node. See the TODO on it for what is undecided.
+-- |
+-- | parent_map(root: node)                  -> {child id -> parent node}
+-- |     Computed per call and thrown away; never stored on a node, because
+-- |     a tree is shared and two trees would disagree about the parent.
+-- |
+-- | RELATIONS
+-- | new_eq(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_ineq_less(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_ineq_leq(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_ineq_neq(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_ineq_greater(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_ineq_geq(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_tends(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_implies(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_iff(ns: ast.ns, expr1: node, expr2: node) -> node
+-- |     Each is two operands and nothing else. Both are CHECKED to be nodes.
+-- |
+-- | SET RELATIONS
+-- | new_in(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_ni(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_subset(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_subseteq(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_supset(ns: ast.ns, expr1: node, expr2: node) -> node
+-- | new_supseteq(ns: ast.ns, expr1: node, expr2: node) -> node
+-- |     The same shape; membership and containment, both directions.
+-- |
+-- | ARITHMETIC
+-- | new_add(ns: ast.ns, ...: node)          -> node
+-- | new_mul(ns: ast.ns, ...: node)          -> node
+-- |     N-ary and order-preserving: `a+b+c` is ONE node with three
+-- |     children, and multiplication is not assumed commutative. EVERY
+-- |     operand is checked, which is where a stray nil would otherwise go
+-- |     unnoticed - nothing downstream reads the arity back.
+-- | new_div(ns: ast.ns, expr1: node, expr2: node)   -> node
+-- | new_exp(ns: ast.ns, base: node, exponent: node) -> node
+-- | new_int(ns: ast.ns, name: string, sup: node, sub: node, body: node) -> node
+-- | new_group_bigop(ns: ast.ns, node_type: ast type, vars: {name}, sups: {node}, subs: {node},
+-- |                 body: node)             -> node
+-- |     The explicit form. `vars` is a list of NAMES, not nodes.
+-- |
+-- | new_sum / new_prod / new_union / new_intersect / new_lim / new_limsup / new_liminf / new_min /
+-- | new_max / new_sup / new_inf / new_argmin / new_argmax
+-- |     (ns: ast.ns, vars: {name}, sups: {node}, subs: {node}, body: node) -> node
+-- |     GENERATED, one per row of GROUP_BIGOP_SYMBOL, in a loop rather than
+-- |     typed out - so there is no `function ast.new_sum(...)` line
+-- |     anywhere. They are otherwise identical to new_group_bigop with the
+-- |     type already chosen, and each carries the same argument checks.
+-- |
+-- | LEAVES AND STRUCTURE
+-- | new_num(ns: ast.ns, m: number, n: number, sign: number) -> node
+-- |     A RATIONAL, not a float: numerator, denominator and sign kept
+-- |     apart, so a third stays a third. The sign lives on the number.
+-- | num_text(node: node)                    -> text
+-- | new_var(ns: ast.ns, name: string)       -> node   the declaration
+-- | new_vref(ns: ast.ns, ref: node | id)    -> node   a USE of one
+-- | new_call(ns: ast.ns, fn: node | key, ...: node)  -> node
+-- |     `fn` may be a STRING - a declaration's key, when it lives in
+-- |     another box's namespace. The arguments must be nodes.
+-- | new_vec(ns: ast.ns, ...: node)                  -> node
+-- | new_cell(ns: ast.ns, expr: node)                -> node
+-- | new_mat(ns: ast.ns, rows: number, cols: number, ...: node) -> node
+-- | new_null(ns: ast.ns)                            -> node
+-- |
+-- | TEXT
+-- | to_string(ns: ast.ns, node: node)       -> text
+-- | to_string_lines(ns: ast.ns, node: node, depth: number, out: {line}) -> {line, ...}
+-- | from_string(ns: ast.ns, s: string)      -> node | value | nil
+-- |     A pair: what to_string writes, from_string reads back - and RAISES
+-- |     on text it cannot read. Ids are in it, so it cannot compare two
+-- |     trees across namespaces.
+-- | shape(ns: ast.ns, node: node)           -> text
+-- |     THE COMPARISON KEY, id-free, for asking whether two trees in
+-- |     different namespaces are the same expression.
+-- | type_name(node_type: ast type)          -> text | nil
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     new_ns()       THE ONE creator for a namespace - see it for the `ns` shape
+-- |     new()          THE ONE creator for a node - see it for the `node` shape
+-- |     new_bigop, and the type/symbol tables
+-- |
+-- | @date 2026-09-13 21:30
+-- | ===============================================================================================
+--]]
 
 --[[
 ast.lua - THE MEANING TREE: what a formula IS, as opposed to how it is drawn or typed.
@@ -308,27 +311,37 @@ local NODE_FIELDS = {
 }
 local NODE_SHAPE = sealed.declare("ast", "node", NODE_FIELDS, {array = true})
 
---[[ THE `ns` CONTAINER - a namespace, and THE ONE CREATOR for it.
-
-Core: ids are the real names in this model (docs/phase2_design.md section 10), and a namespace is
-what hands them out and what resolves them. Every node belongs to exactly one.
-
-Its fields:
-    by_id    {id -> node}, the resolution table. `ns.by_id[some_id]` is how a gesture's stored id
-             becomes a node again, which is why an option may carry ids instead of a tree.
-    last_id  the next id to hand out. Kept PAST anything inserted, including ids read back from a
-             file, so a loaded document can never be given an id it is already using.
-
-SEALED, like every other container here. What is INSIDE `by_id` is an ordinary table - the seal
-names the namespace's own two fields and says nothing about the ids it holds, which are unbounded by
-definition.
-@date 2026-09-12 05:10 ]]
+--[[ @brief A fresh, empty namespace. THE ONE CREATOR of the `ns` container.
+-- |
+-- | IDS ARE THE REAL NAMES in this model (docs/phase2_design.md section 10), and a namespace is
+-- | what hands them out and resolves them. Every node belongs to exactly one.
+-- |
+-- | @details Sealed, with two fields: `by_id` {id -> node}, read only through node_of; and
+-- |          `last_id`, the next id to hand out, kept PAST anything inserted - ids read back from a
+-- |          file included - so a loaded document is never given an id it already uses. What is
+-- |          inside `by_id` is an ordinary table.
+-- |
+-- | @return ast.ns - empty, handing out 1 first
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_ns()
     return NS_SHAPE.wrap{ by_id = {}, last_id = 1 }
 end
 
---[[ Registers `obj` under `id`, keeping the namespace's next id past it - so an id read back from
-a file cannot later be handed out a second time. @date 2026-09-08 09:10 ]]
+--[[ @brief Registers a node under `id`, keeping the namespace's next id past it.
+-- |
+-- | SO AN ID READ BACK FROM A FILE cannot later be handed out a second time.
+-- |
+-- | @param ns   ast.ns - checked
+-- | @param id   id - the integer to register under
+-- | @param obj  node - checked
+-- |
+-- | @note Overwrites whatever `id` held; ast.new checks for a collision before calling this, and
+-- |       ast.copy does not.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.ns_insert_object(ns, id, obj)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(obj, "obj")
@@ -339,19 +352,21 @@ function ast.ns_insert_object(ns, id, obj)
 end
 
 
---[[ The node an id names in `ns`, or nil.
-
-THE ONLY WAY TO READ A NAMESPACE. `by_id` is the storage; this is the lookup, and the difference is
-that the lookup CHECKS what it found. Before this existed every caller wrote `ns.by_id[id]` and was
-individually responsible for remembering that the result is indexed as a node - and most of them did
-not remember, which is how ast.shape came to read `var[1]` off whatever happened to be in the table.
-Author, 2026-09-12: "instead of a public array... this way we are sure of what it is".
-
-A MISS IS ORDINARY and comes back nil: an id from another namespace, or from a parse that has since
-been thrown away, answers to nothing here. What is NOT ordinary is an entry that is not a node, and
-that raises - the table is only ever written by ns_insert_object, so anything else in it means
-something wrote past the front door.
-@date 2026-09-12 12:15 ]]
+--[[ @brief The node an id names in `ns`, or nil.
+-- |
+-- | THE ONLY WAY TO READ A NAMESPACE. `by_id` is the storage; this is the lookup, and it CHECKS
+-- | what it found. Before it existed every caller wrote `ns.by_id[id]` and had to remember the
+-- | result is indexed as a node - which is how ast.shape came to read `var[1]` off whatever was
+-- | there. Author, 2026-09-12: "instead of a public array... this way we are sure of what it is".
+-- |
+-- | @param ns  ast.ns - checked
+-- | @param id  id
+-- | @return node | nil - nil for a MISS, which is ordinary: an id from another namespace, or from a
+-- |         parse since thrown away
+-- | @throws when the entry is not a node - something wrote past ns_insert_object
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.node_of(ns, id)
     NS_SHAPE.check(ns)
     local node = ns.by_id[id]
@@ -361,47 +376,58 @@ function ast.node_of(ns, id)
     return NODE_SHAPE.check(node, "the node id " .. tostring(id) .. " names")
 end
 
---[[ Asserts that this is a namespace / an ast node, for a function elsewhere that takes one.
-
-Published because both shapes are declared HERE while plenty of callers live in other files, and
-NS_SHAPE / NODE_SHAPE are local to this one. Each returns its argument, so it can stand as the first
-line of a function. @date 2026-09-12 11:55 ]]
+--[[ @brief Asserts that `ns` is a namespace, for a function elsewhere that takes one.
+-- |
+-- | PUBLISHED because the shapes are declared HERE while plenty of callers live in other files, and
+-- | NS_SHAPE / NODE_SHAPE are local to this one.
+-- |
+-- | @param ns  any
+-- | @return ast.ns - `ns`, so the call can stand as a function's first line
+-- | @throws naming the type that arrived
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.check_ns(ns)
     return NS_SHAPE.check(ns, "ns")
 end
 
---[[ Asserts an ast node. `what` names the argument in the message, so the error points at the
-caller's parameter rather than at this line. @date 2026-09-12 11:55 ]]
+--[[ @brief Asserts that `node` is an ast node, for a function elsewhere that takes one.
+-- |
+-- | @param node  any
+-- | @param what  string | nil - the parameter's name in the message; "node" when nil
+-- | @return node - `node`
+-- | @throws naming the type that arrived, and the parameter
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.check_node(node, what)
     return NODE_SHAPE.check(node, what or "node")
 end
 
---[[ THE `node` CONTAINER - one ast node, and THE ONE CREATOR for it. Every constructor below goes
-through here, which is what makes "has an id" true of every node rather than of most of them.
-
-A node is a table with two named fields and an ARRAY PART:
-    type     one of the ast.* constants; ast.type_name() reads it back
-    id       its name in `ns`, unique and never reused
-    [1..n]   the children, in meaning order - the operands of an ADD, the base and exponent of an
-             EXP, the numerator and denominator of a DIV. A leaf's array part holds its VALUE
-             instead: NUM is {m, n, sign}, VAR is {name}, VREF is {referenced id}.
-
-THE ARRAY PART IS WHY THIS IS NOT SEALED. A seal names its fields; children are positional and
-unbounded, so there is nothing to enumerate. What protects a node instead is that `type` decides
-what its array part means, and only the constructors below set both together.
-
-`id` IS OPTIONAL AND IS THE DESERIALIZER'S DOOR. Without it the namespace hands out the next free
-id. With it the node takes the id it is given - which a reader needs, because the ids in a saved
-tree are what its references point at, and a node that gets a fresh one has lost every reference to
-it.
-
-WHY IT IS A PARAMETER RATHER THAN A CORRECTION AFTERWARDS, which is what from_string used to do:
-allocating an id, registering it, then overwriting it left the node in `by_id` TWICE, under a
-phantom id nobody would ever look up - and made the collision check fire on the node's own
-registration. That broke every tree of more than one node, since reading id `n` pushed `last_id` to
-`n+1`, the next node allocated `n+1`, and applying ITS id found `n+1` taken. Nothing can go wrong
-here that did not go wrong there, because the id is decided before anything is registered.
-@date 2026-09-10 07:40 ]]
+--[[ @brief A node of `type`, registered in `ns`. THE ONE CREATOR of the `node` container.
+-- |
+-- | EVERY CONSTRUCTOR GOES THROUGH HERE, which is what makes "has an id" true of every node rather
+-- | than of most. A node has two named fields - `type`, `id` - and an ARRAY PART: the children in
+-- | meaning order, or a leaf's VALUE (NUM {m, n, sign}, VAR {name}, VREF {referenced id}).
+-- |
+-- | SEALED IN ARRAY MODE: integer keys pass untouched, and any string key but `type` and `id` is
+-- | refused. `type` decides what the array part means; only the constructors set both together.
+-- |
+-- | `id` IS THE DESERIALIZER'S DOOR. Without it the namespace hands out the next free id; with it
+-- | the node takes the id it is given, because the ids in a saved tree are what its references
+-- | point at. The id is decided before anything is registered.
+-- |
+-- | @param ns    ast.ns - checked
+-- | @param type  ast type - one of the ast.* constants; not checked
+-- | @param id    id | nil - a specific id to take
+-- | @return node - sealed, registered, with an empty array part for the caller to fill
+-- | @throws when `id` is given and already taken in `ns`
+-- |
+-- | @note Correcting the id afterwards, as from_string once did, registered each node twice and
+-- |       made every tree of more than one node unreadable.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new(ns, type, id)
     NS_SHAPE.check(ns)
     --[[ SEALED BEFORE IT IS REGISTERED, not after: ns_insert_object checks that what it is handed
@@ -421,15 +447,25 @@ function ast.new(ns, type, id)
     return ret
 end
 
---[[ Create a copy of an ast, populating a namespace with the right references
-(namespace presumed empty at the root of the copy call)
-
-* ns - the old namespace
-* node - the node to duplicate
-* new_ns - the new namespace in which to create the new tree
-* keep_vars - this dictates if the vars inside the expression reference the
-             same vars as before
-@date 2026-09-08 08:55 ]]
+--[[ @brief The same tree in another namespace, under the SAME ids.
+-- |
+-- | THE SAME TREE SOMEWHERE ELSE - copy_fresh is the other half, a second tree that looks the same.
+-- | Ids are kept, so `new_ns` is presumed empty of them at the root of the call.
+-- |
+-- | @param ns         ast.ns - checked; where `node` lives
+-- | @param node       node - checked; the tree to copy
+-- | @param new_ns     ast.ns - checked here rather than inside ast.new, so the error names this
+-- |                   argument
+-- | @param keep_vars  boolean - true registers each referenced VAR in `new_ns` under its own id, so
+-- |                   the copy's references still resolve
+-- | @return node - the copy's root, sealed
+-- | @throws for a reference when `keep_vars` is false: creating new variables in the new namespace
+-- |         is not written yet
+-- |
+-- | @note Nothing calls this today. Existing entries in `new_ns` are overwritten without a check.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.copy(ns, node, new_ns, keep_vars)
     NS_SHAPE.check(ns)
     --[[ The DESTINATION is checked here too, not left to the inner ast.new: caught there, the
@@ -463,21 +499,22 @@ function ast.copy(ns, node, new_ns, keep_vars)
     return ret
 end
 
---[[ A deep copy of `node` with FRESH ids, in the SAME namespace.
-
-THE OTHER HALF OF ast.copy ABOVE, and here rather than in whichever file happened to need it first:
-one is "the same tree somewhere else", the other is "a second tree that looks the same". Keeping
-them apart is what stops a caller reaching for the wrong one, and keeping them adjacent is what
-makes the difference visible.
-
-WHEN YOU NEED THIS ONE: whenever a transformation puts a subtree in two places. `a(b+c)` distributed
-leaves `a` twice, and two nodes cannot answer to one id - the id is the real name (phase2 section
-10). ast.copy preserves ids, so using it here would produce exactly that collision.
-
-VREFs ARE COPIED AS REFERENCES, never followed: a reference names a variable by id, and a second
-reference to the same variable is a new node pointing at the same VAR - not a second variable. Which
-is why duplicating a factor costs nothing to reason about.
-@date 2026-09-11 21:00 ]]
+--[[ @brief A deep copy of `node` with FRESH ids, in the SAME namespace.
+-- |
+-- | FOR A SUBTREE THAT LANDS IN TWO PLACES. `a(b+c)` distributed leaves `a` twice, and two nodes
+-- | cannot answer to one id - the id is the real name (phase2 section 10). ast.copy keeps ids, so
+-- | it would produce exactly that collision.
+-- |
+-- | VREFs ARE COPIED AS REFERENCES, never followed: a second reference to one variable is a new
+-- | node pointing at the same VAR, not a second variable.
+-- |
+-- | @param ns    ast.ns - checked; the copy is minted here
+-- | @param node  node | value - a node is checked; a scalar comes back as itself, which is how the
+-- |              recursion reaches a leaf's value
+-- | @return node | value
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.copy_fresh(ns, node)
     NS_SHAPE.check(ns)
     -- A value or a node; see ast.to_string for why a scalar here is the base case, not an error.
@@ -494,17 +531,21 @@ function ast.copy_fresh(ns, node)
     return ret
 end
 
---[[ child id -> parent node, for one tree.
-
-COMPUTED PER CALL AND THROWN AWAY, never stored on the nodes. A tree is shared - a transformation's
-result keeps most of its source's nodes, which is what makes the mexpr repair small - so hanging a
-`.parent` on a node would write into something somebody else is holding, and the two trees would
-disagree about who the parent is.
-
-Here rather than in either caller because both the gesture resolver (climbing to the enclosing sum)
-and the transformations (rebuilding the path to the root) need exactly this, and had written it
-twice.
-@date 2026-09-11 21:00 ]]
+--[[ @brief child id -> parent node, for one tree.
+-- |
+-- | COMPUTED PER CALL AND THROWN AWAY, never stored on the nodes. A tree is shared - a
+-- | transformation's result keeps most of its source's nodes - so a `.parent` on a node would write
+-- | into something somebody else holds, and the two trees would disagree about the parent.
+-- |
+-- | @param root  node - checked; the root has no entry
+-- | @return {[id] = node} - a fresh plain table
+-- |
+-- | @note A node reachable twice under one root would be mapped to whichever parent was walked
+-- |       last. Trees here never share a node within one root, which copy_fresh exists to
+-- |       guarantee.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.parent_map(root)
     NODE_SHAPE.check(root, "root")
     local parents = {}
@@ -521,7 +562,17 @@ function ast.parent_map(root)
     return parents
 end
 
---[[ TODO: figure out if this makes sens, if this is not copy with extra rules, etc. @date 2026-09-08 08:55 ]]
+--[[ @brief NOT IMPLEMENTED: importing a tree from one namespace into another. It raises.
+-- |
+-- | @param dst_ns  ast.ns - checked
+-- | @param src_ns  ast.ns - checked
+-- | @param node    node - not reached
+-- | @throws always, "not implemented"
+-- |
+-- | @note TODO: figure out if this makes sens, if this is not copy with extra rules, etc.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.ns_import_ast(dst_ns, src_ns, node)
     NS_SHAPE.check(dst_ns)
     NS_SHAPE.check(src_ns, "src_ns")
@@ -533,9 +584,15 @@ function ast.ns_import_ast(dst_ns, src_ns, node)
     error("ast.ns_import_ast is not implemented - see its comment", 2)
 end
 
---[[ The RELATION constructors - equality, then the five inequalities. Each takes two expressions
-already in `ns` and returns the node joining them; they differ only in the type tag, which is what
-tells them apart downstream. @date 2026-09-08 09:10 ]]
+--[[ @brief `expr1 = expr2`.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an EQ node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_eq(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -547,7 +604,15 @@ function ast.new_eq(ns, expr1, expr2)
 end
 
 -- Inequality operators
---[[ `a < b`. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 < expr2`.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an INEQ_LESS node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_ineq_less(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -558,7 +623,15 @@ function ast.new_ineq_less(ns, expr1, expr2)
     return ret
 end
 
---[[ `a <= b`. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 <= expr2`.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an INEQ_LEQ node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_ineq_leq(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -569,7 +642,15 @@ function ast.new_ineq_leq(ns, expr1, expr2)
     return ret
 end
 
---[[ `a != b`. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 != expr2`.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an INEQ_NEQ node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_ineq_neq(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -580,7 +661,15 @@ function ast.new_ineq_neq(ns, expr1, expr2)
     return ret
 end
 
---[[ `a > b`. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 > expr2`.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an INEQ_GREATER node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_ineq_greater(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -591,7 +680,15 @@ function ast.new_ineq_greater(ns, expr1, expr2)
     return ret
 end
 
---[[ `a >= b`. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 >= expr2`.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an INEQ_GEQ node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_ineq_geq(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -602,19 +699,15 @@ function ast.new_ineq_geq(ns, expr1, expr2)
     return ret
 end
 
---[[ Membership and inclusion - general purpose relations, same shape as EQ, not carved out as
-bigop-only. Added 2026-09-10 alongside "Bigop scoping" (docs/phase2_design.md), where a bigop's
-sub/sup constraints are built as ordinary relation nodes through this same door.
-
-THE FULL FAMILY, six glyphs, six node types: `\in`/`\ni` (membership, forward and backward),
-`\subset`/`\subseteq` (proper and non-strict subset), `\supset`/`\supseteq` (proper and non-strict
-superset). `\ni` and the `\sup*` pair are each the exact mirror of an existing one - `a \ni b` means
-precisely `b \in a` - but get their own constructors regardless: operands stay in the WRITTEN order,
-never silently swapped, matching how `<`/`>` are already two types rather than one reused with
-operands flipped. Whether `\subseteq` reaches the row as a single keystroke or as a digraph
-(`\subset` then `=`) is an input-method fact this layer never sees either way - by the time a row
-holds it, it is one real glyph like any other. ]]
---[[ `expr1 \to expr2` - "expr1 tends to expr2". @date 2026-09-11 10:20 ]]
+--[[ @brief `expr1 \to expr2` - expr1 tends to expr2.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an TENDS node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_tends(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -625,7 +718,15 @@ function ast.new_tends(ns, expr1, expr2)
     return ret
 end
 
---[[ `expr1 \\Rightarrow expr2` - expr1 implies expr2. @date 2026-09-11 16:00 ]]
+--[[ @brief `expr1 \Rightarrow expr2` - expr1 implies expr2.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an IMPLIES node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_implies(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -636,7 +737,15 @@ function ast.new_implies(ns, expr1, expr2)
     return ret
 end
 
---[[ `expr1 \\Leftrightarrow expr2` - expr1 holds exactly when expr2 does. @date 2026-09-11 16:00 ]]
+--[[ @brief `expr1 \Leftrightarrow expr2` - each holds exactly when the other does.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an IFF node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_iff(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -647,7 +756,19 @@ function ast.new_iff(ns, expr1, expr2)
     return ret
 end
 
---[[ `a \in b` - a is a member of b. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 \in expr2` - expr1 is a member of expr2.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an IN node, operands in the written order
+-- |
+-- | @note Membership and inclusion are general relations with EQ's shape, not bigop-only: a bigop's
+-- |       sub/sup constraints are built through these same constructors (docs/phase2_design.md,
+-- |       "Bigop scoping").
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_in(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -658,7 +779,18 @@ function ast.new_in(ns, expr1, expr2)
     return ret
 end
 
---[[ `a \ni b` - a contains b as a member, the mirror of new_in. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 \ni expr2` - expr1 has expr2 as a member.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an NI node, operands in the written order
+-- |
+-- | @note The mirror of new_in, and a type of its own: operands stay in the WRITTEN
+-- |       order and are never swapped, the way `<` and `>` are two types.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_ni(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -669,7 +801,15 @@ function ast.new_ni(ns, expr1, expr2)
     return ret
 end
 
---[[ `a \subset b`, strict. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 \subset expr2`, strict.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an SUBSET node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_subset(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -680,7 +820,15 @@ function ast.new_subset(ns, expr1, expr2)
     return ret
 end
 
---[[ `a \subseteq b`. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 \subseteq expr2`.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an SUBSETEQ node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_subseteq(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -691,7 +839,17 @@ function ast.new_subseteq(ns, expr1, expr2)
     return ret
 end
 
---[[ `a \supset b`, strict. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 \supset expr2`, strict.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an SUPSET node, operands in the written order
+-- |
+-- | @note The mirror of new_subset, kept as its own type for the reason new_ni is.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_supset(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -702,7 +860,17 @@ function ast.new_supset(ns, expr1, expr2)
     return ret
 end
 
---[[ `a \supseteq b`. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 \supseteq expr2`.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an SUPSETEQ node, operands in the written order
+-- |
+-- | @note The mirror of new_subseteq, kept as its own type for the reason new_ni is.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_supseteq(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -714,11 +882,19 @@ function ast.new_supseteq(ns, expr1, expr2)
 end
 
 -- Arithmetic operators
---[[ A sum of any number of terms, in the order given.
-
-VARIADIC because a sum is n-ary here rather than a tree of binary adds: `a+b+c` is ONE node with
-three children, which is what lets a gesture on any `+` name the whole sum.
-@date 2026-09-12 03:05 ]]
+--[[ @brief A sum of any number of terms, in the order given.
+-- |
+-- | N-ARY, not a tree of binary adds: `a+b+c` is ONE node with three children, which is what lets a
+-- | gesture on any `+` name the whole sum. A subtraction is a term whose sign is a factor: `a-b` is
+-- | ADD(a, MUL(NUM(-1), b)).
+-- |
+-- | @param ns   ast.ns - checked
+-- | @param ...  node - every term checked, since a variadic constructor is where a stray nil slips
+-- |        in
+-- | @return node - an ADD node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_add(ns, ...)
     NS_SHAPE.check(ns)
     --[[ EVERY operand, not just the first: a variadic constructor is where a stray nil or a raw
@@ -733,11 +909,17 @@ function ast.new_add(ns, ...)
     return ret
 end
 
---[[ A product of any number of factors, in the order given.
-
-VARIADIC for the same reason new_add is, and ORDER IS KEPT: multiplication is not assumed
-commutative here - vectors have products, and a cross product does not commute.
-@date 2026-09-12 03:05 ]]
+--[[ @brief A product of any number of factors, in the order given.
+-- |
+-- | N-ARY for the reason new_add is, and ORDER IS KEPT: multiplication is not assumed commutative -
+-- | vectors have products, and a cross product does not commute.
+-- |
+-- | @param ns   ast.ns - checked
+-- | @param ...  node - every factor checked
+-- | @return node - a MUL node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_mul(ns, ...)
     NS_SHAPE.check(ns)
     --[[ EVERY operand, not just the first: a variadic constructor is where a stray nil or a raw
@@ -752,7 +934,15 @@ function ast.new_mul(ns, ...)
     return ret
 end
 
---[[ `a / b`, as a node - the fraction bar, not a computed value. @date 2026-09-12 03:05 ]]
+--[[ @brief `expr1 / expr2`, as a node - the fraction bar, not a computed value.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param expr1  node - checked; the left operand
+-- | @param expr2  node - checked; the right operand
+-- | @return node - an DIV node, operands in the written order
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_div(ns, expr1, expr2)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr1, "expr1")
@@ -932,10 +1122,31 @@ local function new_bigop(ns, node_type, name, sup, sub, body)
     return ret
 end
 
---[[ An integral, as a big operator: `name` is the glyph, `sup`/`sub` the limits, `body` the
-integrand. Shares new_bigop with the sum and product forms,
-        so all of them carry limits the same way.
-@date 2026-09-12 03:05 ]]
+--[[ @brief An integral over `name`: it DECLARES that variable and binds the body's free uses of it.
+-- |
+-- |     ast.new_int(ns, "x", one, zero, body)      -- body's free `x` now means this integral's `x`
+-- |
+-- | THE NAME COMES IN, NOT THE VARIABLE: the operator makes its own VAR, so no integral's slot 1
+-- | can belong to somebody else. Author, 2026-09-10: "bigop ops need to create a var, probably
+-- | reuse new_var, the idea is that in this way we will achieve our binding".
+-- |
+-- | THE BODY IS BUILT FIRST, which the integral requires: `\int_0^1 x dx` declares `x` AFTER the
+-- | body. Build the body with `x` free, then say who binds it - the catch repoints those
+-- | references.
+-- |
+-- | @details The only big operator still in the old shape, (var, sup, sub, body): its variable is
+-- |          written after the body, so its limits were never constraints to generalise. Sup comes
+-- |          before sub, as in every big operator.
+-- |
+-- | @param ns    ast.ns - checked
+-- | @param name  string - the variable's name, e.g. "x"
+-- | @param sup   node | nil - checked when given; the upper limit, NULL when absent
+-- | @param sub   node | nil - checked when given; the lower limit, NULL when absent
+-- | @param body  node - checked; the integrand
+-- | @return node - an INT node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_int(ns, name, sup, sub, body)
     NS_SHAPE.check(ns)
     assert(type(name) == "string", "a big operator's variable must be a name")
@@ -1007,10 +1218,26 @@ local function new_bigop_group(ns, node_type, vars, sups, subs, body)
     return ret
 end
 
---[[ Builds any group operator by TYPE - what a caller that read the operator out of a row has in
-hand, rather than one it picked at write time. mexpr_ast's reader uses this; the named constructors
-below are for callers that know which operator they mean.
-@date 2026-09-11 10:20 ]]
+--[[ @brief Any GROUP big operator - sum, product, lim and the rest - chosen by TYPE.
+-- |
+-- |     (op, n_vars, n_sup, n_sub, var1..varN, sup1..supM, sub1..subK, body)
+-- |
+-- | BY TYPE, because that is what a reader of a row has in hand; the generated new_sum, new_lim and
+-- | the rest are for callers that know which operator they mean.
+-- |
+-- | N NAMES BOUND AT ONCE, and every one is caught across each sup, each sub and the body - a later
+-- | constraint may use an earlier one's variable, as in `\sum_{i=0,j=i+1}`.
+-- |
+-- | @param ns         ast.ns - checked
+-- | @param node_type  ast type - must be a group operator
+-- | @param vars       {string} - NAMES, each checked; the operator makes its own VAR for each
+-- | @param sups       {node} - each checked; already-built constraints, e.g. `n` or `i < n`
+-- | @param subs       {node} - each checked; the side that spawns the variables, `i = 1`
+-- | @param body       node - checked
+-- | @return node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_group_bigop(ns, node_type, vars, sups, subs, body)
     NS_SHAPE.check(ns)
     assert(GROUP_BIGOPS[node_type], "not a group big operator")
@@ -1066,7 +1293,15 @@ for name in pairs(GROUP_BIGOP_SYMBOL) do
     end
 end
 
---[[ `base^exponent`. @date 2026-09-12 03:05 ]]
+--[[ @brief `base^exponent`.
+-- |
+-- | @param ns        ast.ns - checked
+-- | @param base      node - checked
+-- | @param exponent  node - checked; a root arrives here as a power of 1/n
+-- | @return node - an EXP node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_exp(ns, base, exponent)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(base, "base")
@@ -1077,25 +1312,27 @@ function ast.new_exp(ns, base, exponent)
     return ret
 end
 
---[[ What a NUM node IS, as text - the reading its three slots stand for.
-
-    (N, 3, 4, -1)   ->  -3/4
-    (N, 7, 1, 1)    ->  7
-    (N, 1, 0, 1)    ->  inf
-
-INFINITY IS A DENOMINATOR OF ZERO, which is why this has to exist rather than every viewer doing its
-own division. Author, 2026-09-11: "infty should also parse, it's a number like any other, give it a
-specific value in over 0 in denominator". So it needs no node type of its own, no special case in
-arithmetic that does not want one, and the SIGN gives it a direction for free - `-\infty` goes
-through build_product's ordinary negation and comes out (N, 1, 0, -1).
-
-`m/0` FOR ANY OTHER m IS NOT GLOSSED AS INFINITY. Nothing builds one today, and reading `0/0` back as
-"inf" would be this function inventing an answer to a question the AST has not been asked. It prints
-the raw pair instead, which is a thing a reader can go and look at.
-
-Used by both debug views, which is the whole point of it living here: F4 and F5 cannot disagree
-about what a number says.
-@date 2026-09-11 09:00 ]]
+--[[ @brief What a NUM node IS, as text - the reading its three slots stand for.
+-- |
+-- |     (N, 3, 4, -1)   ->  -3/4
+-- |     (N, 7, 1, 1)    ->  7
+-- |     (N, 1, 0, 1)    ->  inf
+-- |
+-- | INFINITY IS A DENOMINATOR OF ZERO. Author, 2026-09-11: "infty should also parse, it's a number
+-- | like any other, give it a specific value in over 0 in denominator". It needs no node type of
+-- | its own, and the SIGN gives it a direction for free.
+-- |
+-- | ONE READING FOR BOTH DEBUG VIEWS, which is why it lives here: F4 and F5 cannot disagree about
+-- | what a number says.
+-- |
+-- | @param node  node - checked; a NUM
+-- | @return string
+-- |
+-- | @note `m/0` for any other m is NOT glossed as infinity: nothing builds one, and reading `0/0`
+-- |       as "inf" would invent an answer. It prints the raw pair.
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.num_text(node)
     NODE_SHAPE.check(node, "node")
     local m, n, sign = node[1], node[2], node[3]
@@ -1109,16 +1346,23 @@ function ast.num_text(node)
     return s .. tostring(m) .. "/" .. tostring(n)
 end
 
--- Number: (N, m, n, sign) - rational/natural number m/n
---[[ A RATIONAL, as numerator, denominator and sign kept apart.
-
-NOT A FLOAT. `m`/`n` are integers and `sign` is 1 or -1, so a third is a third rather than
-0.333..., and two expressions that should be equal still are after arithmetic. The sign lives on the
-number rather than in a wrapper, which is why a `-` glyph in a row names the NUM it belongs to.
-
-Params: `n` defaults to 1 and `sign` to 1, so new_num(ns, 3) is the integer three. Both integers are
-asserted rather than coerced - a float here is a bug upstream, not something to round.
-@date 2026-09-12 03:05 ]]
+--[[ @brief A RATIONAL number, (N, m, n, sign): numerator, denominator and sign kept apart.
+-- |
+-- | NOT A FLOAT: a third is a third rather than 0.333..., and two expressions that should be equal
+-- | still are after arithmetic. The sign lives on the number rather than in a wrapper, which is why
+-- | a `-` glyph in a row names the NUM it belongs to.
+-- |
+-- | @details Not reduced. Negative m or n are normalised into `sign`, so m and n come out
+-- |          non-negative. n = 0 is infinity (see num_text).
+-- |
+-- | @param ns    ast.ns - checked
+-- | @param m     integer - asserted, not coerced: a float here is a bug upstream
+-- | @param n     integer | nil - asserted; defaults to 1
+-- | @param sign  1 | -1 | nil - defaults to 1
+-- | @return node - a NUM node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_num(ns, m, n, sign)
     NS_SHAPE.check(ns)
     n = n or 1
@@ -1149,12 +1393,19 @@ function ast.new_num(ns, m, n, sign)
     return ret
 end
 
--- Function call: (@, f, a1, a2, a3, ...)
---[[ Applying `fn` to arguments: `fn` is child 1 and the arguments follow it.
-
-THE FUNCTION IS A CHILD, not a name held beside the node, so what is being applied can itself be an
-expression and resolves through the same VREF machinery as any other use.
-@date 2026-09-12 03:05 ]]
+--[[ @brief Applying `fn` to arguments, (@, fn, a1, a2, ...).
+-- |
+-- | THE FUNCTION IS CHILD 1, not a name held beside the node, so what is applied can itself be an
+-- | expression.
+-- |
+-- | @param ns   ast.ns - checked
+-- | @param fn   node | string - NOT checked: a call to a name declared in another box carries that
+-- |             declaration's KEY, since the declaration lives in a different namespace
+-- | @param ...  node - every argument checked
+-- | @return node - a CALL node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_call(ns, fn, ...)
     NS_SHAPE.check(ns)
     --[[ `fn` IS NOT CHECKED, and that is not an omission: it may be a node OR a STRING. A call to a
@@ -1173,14 +1424,27 @@ function ast.new_call(ns, fn, ...)
     return ret
 end
 
--- Named variable: (#, name)
---[[ The absent operand - see ast.NULL. Carries nothing but its own id. @date 2026-09-11 06:30 ]]
+--[[ @brief The absent operand - an indefinite integral's missing limit. See ast.NULL.
+-- |
+-- | @param ns  ast.ns - checked
+-- | @return node - a NULL node, carrying nothing but its own id
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_null(ns)
     NS_SHAPE.check(ns)
     return ast.new(ns, ast.NULL)
 end
 
---[[ A VARIABLE, the declaration itself. A USE of it is a VREF - see new_vref. @date 2026-09-12 03:05 ]]
+--[[ @brief A VARIABLE, (#, name) - the declaration itself. A USE of it is a VREF; see new_vref.
+-- |
+-- | @param ns    ast.ns - checked
+-- | @param name  string - asserted; the node's entire content. Anything else makes a variable no
+-- |              reference can resolve against, failing much later at the use site
+-- | @return node - a VAR node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_var(ns, name)
     NS_SHAPE.check(ns)
     --[[ A STRING, and the node's entire content - a VAR is its name. Anything else here makes a
@@ -1192,8 +1456,14 @@ function ast.new_var(ns, name)
     return ret
 end
 
--- Vector: (V, a1, a2, ...)
---[[ A vector of the given components, in order. @date 2026-09-12 03:05 ]]
+--[[ @brief A vector of the given components, in order: (V, a1, a2, ...).
+-- |
+-- | @param ns   ast.ns - checked
+-- | @param ...  node - every component checked
+-- | @return node - a VEC node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_vec(ns, ...)
     NS_SHAPE.check(ns)
     --[[ EVERY operand, not just the first: a variadic constructor is where a stray nil or a raw
@@ -1208,12 +1478,20 @@ function ast.new_vec(ns, ...)
     return ret
 end
 
--- Matrix: (M, m, n, a1, ... a[m+n])
---[[ A matrix of `rows` by `cols`, filled from the elements given in row-major order.
-
-Fewer elements than rows*cols is allowed - a partly built matrix is a real state while one is being
-typed - but MORE is refused, since that can only mean the caller and the shape disagree.
-@date 2026-09-12 03:05 ]]
+--[[ @brief A matrix of `rows` by `cols`, (M, rows, cols, a1, ...), filled in row-major order.
+-- |
+-- | FEWER ELEMENTS THAN rows*cols IS ALLOWED - a matrix being typed is a real state - but MORE is
+-- | refused, since that can only mean the caller and the shape disagree.
+-- |
+-- | @param ns    ast.ns - checked
+-- | @param rows  integer - asserted positive
+-- | @param cols  integer - asserted positive
+-- | @param ...   node - every element checked
+-- | @return node - a MAT node
+-- | @throws for more than rows*cols elements
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_mat(ns, rows, cols, ...)
     NS_SHAPE.check(ns)
     --[[ THE SHAPE FIRST, because everything below is derived from it: a non-integer `rows` makes
@@ -1247,8 +1525,18 @@ function ast.new_mat(ns, rows, cols, ...)
     return ret
 end
 
--- Parentheses: (_, a1)
---[[ One cell of the proof DAG, wrapping the expression it states. @date 2026-09-12 03:05 ]]
+--[[ @brief Brackets the user wrote where precedence did not need them, (_, expr).
+-- |
+-- | KEPT BECAUSE THEY CARRY THE USER'S OWN GROUPING. Brackets precedence requires are absorbed into
+-- | the tree's shape instead - `a(b+c)` is MUL(a, ADD) with no CELL - so a CELL is always redundant
+-- | brackets, and transformations can arrange by them. mexpr_ast's maybe_cell decides which.
+-- |
+-- | @param ns    ast.ns - checked
+-- | @param expr  node - checked; what the brackets hold
+-- | @return node - a CELL node
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_cell(ns, expr)
     NS_SHAPE.check(ns)
     NODE_SHAPE.check(expr, "expr")
@@ -1257,17 +1545,20 @@ function ast.new_cell(ns, expr)
     return ret
 end
 
--- Variable reference: (&, ref_id)
--- ref can be either a number (id) or an AST node (whose id will be extracted)
---[[ A USE of a variable, by id.
-
-THE REFERENCE IS THE WHOLE NODE: it names a VAR and carries nothing else, so two uses of one
-variable are two nodes pointing at one declaration rather than two variables that happen to share a
-name. That is what makes duplicating a factor cheap - see ast.copy_fresh.
-
-Params: `ref` may be the id itself or the VAR node to take it from, because both are natural at a
-call site and neither is more correct.
-@date 2026-09-12 03:05 ]]
+--[[ @brief A USE of a variable, (&, var id).
+-- |
+-- | THE REFERENCE IS THE WHOLE NODE: it names a VAR and carries nothing else, so two uses of one
+-- | variable are two nodes pointing at one declaration, not two variables that share a name. That
+-- | is what makes duplicating a factor cheap - see copy_fresh.
+-- |
+-- | @param ns   ast.ns - checked
+-- | @param ref  id | node - the id itself, or a node to take `id` from. A node is NOT checked to be
+-- |             a VAR
+-- | @return node - a VREF node
+-- | @throws when `ref` is neither a number nor a table with an id
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.new_vref(ns, ref)
     NS_SHAPE.check(ns)
     local ref_id
@@ -1325,12 +1616,21 @@ for name, symbol in pairs(GROUP_BIGOP_SYMBOL) do
     type_to_symbol[ast[name]] = symbol
 end
 
---[[ A node as a single line of text, ids included.
-
-FOR READING, AND FOR from_string: the two are a pair, so what this writes must parse back. Ids are
-part of it, which is exactly why it cannot answer "are these two trees the same expression" across
-namespaces - ast.shape is that question.
-@date 2026-09-12 03:05 ]]
+--[[ @brief A node as one line of text, ids included: `(+, (&, 2:3), (N, 1, 1, 1:4):5)`.
+-- |
+-- | FOR READING, AND FOR from_string: the two are a pair, so what this writes must parse back. Ids
+-- | are part of it, which is exactly why it cannot answer "are these the same expression" across
+-- | namespaces - ast.shape is that question.
+-- |
+-- | @param ns    ast.ns - checked
+-- | @param node  node | number | string - a node is checked; a scalar is written as itself, which
+-- |        is
+-- |              how the recursion reaches a leaf's value
+-- | @return string
+-- | @throws for anything else, e.g. a boolean
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.to_string(ns, node)
     NS_SHAPE.check(ns)
     --[[ A VALUE **OR** A NODE. Numbers and strings are not errors here: they are the base case, and
@@ -1357,51 +1657,38 @@ function ast.to_string(ns, node)
 end
 
 
---[[ The same serialization as to_string, split one NODE per line, with its depth.
-
-    (=:9)
-      (@, F(),(1):5)
-        (N, 0, 1, 1:4)
-      (&, 2:7)          ref: x
-
-Each line is exactly what to_string would have written for that node with its child NODES lifted
-out - so a leaf's line is byte-identical to its to_string text, and a compound's line is its head,
-its scalar operands and its id. Reading them back in order and re-nesting by depth reconstructs the
-string to_string produces.
-
-WHY IT LIVES HERE rather than in the overlay that draws it: it has to agree with to_string, and two
-functions that must agree are kept next to each other so a change to the tuple shape is made in both
-or in neither. The F5 view is a debug instrument, but the format it shows is this file's.
-
-EVERY LINE COMES BACK AS COLOURED PIECES, `parts`, alongside the plain `text` they concatenate to.
-A reader that only wants the text ignores them; the F5 overlay paints them. The ROLES:
-
-    "op_sym"    an operator's symbol - the ^, +, *, =, I, S   - RED
-    "bind_sym"  the # of a declaration, the & of a reference  - BLUE
-    "var_name"  the name a declaration declares               - GREEN
-    "ref_name"  the name a reference resolves to              - GREEN
-    "num_value" what a number cell actually is                - YELLOW
-
-Asked for 2026-09-11: "var creations are going to have the # blue and the k inside also colored in
-green", then "I want ^, +, *, those things in red", then "and & should also be blue", then "also in
-yellow write the number next to the number cell".
-
-THE YELLOW IS A READING, NOT A FIELD. A number is stored as three slots - `(N, 3, 4, -1)` is
-numerator, denominator and sign - which is the right shape to compute with and an awful one to read.
-The value beside it says what those three mean, exactly as a reference's green name says what its id
-points at: the tuple stays authoritative and the gloss sits alongside.
-
-WHAT THE SPLIT IS ACTUALLY FOR - the two blues against the reds. Everything painted blue or green
-names a VARIABLE: `#` makes one, `&` points at one, and the greens say which. Everything red is an
-OPERATION on whatever those produce. So the colour separates a tree's naming from its arithmetic at
-a glance, which is the question F5 is opened to answer. The identificators are left alone: they are
-on every line and colouring them would drown the two nodes that matter.
-
-WHY THE SPLIT LIVES HERE and not in the overlay: the pieces have to agree with to_string, and two
-functions that must agree are kept next to each other so a change to the tuple shape is made in both
-or in neither. The colours are the F5 view's business; knowing which SPAN is a symbol is this
-file's.
-@date 2026-09-11 05:30 ]]
+--[[ @brief The same serialization as to_string, one NODE per line with its depth - the F5 view.
+-- |
+-- |     (=:9)
+-- |       (@, F(),(1):5)
+-- |         (N, 0, 1, 1:4)  1
+-- |       (&, 2:7)  x
+-- |
+-- | EACH LINE IS WHAT to_string WOULD WRITE for that node with its child NODES lifted out: head,
+-- | scalar operands, id. It lives here, beside to_string, because the two must agree - a change to
+-- | the tuple shape is made in both or in neither.
+-- |
+-- | EVERY LINE COMES BACK AS PIECES WITH ROLES, which the F5 overlay paints: "op_sym" an operator's
+-- | symbol, "bind_sym" the # of a declaration and the & of a reference, "var_name" a declared name,
+-- | "ref_name" the name a reference resolves to, "num_value" what a number cell reads as. Blue and
+-- | green name VARIABLES, red is an OPERATION on them - naming told from arithmetic at a glance.
+-- |
+-- | @details A reference's name and a number's reading are appended after the tuple as a gloss; the
+-- |          tuple stays authoritative.
+-- |
+-- | @param ns     ast.ns - checked
+-- | @param node   node | value - a node is checked; a scalar is its own one-line leaf
+-- | @param depth  integer | nil - this node's depth; 0 when nil
+-- | @param out    {line} | nil - appended to; a fresh list when nil
+-- | @return {{depth, text, parts}, ...} - `out`, in pre-order; `parts` are {text, role} pieces that
+-- |         concatenate to `text`
+-- |
+-- | @note Colours asked for 2026-09-11: "var creations are going to have the # blue and the k
+-- |       inside also colored in green", "I want ^, +, *, those things in red", "and & should also
+-- |       be blue", "also in yellow write the number next to the number cell".
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.to_string_lines(ns, node, depth, out)
     NS_SHAPE.check(ns)
     -- A value or a node; see ast.to_string for why a scalar here is the base case, not an error.
@@ -1477,26 +1764,36 @@ for key, value in pairs(ast) do
     end
 end
 
---[[ The readable name of a node type, or nil for an unknown one. @date 2026-09-12 03:05 ]]
+--[[ @brief The readable name of a node type - "ADD" - or nil for an unknown one.
+-- |
+-- | @details Built by reversing the constants out of `ast` itself, so there is no second
+-- |          vocabulary.
+-- |
+-- | @param node_type  ast type - a number
+-- | @return string | nil
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.type_name(node_type)
     return type_name[node_type]
 end
 
---[[ A canonical, ID-FREE rendering of a tree, for comparing one against another.
-
-WHY IDS CANNOT BE IN IT. The comparison anybody actually wants is between a tree and a tree BUILT
-FROM IT - a transformation's output against what its rebuilt mexpr parses back to. Those live in
-different namespaces and their ids cannot match by construction, so ast.to_string, which carries
-them, answers "different" for two trees that are the same expression. This answers the question that
-was meant.
-
-A VREF RENDERS AS ITS VARIABLE'S NAME, which is the whole reason `ns` is a parameter. A name is the
-identity of a variable (docs/phase2_design.md section 9); two namespaces agree about names exactly
-where they cannot agree about ids.
-
-NOT A SERIALIZATION: nothing reads this back. It is a comparison key, so it may be as verbose as it
-likes and must only be INJECTIVE enough that two different expressions never collide.
-@date 2026-09-12 02:00 ]]
+--[[ @brief A canonical, ID-FREE rendering of a tree, for comparing one tree against another.
+-- |
+-- | IDS CANNOT BE IN IT. The comparison wanted is between a tree and a tree BUILT FROM IT - a
+-- | transformation's output against what its rebuilt mexpr parses back to - which live in different
+-- | namespaces, where ids cannot match by construction.
+-- |
+-- | A VREF RENDERS AS ITS VARIABLE'S NAME, which is why `ns` is a parameter: two namespaces agree
+-- | about names exactly where they cannot agree about ids (docs/phase2_design.md section 9).
+-- |
+-- | @param ns    ast.ns - checked; the namespace `node`'s references resolve in
+-- | @param node  node | value - a node is checked
+-- | @return string - a comparison key, never read back. A reference nothing in `ns` answers to
+-- |         falls back to its raw id
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.shape(ns, node)
     NS_SHAPE.check(ns)
     -- A value or a node; see ast.to_string for why a scalar here is the base case, not an error.
@@ -1579,12 +1876,23 @@ local function split_args(s)
     return args
 end
 
---[[ The inverse of to_string: text back into a tree in `ns`.
-
-Whitespace is stripped first, so the format is positional rather than layout-sensitive. Returns nil
-when the text is not a tree this can read, which a caller must check - a malformed line is ordinary
-input here, not an exception.
-@date 2026-09-12 03:05 ]]
+--[[ @brief The inverse of to_string: text back into a tree in `ns`, under the ids it names.
+-- |
+-- | THE IDS IN THE TEXT ARE KEPT, because they are what its references point at. A tuple without an
+-- | id takes a fresh one.
+-- |
+-- | @details Whitespace is stripped first, so the format is positional, not layout-sensitive. A
+-- |          node with no operands, `(null:5)`, reads back.
+-- |
+-- | @param ns  ast.ns - checked; must not already hold the ids the text names
+-- | @param s   string
+-- | @return node | number | string | nil - a tree for a tuple; a bare number or word as itself; nil
+-- |         only for empty text
+-- | @throws for text it cannot read - an unknown symbol, unbalanced brackets - and for an id
+-- |         already taken in `ns`
+-- |
+-- | @date 2026-09-13 21:30
+--]]
 function ast.from_string(ns, s)
     NS_SHAPE.check(ns)
     -- Remove all whitespace for simpler parsing

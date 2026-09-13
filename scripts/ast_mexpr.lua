@@ -1,34 +1,37 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-origins(root: node)                     -> {ast id -> mexpr node}
-var_origins(ns: ast.ns, origins: {ast id -> mexpr node}) -> {VAR id -> mexpr node}
-    Where each ast node's ink IS, read off the tags the parse left.
-    var_origins answers the looser question - any drawing of a use of
-    this variable - which is what lets a duplicated factor be copied
-    from a reference the source only wrote once.
-
-build(fontset: fontset, source_root, ns: ast.ns, node: node, sz: size) -> mexpr row | nil, reason
-container(fontset: fontset, source_root, ns: ast.ns, node: node, sz: size)
-          -> container | nil, reason
-    An ast tree written back out as glyphs, copying what was drawn for
-    anything with an IDENTITY and building the rest. `container` wraps
-    the row with a cursor and a version so an editor can hold it.
-    REFUSES BY NAME what it cannot write - fractions, calls, big
-    operators, relations - because a refusal is a correct answer and a
-    wrong drawing is not.
-
-verify(fontset: fontset, container: mformula.container, decls: {decl}, ns: ast.ns, node: node)
-       -> ok, want, got
-    Reparses what was built and compares shapes with what it was asked
-    to build. One parse, and it catches the whole class of bug that
-    matters here - a missing bracket, a dropped sign.
-
---- internal, not on the module table --------------------------------------------------------------
-    new_write_ctx() THE ONE creator for the `ctx_write` every emit_* is handed
-    PREC/ATOM_PREC, glyph, glyph_desc, append, bracketed, emit_ref,
-    emit_digits, emit_num, emit_factors, negative_term, emit_sum,
-    emit_power
-@date 2026-09-12 03:20
-================================================================================================= ]]
+-- | origins(root: mexpr node)               -> {ast id -> mexpr node}
+-- | var_origins(ns: ast.ns, origins: {ast id -> mexpr node}) -> {VAR id -> mexpr node}
+-- |     Where each ast node's ink IS, read off the tags the parse left.
+-- |     var_origins answers the looser question - any drawing of a use of
+-- |     this variable - which is what lets a duplicated factor be copied
+-- |     from a reference the source only wrote once.
+-- |
+-- | build(fontset: fontset, source_root: mexpr node | nil, ns: ast.ns, node: node, sz: size)
+-- |       -> mexpr row | nil, reason
+-- | container(fontset: fontset, source_root: mexpr node | nil, ns: ast.ns, node: node, sz: size)
+-- |       -> mexpru.container | nil, reason
+-- |     An ast tree written back out as glyphs, copying what was drawn for
+-- |     anything with an IDENTITY and building the rest. `container` wraps
+-- |     the row with a cursor and a version so an editor can hold it.
+-- |     REFUSES BY NAME what it cannot write - fractions, calls, big
+-- |     operators, relations - because a refusal is a correct answer and a
+-- |     wrong drawing is not.
+-- |
+-- | verify(fontset: fontset, container: mexpru.container, decls: {decl}, ns: ast.ns, node: node)
+-- |       -> ok, want, got
+-- |     Reparses what was built and compares shapes with what it was asked
+-- |     to build. One parse, and it catches the whole class of bug that
+-- |     matters here - a missing bracket, a dropped sign.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     new_write_ctx() THE ONE creator for the `ctx_write` every emit_* is handed
+-- |     PREC/ATOM_PREC, glyph, glyph_desc, append, bracketed, emit_ref,
+-- |     emit_digits, emit_num, emit_factors, negative_term, emit_sum,
+-- |     emit_power
+-- |
+-- | @date 2026-09-14 10:00
+-- | ===============================================================================================
+--]]
 
 --[[
 ast_mexpr.lua - the way BACK: an ast tree, written out as the mexpr tree that draws it.
@@ -48,9 +51,10 @@ TWO MECHANISMS, AND WHICH ONE APPLIES IS THE WHOLE DESIGN:
   - BUILD, for STRUCTURE. Operators, brackets and digits have no identity to preserve - one `+` is
     every `+` - so they are constructed from mexpru's plain constructors, the same ones typing uses.
 
-WHAT IS NOT HERE YET, deliberately: fractions, calls, big operators, integrals, relations. This file
-covers what `distribute` can produce - sums, products, whole numbers, references and powers - and
-refuses, by name, anything else. A refusal is a correct answer; a wrong drawing is not.
+WHAT IS NOT HERE YET, deliberately: fractions, calls, big operators, integrals, relations, and the
+CELL - the user's own redundant brackets - which is refused like the rest. This file covers what
+`distribute` can produce - sums, products, whole numbers, references and powers - and refuses, by
+name, anything else. A refusal is a correct answer; a wrong drawing is not.
 
 THE SELF-CHECK IS PART OF THE CONTRACT. verify() reparses what was built and compares shapes with
 what it was asked to build. We own both directions, it costs one parse, and it catches the one class
@@ -165,13 +169,20 @@ local function bracketed(ctx_write, run)
     return append(append({open}, run), {close})
 end
 
---[[ id -> the mexpr node that DRAWS it, for one source tree.
-
-Built by walking the mexpr and reading the tags mexpr_ast left (`u.ast_draws`), fresh each time, so
-nothing is stored between edits and nothing has to be invalidated. The walk is per-kind because a
-mexpr's children live under different names per kind; an unknown kind simply contributes nothing,
-which is the right failure - it means "no copy available here", and the caller then refuses.
-@date 2026-09-12 02:00 ]]
+--[[ @brief ast id -> the mexpr node that DRAWS it, for one source tree.
+-- |
+-- | READ OFF THE TAGS mexpr_ast left (`u.ast_draws`), by walking the mexpr fresh each time, so
+-- | nothing is stored between edits and nothing has to be invalidated.
+-- |
+-- | THE EDGES ARE mexpru.child_links, the one definition of "what is below this node" - an
+-- | incomplete map would not be loud, only a decoration or a spacing quietly lost on a rebuild.
+-- |
+-- | @param root  mexpr node - checked; the tree the ast was parsed from
+-- | @return {[ast id] = mexpr node} - only the nodes a tag names; an untagged node contributes
+-- |         nothing, which the writer reads as "no copy available here"
+-- |
+-- | @date 2026-09-13 19:40
+--]]
 function ast_mexpr.origins(root)
     mexpru.check_node(root, "root")
     local out = {}
@@ -200,24 +211,29 @@ function ast_mexpr.origins(root)
     return out
 end
 
---[[ VAR id -> a node drawing SOME reference to that variable.
-
-THE REASON A DUPLICATED FACTOR COSTS NOTHING. `a(b+c)` distributed writes `a` twice, and the second
-`a` is a fresh node with an id nothing was ever drawn for. But it references the SAME variable, and
-identity is what a name is - so any other reference to that variable is a correct drawing of it.
-Author, 2026-09-11, on why duplication is not a problem here: "all inside formulas are references or
-bounded variables".
-
-FROM THE NAMESPACE, NOT FROM THE TREE BEING WRITTEN, and that is the whole correctness of it. A
-transformation's result need not contain the original of every name it uses: distribute reuses the
-first term's nodes and COPIES the rest, so `a(b+c)` becomes `ab + a'c'` where both primed nodes are
-fresh. Walking the result would find no drawing for `c` and refuse a name that is written right
-there in the source. The namespace still holds every node the parse made, so every name that was
-ever drawn is reachable through it.
-
-FIRST ONE WINS, arbitrarily and safely: every reference to one variable draws the same name, or they
-would not be the same variable.
-@date 2026-09-12 02:30 ]]
+--[[ @brief VAR id -> a node drawing SOME reference to that variable.
+-- |
+-- | THE REASON A DUPLICATED FACTOR COSTS NOTHING. `a(b+c)` distributed writes `a` twice, and the
+-- | second `a` is a fresh node with an id nothing was ever drawn for. But it references the SAME
+-- | variable, and identity is what a name is - so any other reference to that variable is a
+-- | correct drawing of it. Author, 2026-09-11: "all inside formulas are references or bounded
+-- | variables".
+-- |
+-- | FROM THE NAMESPACE, NOT FROM THE TREE BEING WRITTEN. A transformation's result need not contain
+-- | the original of every name it uses - distribute turns `a(b+c)` into `ab + a'c`, where `a'` is
+-- | fresh - so walking the result would find no drawing for it. The namespace still holds every
+-- | node the parse made.
+-- |
+-- | @details FIRST ONE WINS, arbitrarily and safely: every reference to one variable draws the same
+-- |          name, or they would not be the same variable.
+-- |
+-- | @param ns       ast.ns - checked; required, since a missing namespace would read as "no
+-- |                 references" and every name would be re-rendered instead of copied
+-- | @param origins  {[ast id] = mexpr node} - as origins() built it; must be a table
+-- | @return {[VAR id] = mexpr node}
+-- |
+-- | @date 2026-09-13 19:40
+--]]
 function ast_mexpr.var_origins(ns, origins)
     --[[ `if not ns or not ns.by_id then return out end` is gone. It turned a missing namespace into
     an EMPTY MAP, which is not a refusal - it is the same answer as "this tree has no references",
@@ -429,15 +445,26 @@ emit = function(ctx_write, node, min_prec)
     return run
 end
 
---[[ An ast tree as a formula's root row, drawn the way its source was.
-
-`source_root` is the mexpr the tree was PARSED from and `ns` that parse's namespace - together they
-are the only place the names' glyphs can come from. Pass nil for either and anything with a name in
-it is refused, which is correct rather than convenient.
-
-Returns the root node, or nil plus a reason. Positions are updated here, since nothing downstream
-can measure a tree that has never been laid out.
-@date 2026-09-12 02:00 ]]
+--[[ @brief An ast tree as a formula's root row, drawn the way its source was.
+-- |
+-- | THE NAMES' GLYPHS ARE COPIED, never drawn from a string: `source_root` is the mexpr the tree
+-- | was PARSED from and `ns` that parse's namespace, and together they are the only place a name's
+-- | glyphs can come from. What has no identity - digits, operators, brackets - is built fresh.
+-- |
+-- | REFUSES rather than drawing wrong: a node type it cannot write, or a name with nothing to copy.
+-- | Brackets go in exactly where precedence needs them.
+-- |
+-- | @param fontset      fontset
+-- | @param source_root  mexpr node | nil - checked when given. nil means no source drawing, and
+-- |                     anything with a name in it is refused - correct rather than convenient
+-- | @param ns           ast.ns - checked; required
+-- | @param node         node - checked; the tree to write
+-- | @param sz           size | nil - defaults to mexpru.DEFAULT_SIZE
+-- | @return mexpr node | nil, string - the root row, positions already updated since nothing
+-- |         downstream can measure an unlaid tree; or nil and the reason
+-- |
+-- | @date 2026-09-13 19:40
+--]]
 function ast_mexpr.build(fontset, source_root, ns, node, sz)
     ast.check_ns(ns)
     ast.check_node(node, "node")
@@ -458,12 +485,20 @@ function ast_mexpr.build(fontset, source_root, ns, node, sz)
     return root
 end
 
---[[ Same thing, as a container the editors can hold: root, a cursor, and a version.
-
-The cursor starts at the END of the row, where a caret lands after anything is inserted - the
-transformed cell has to open with the caret somewhere real, and "after everything" is the one
-position that exists for every tree.
-@date 2026-09-12 02:00 ]]
+--[[ @brief build(), as a container the editors can hold.
+-- |
+-- | THE CURSOR STARTS AT THE END of the row: the transformed cell has to open with the caret
+-- | somewhere real, and "after everything" is the one position that exists for every tree.
+-- |
+-- | @param fontset      fontset
+-- | @param source_root  mexpr node | nil - as for build
+-- | @param ns           ast.ns - as for build
+-- | @param node         node - as for build
+-- | @param sz           size | nil - as for build
+-- | @return mexpru.container | nil, string - a fresh one at version 0; or build's refusal
+-- |
+-- | @date 2026-09-13 19:40
+--]]
 function ast_mexpr.container(fontset, source_root, ns, node, sz)
     local root, err = ast_mexpr.build(fontset, source_root, ns, node, sz)
     if not root then
@@ -472,20 +507,27 @@ function ast_mexpr.container(fontset, source_root, ns, node, sz)
     return mexpru.new_container(root, mexpru.last_slot(root))
 end
 
---[[ Does the built mexpr parse back to the tree it was built from?
-
-THE CHECK THAT MAKES THE WRITER TRUSTWORTHY, and the reason it can be this cheap: both directions
-live here, so the question "did I draw what I meant" is one parse and one string compare. What it
-catches is precisely what a writer gets wrong - a bracket that was needed and not written, a sign
-that became a factor - and those produce a formula that says something else while looking entirely
-reasonable.
-
-SHAPES, NOT IDS (ast.shape): the rebuilt tree is parsed into a NEW namespace, so no id can match.
-Names can and do, which is what identity means here.
-
-Returns true, or false plus both shapes - the caller prints them, because a diff of two shapes is the
-only useful thing to say when this fails.
-@date 2026-09-12 02:00 ]]
+--[[ @brief Does the built mexpr parse back to the tree it was built from?
+-- |
+-- | THE CHECK THAT MAKES THE WRITER TRUSTWORTHY: "did I draw what I meant" is one parse and one
+-- | string compare. It catches precisely what a writer gets wrong - a bracket that was needed and
+-- | not written, a sign that became a factor - which produce a formula that says something else
+-- | while looking entirely reasonable.
+-- |
+-- | SHAPES, NOT IDS (ast.shape): the rebuilt tree is parsed into a NEW namespace, so no id can
+-- | match. Names can and do, which is what identity means here.
+-- |
+-- | @param fontset    fontset
+-- | @param container  mexpru.container - checked; what build/container produced
+-- | @param decls      {mexpr_ast.decl} | nil - to parse it back with; nil is none
+-- | @param ns         ast.ns - checked; the namespace `node` lives in
+-- | @param node       node - checked; the tree it was built from
+-- | @return boolean, string, string - whether the shapes match, then both shapes - the caller
+-- |         prints them, since a diff of two shapes is the only useful thing to say on failure. A
+-- |         container that does not parse gives false and "did not parse: <reason>" as `got`
+-- |
+-- | @date 2026-09-13 19:40
+--]]
 function ast_mexpr.verify(fontset, container, decls, ns, node)
     mexpru.check_container(container)
     ast.check_ns(ns)

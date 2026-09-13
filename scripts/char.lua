@@ -1,80 +1,82 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-load_font_set()                         -> fontset
-    Every size the editor draws at, loaded once. THE ARGUMENT
-    EVERYWHERE - a glyph's metrics depend on the face it was loaded
-    at, so nearly every call in the project carries this.
-
-FINDING A GLYPH
-find_by_ascii(ascii_char: string)        -> entry | nil
-find_by_desc(desc: string)              -> entry | nil
-find_by_ncod(ncod: number)              -> entry | nil
-    The catalogue, by the three keys anything has to look one up by.
-
-READING THE DATA TABLES
-size_delta(desc: string)                -> number
-advance_of(desc: string)                -> number
-is_greek_letter(name: string)           -> boolean
-operator_word(word: string)             -> string | nil
-greek_for_key(letter: string)           -> plain, shifted
-    The tables further down stay public because something has to
-    enumerate them; a caller wanting ONE entry asks here, where the
-    default lives once rather than at each of ten call sites.
-
-BRACKETS, AS RECIPES NOT CHARACTERS
-round_bracket(fontsz: size) / square_bracket(fontsz: size) / curly_bracket(fontsz: size)
-bar_bracket(fontsz: size)               -> recipe
-bracket_opts(bracket_type, fontsz: size) -> recipe | nil
-    The corner and middle glyphs a bracket is ASSEMBLED from, so it
-    grows to whatever it encloses. nil for a pair that is not
-    extensible - the bars, the angles - which are ordinary glyphs.
-hline_basic(fontsz: size)               -> glyph
-    The rule the extensible constructs are built from.
-
-ACCENTS
-hat_accent(fontsz: size)                -> recipe
-vec_accent(fontsz: size)                -> recipe
-vec_left_accent(fontsz: size)           -> recipe
-tilde_accent(fontsz: size)              -> recipe
-bar_accent(fontsz: size)                -> recipe
-dot_accent_char(fontsz: size)           -> glyph
-    Recipes for mexpr_accent(). Several carry TIERS - widths of the
-    same accent - so a wide base gets a wide accent rather than one
-    character stretched out of shape.
-
-
-THE CATALOGUE, AS DATA
-chars                                   {acod, fcod, fnum, ncod, desc}
-    Every glyph the editor can draw. The three find_by_* above are the
-    ways in; this is what they search.
-desc_aliases                            {"\leq" -> "\le", ...}
-    Spellings that mean one glyph, so a name has one canonical form.
-greek_letters                           {"\alpha" -> true}
-operator_words                          {lim = "lim", ...}
-    The consecrated word sets - the Greek names, and the operators
-    written as WORDS. mexpr_ast asks these what a document may not
-    redefine.
-
-PER-GLYPH CORRECTIONS
-size_delta_by_desc / adv_by_desc        {desc -> number}
-y_offset_by_font / y_offset_by_desc     {key -> number}
-    Where a font is wrong and the drawing has to compensate. Kept as
-    data beside the catalogue rather than as cases in the draw path,
-    so a correction is one line and its reason sits next to it.
-
-THE KEYBOARD
-greek_keys / greek_key_ids              {ImGuiKey_A -> "a", ...}
-greek_alt / greek_alt_shift             {"a" -> "\alpha", ...}
-alt_symbols                             {key -> glyph}
-    Which physical key reaches which letter or sign. glyphmap.lua owns
-    what a user has CHANGED; these are the factory layout it starts
-    from.
-
-BRACKET_INTEGRAL                        constant
-
---- internal, not on the module table --------------------------------------------------------------
-    the glyph catalogue itself and the font paths
-@date 2026-09-12 04:00
-================================================================================================= ]]
+-- | load_font_set()                         -> fontset
+-- |     Every size the editor draws at, loaded once. THE ARGUMENT
+-- |     EVERYWHERE - a glyph's metrics depend on the face it was loaded
+-- |     at, so nearly every call in the project carries this.
+-- |
+-- | FINDING A GLYPH
+-- | find_by_ascii(ascii_char: string)        -> entry | nil
+-- | find_by_desc(desc: string)              -> entry | nil
+-- | find_by_ncod(ncod: number)              -> entry | nil
+-- |     The catalogue, by the three keys anything has to look one up by.
+-- |
+-- | READING THE DATA TABLES
+-- | size_delta(desc: string)                -> number
+-- | advance_of(desc: string)                -> number
+-- | is_greek_letter(name: string)           -> boolean
+-- | operator_word(word: string)             -> string | nil
+-- | greek_for_key(letter: string)           -> plain, shifted
+-- |     The tables further down stay public because something has to
+-- |     enumerate them; a caller wanting ONE entry asks here, where the
+-- |     default lives once rather than at each of ten call sites.
+-- |
+-- | BRACKETS, AS RECIPES NOT CHARACTERS
+-- | round_bracket(fontsz: size) / square_bracket(fontsz: size) / curly_bracket(fontsz: size)
+-- | bar_bracket(fontsz: size)               -> recipe
+-- | bracket_opts(bracket_type: bracket type, fontsz: size) -> recipe | nil
+-- |     The corner and middle glyphs a bracket is ASSEMBLED from, so it
+-- |     grows to whatever it encloses. nil for the integral pair, which is
+-- |     an operator and a `d` and does not grow.
+-- | hline_basic(fontsz: size)               -> glyph
+-- |     The rule glyph a fraction bar and an accent's stroke are built from.
+-- |
+-- | ACCENTS
+-- | hat_accent(fontsz: size)                -> recipe
+-- | vec_accent(fontsz: size)                -> recipe
+-- | vec_left_accent(fontsz: size)           -> recipe
+-- | tilde_accent(fontsz: size)              -> recipe
+-- | bar_accent(fontsz: size)                -> recipe
+-- | dot_accent_char(fontsz: size)           -> glyph
+-- |     Recipes for mexpr_accent(). Hat and tilde carry TIERS - widths of
+-- |     the same accent - so a wide base gets a wide accent rather than one
+-- |     character stretched out of shape.
+-- |
+-- |
+-- | THE CATALOGUE, AS DATA
+-- | chars                                   {acod, fcod, fnum, ncod, desc}
+-- |     Every glyph the editor can draw. The three find_by_* above are the
+-- |     ways in; this is what they search.
+-- | desc_aliases                            {"\leq" -> "\le", ...}
+-- |     Spellings that mean one glyph, so a name has one canonical form.
+-- | greek_letters                           {"\alpha" -> true}
+-- | operator_words                          {lim = "lim", ...}
+-- |     The consecrated word sets - the Greek names, and the operators
+-- |     written as WORDS. mexpr_ast asks these what a document may not
+-- |     redefine.
+-- |
+-- | PER-GLYPH CORRECTIONS
+-- | size_delta_by_desc / adv_by_desc        {desc -> number}
+-- | y_offset_by_font / y_offset_by_desc     {key -> number}
+-- |     Where a font is wrong and the drawing has to compensate. Kept as
+-- |     data beside the catalogue rather than as cases in the draw path,
+-- |     so a correction is one line and its reason sits next to it.
+-- |
+-- | THE KEYBOARD
+-- | greek_keys / greek_key_ids              {ImGuiKey_A -> "a", ...}
+-- | greek_alt / greek_alt_shift             {"a" -> "\alpha", ...}
+-- | alt_symbols                             {key -> glyph}
+-- |     Which physical key reaches which letter or sign. glyphmap.lua owns
+-- |     what a user has CHANGED; these are the factory layout it starts
+-- |     from.
+-- |
+-- | BRACKET_INTEGRAL                        constant
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     the glyph catalogue itself and the font paths
+-- |
+-- | @date 2026-09-13 20:45
+-- | ===============================================================================================
+--]]
 
 --[[
 char.lua - THE GLYPH CATALOG: every character the editor can draw, and the eight fonts behind them.
@@ -115,41 +117,74 @@ local capi = {
 	FONT_BBOLD = 8,
 }
 
---[[ THE LOOKUPS INTO THE DATA TABLES ABOVE - the way another file reads them.
-
-WHY, AND IT IS THE SAME REASON ast.node_of EXISTS: a public table indexed from four other files
-makes every caller responsible for the key, the default and what a nil means, and none of that is
-written down anywhere a reader will find it. `char.size_delta_by_desc[entry.desc]` appears at ten
-call sites, each carrying its own idea of what an absent entry means. Author, 2026-09-12: "instead
-of a public array... this way we are sure of what it is", and on how far it goes: "this is a wide
-problem across the project".
-
-The tables stay public - they are DATA, and something has to be able to enumerate them - but a
-caller that wants one entry asks here, where the default lives once.
-@date 2026-09-12 12:30 ]]
+--[[ @brief How many size-table steps a glyph renders away from the size it is typed at; 0 for most.
+-- |
+-- | THE FIRST OF THE LOOKUPS into the data tables below - the way another file reads them. The
+-- | same reason ast.node_of exists: a public table indexed from other files makes every caller
+-- | responsible for the key, the default and what a nil means. Author, 2026-09-12: "instead of a
+-- | public array... this way we are sure of what it is". The tables stay public, since they are
+-- | DATA and something has to enumerate them; one entry is asked for here.
+-- |
+-- | @param desc  string - a glyph's desc
+-- | @return number - an index delta into the size table, negative meaning BIGGER (the table runs
+-- |         biggest first); the cmex10 display operators carry -7
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.size_delta(desc)
     return capi.size_delta_by_desc[desc] or 0
 end
 
---[[ How much narrower than its box a glyph draws, as a fraction; 1.0 when it has no correction.
-@date 2026-09-12 12:30 ]]
+--[[ @brief A glyph's advance-width override, as a fraction of the font size; 1.0 when it has none.
+-- |
+-- | THE OVERRIDE REPLACES the font's own advance. Only glyphs designed to overprint carry one, at
+-- | 0.0 - `\not`, `\mapstochar` - plus TeX's spacing widths.
+-- |
+-- | @param desc  string - a glyph's desc
+-- | @return number - the override, or 1.0
+-- |
+-- | @note 1.0 means "not overridden", NOT the glyph's real advance - the font keeps its own when
+-- |       there is no entry. Both callers only test `== 0`, for a zero-width glyph.
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.advance_of(desc)
     return capi.adv_by_desc[desc] or 1.0
 end
 
---[[ Is this the name of a Greek letter? A membership question, so it answers true or false rather
-than the table's own `true`-or-nil. @date 2026-09-12 12:30 ]]
+--[[ @brief Is this the name of a Greek letter?
+-- |
+-- | @param name  string - a desc, e.g. "\\alpha"
+-- | @return boolean - never nil, unlike the table's own `true`-or-nil
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.is_greek_letter(name)
     return capi.greek_letters[name] == true
 end
 
---[[ The operator this WORD names - `lim`, `argmax` - or nil when it names none. @date 2026-09-12 12:30 ]]
+--[[ @brief The LaTeX macro name an operator WORD has - `lim`, `Pr` - or nil when LaTeX has none.
+-- |
+-- | @param word  string - the letters as written
+-- | @return string | nil - usually the word itself; nil means it is written as \operatorname{...}
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.operator_word(word)
     return capi.operator_words[word]
 end
 
---[[ The factory Greek letter a key carries, plain and shifted. Two values because the two are
-always wanted together - every caller reads both. nil for a key with no Greek on it. @date 2026-09-12 12:30 ]]
+--[[ @brief The factory Greek glyphs a letter key carries, plain and shifted.
+-- |
+-- | TWO VALUES because the two are always wanted together. The FACTORY layout: what a user changed
+-- | lives in glyphmap.
+-- |
+-- | @param letter  string | nil - the key's letter, "a".."z" or "8"
+-- | @return string | nil, string | nil - the Alt and Alt+Shift descs; nil for a key with none, and
+-- |         both nil for a nil letter
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.greek_for_key(letter)
     if letter == nil then
         return nil, nil
@@ -157,16 +192,22 @@ function capi.greek_for_key(letter)
     return capi.greek_alt[letter], capi.greek_alt_shift[letter]
 end
 
---[[ Loads every font size the editor draws at, once, and hands back the set everything else
-carries around.
-
-Core: THE FONTSET IS THE ARGUMENT EVERYWHERE. Nearly every call in this project takes one, because a
-glyph's metrics depend on the size it was loaded at and there is no way to ask for them without the
-loaded face. Building it is this file's job and doing it once is the point - the paths below are
-read from disk.
-
-Returns the fontset. Called by main.lua at startup and by nothing else.
-@date 2026-09-12 03:55 ]]
+--[[ @brief Loads every font size the editor draws at, and hands back the set everything carries.
+-- |
+-- | THE FONTSET IS THE ARGUMENT EVERYWHERE. Nearly every call in this project takes one, because a
+-- | glyph's metrics depend on the size it was loaded at. Building it is this file's job, and doing
+-- | it once is the point - the eight faces are read from disk.
+-- |
+-- | EVERY CATALOGUE ENTRY IS REGISTERED on it, with its per-glyph corrections: a vertical shift
+-- | (y_offset_by_desc, else y_offset_by_font) and an advance override (adv_by_desc).
+-- |
+-- | @return fontset - C++ userdata; 18 sizes, index 12 (36pt) the default
+-- |
+-- | @note Called by main.lua at startup, and by every test that draws or builds a formula. Each
+-- |       call loads the fonts again.
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.load_font_set()
     local base_sz = 42
 
@@ -252,15 +293,6 @@ function capi.load_font_set()
     return ret
 end
 
---[[ The rule glyph every horizontal line in a formula is built from: the fraction bar
-(mexpru.mexpr_frac) and the stroke in each accent recipe below. It is a real sized glyph rather
-than a drawn primitive, so a line thickens and lengthens with the expression around it.
-
-Sixteen more one-line constructors sat beside it - plus, minus, integral, bigsum, the six
-relations, two more rules - until 2026-09-09, when every one of them turned out to be reachable
-only from main.lua's dead demo and from the deleted mexpr.lua. A glyph wanted by name goes through
-find_by_desc()/find_by_ncod() below, which is where the editors have always got theirs.
-@date 2026-09-09 21:20 ]]
 --[[ THE INTEGRAL PAIR'S bracket type. A Lua string rather than one of vc's numeric
 mexpr_bracket_e values, deliberately: it can never collide with them, and nothing in C++ needs to
 know about it - the pair exists to be MATCHED and CASCADED, which is entirely mexpru's own bracket
@@ -273,22 +305,34 @@ functions necesarily, but mexprs with the symbol d and int".
 @date 2026-09-10 23:40 ]]
 capi.BRACKET_INTEGRAL = "integral"
 
---[[ The horizontal rule the extensible constructs are built from - a fraction bar, an accent's
-stroke, a bracket's middle. One glyph, repeated or stretched by the C++ side rather than by a wider
-character, because these fonts have no wider one. @date 2026-09-12 03:55 ]]
+--[[ @brief The rule glyph every horizontal line in a formula is built from.
+-- |
+-- | THE FRACTION BAR (mexpru.mexpr_frac) AND EVERY ACCENT'S STROKE. A real sized glyph rather than
+-- | a drawn primitive, so a line thickens with the expression around it; the C++ side stretches it,
+-- | because these fonts have no wider one.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return {size, code} - a glyph request
+-- |
+-- | @note Sixteen more one-line glyph constructors sat beside it until 2026-09-09, reachable only
+-- |       from dead code. A glyph wanted by name goes through find_by_desc/find_by_ncod.
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.hline_basic(fontsz) return {size=fontsz, code=221} end
 
---[[ The three EXTENSIBLE BRACKET FAMILIES, as recipes rather than as characters.
-
-Each returns the corner and middle glyphs a bracket of that shape is assembled from, so a bracket
-grows to whatever it encloses instead of being one fixed-height character. That is the whole reason
-they are recipes: a `(` around a fraction is taller than a `(` around a letter, and no font ships
-every height.
-
-`bracket_opts` below picks between them by type; these three are what it picks from. A pair with no
-entry here - the bars, the angle brackets - is drawn as an ordinary glyph, which is why that
-function answers nil for them rather than guessing.
-@date 2026-09-12 03:55 ]]
+--[[ @brief `( )` as an EXTENSIBLE BRACKET recipe: the pieces it is assembled from.
+-- |
+-- | A RECIPE, because a `(` around a fraction is taller than a `(` around a letter, and no font
+-- | ships every height: the bracket grows to whatever it encloses. round, square, curly and bar are
+-- | the families; bracket_opts picks between them by type.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return table - {type, tl, bl, tr, br, cl, cr, conl, conr, left, right}: the corners, the
+-- |         middles, the connectors, and four fixed-height tiers per side, smallest first
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.round_bracket(fontsz)
     return {
         type = vc.MEXPR_BRACKET_ROUND,
@@ -315,7 +359,7 @@ function capi.round_bracket(fontsz)
     }
 end
 
---[[ `[ ]`, assembled the same way - see round_bracket above. @date 2026-09-12 03:55 ]]
+--[[ @brief `[ ]`, assembled the same way - see round_bracket. @date 2026-09-13 20:45 ]]
 function capi.square_bracket(fontsz)
     return {
         type = vc.MEXPR_BRACKET_SQUARE,
@@ -342,7 +386,9 @@ function capi.square_bracket(fontsz)
     }
 end
 
---[[ `{ }`, which needs a middle piece the other two do not. See round_bracket above. @date 2026-09-12 03:55 ]]
+--[[ @brief `{ }`, whose middle piece differs from its connectors. See round_bracket.
+-- | @date 2026-09-13 20:45
+--]]
 function capi.curly_bracket(fontsz)
     return {
         type = vc.MEXPR_BRACKET_CURLY,
@@ -369,27 +415,26 @@ function capi.curly_bracket(fontsz)
     }
 end
 
---[[ Dispatches to round_bracket()/square_bracket()/curly_bracket() above by the vc.MEXPR_BRACKET_*
-`bracket_type` a bracket atom's own u(_).bracket.type carries (mexpru.lua's resolve_bracket_pairs()) -
-lets that generic code build the right mexpr_bracket_t for whichever type a given entangled pair
-actually is, without itself needing a three-way if/elseif of its own. ]]
---[[ "|" - absolute value / norm bars. Both delimiters of a bar pair are the SAME shape, so
-unlike every other bracket here there is no mirrored partner to describe: left and right are equal.
-
-tl/bl/tr/br are the SPACE glyph, deliberately. mexpr_bracket_side sums their heights into the
-extensible's base height before deciding how many connectors to stack, and a bar has no corner
-pieces to account for - an inkless glyph measures exactly 0 tall (mexpr_symbol's own inkless
-branch), which is the contribution wanted. Only cl/conl carry real metrics: their HEIGHT is the
-quantisation step and their WIDTH is the stroke the drawn rule is given.
-
-The tiers are all the plain "|" (ncod 88 - 38 units tall at size 12, against a letter's 17), so
-anything that fits inside one resolves to the typed glyph itself and only genuinely tall content
-reaches the extensible path at all. There is nothing finer to put in them: cmex10 ships no
-\\big|/\\Big| tiers, TeX builds those from these same extension pieces.
-
-_vline_4/_vline_5 (w=2.0) are the widest registered extensions, against the plain bar's own 2.5 -
-half a unit thinner at size 12, which is the closest match available without adding a glyph.
-@date 2026-09-08 08:50 ]]
+--[[ @brief `| |` - absolute value and norm bars - as an extensible bracket recipe.
+-- |
+-- | BOTH DELIMITERS ARE THE SAME SHAPE, so unlike every other bracket there is no mirrored partner:
+-- | left and right are equal.
+-- |
+-- | THE CORNERS ARE THE SPACE GLYPH, deliberately. mexpr_bracket_side sums their heights before
+-- | deciding how many connectors to stack, and an inkless glyph measures exactly 0 tall - the
+-- | contribution a cornerless bar wants. Only cl/conl carry real metrics: HEIGHT is the
+-- | quantisation step, WIDTH the stroke of the drawn rule.
+-- |
+-- | @details The tiers are all the plain "|" (ncod 88), so anything that fits resolves to the typed
+-- |          glyph and only genuinely tall content reaches the extensible path. cmex10 ships no
+-- |          \\big| tiers. The connectors are about half a unit thinner than the plain bar at size
+-- |          12, the closest match without adding a glyph.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return table - the same shape as round_bracket's
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.bar_bracket(fontsz)
     local space = capi.find_by_ascii(" ")
     local blank = { size=fontsz, code=space and space.ncod or 247 }
@@ -409,10 +454,21 @@ function capi.bar_bracket(fontsz)
     }
 end
 
---[[ Returns nil for a pair that is NOT drawn from the extensible bracket families - the
-integral's, whose two halves are an operator glyph and the letter `d`. Neither grows with what sits
-between them, so resolve_bracket_pairs has nothing to rebuild and leaves both alone.
-@date 2026-09-10 23:40 ]]
+--[[ @brief The bracket recipe for a pair's type, so generic code needs no dispatch of its own.
+-- |
+-- | FOR mexpru's resolve_bracket_pairs, which re-tiers any entangled pair to fit its content by the
+-- | type its `u.bracket.type` carries.
+-- |
+-- | @param bracket_type  vc.MEXPR_BRACKET_* | BRACKET_INTEGRAL
+-- | @param fontsz        size - the size index
+-- | @return table | nil - the recipe; nil for the INTEGRAL pair, whose halves are an operator glyph
+-- |         and the letter `d` and do not grow, so there is nothing to rebuild
+-- |
+-- | @note Any other unknown type falls back to the round bracket. The bar branch is guarded on
+-- |       vc.MEXPR_BRACKET_BAR being registered from C++.
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.bracket_opts(bracket_type, fontsz)
     if bracket_type == capi.BRACKET_INTEGRAL then
         return nil
@@ -984,10 +1040,16 @@ for _, c in ipairs(capi.chars) do
     by_ncod[c.ncod] = c
 end
 
---[[ Returns the capi.chars entry for an ascii character (a 1-length string), or nil.
-When a character appears more than once in capi.chars (a few do), the first entry in the table
-wins - same as the old linear-scan behavior this replaces.
-@date 2026-09-08 08:50 ]]
+--[[ @brief The catalogue entry for an ascii character, or nil.
+-- |
+-- | @details An index built once at load. When a character appears more than once in the catalogue,
+-- |          the FIRST entry wins.
+-- |
+-- | @param ascii_char  string - one character
+-- | @return entry | nil - {acod, fcod, fnum, ncod, desc}; the live catalogue row, not a copy
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.find_by_ascii(ascii_char)
     return by_ascii[ascii_char]
 end
@@ -1080,9 +1142,16 @@ capi.operator_words = {
     gcd = "gcd", hom = "hom", Pr = "Pr",
 }
 
---[[ Returns the capi.chars entry whose `desc` matches exactly (e.g. "\\alpha"), or nil.
-Falls back to capi.desc_aliases, so an alternate spelling finds the same glyph.
-@date 2026-09-08 08:50 ]]
+--[[ @brief The catalogue entry whose `desc` matches exactly - "\\alpha" - or nil.
+-- |
+-- | ALIASES RESOLVE ON THE WAY IN: an alternate spelling in desc_aliases finds the same glyph, and
+-- | the entry carries the primary desc, so a document round-trips to one canonical spelling.
+-- |
+-- | @param desc  string
+-- | @return entry | nil - the live catalogue row, not a copy
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.find_by_desc(desc)
     local hit = by_desc[desc]
     if hit then
@@ -1092,7 +1161,13 @@ function capi.find_by_desc(desc)
     return aliased and by_desc[aliased] or nil
 end
 
---[[ Returns the capi.chars entry for a given ncod (glyph catalog code), or nil. @date 2026-09-08 08:50 ]]
+--[[ @brief The catalogue entry for a glyph code (ncod), or nil.
+-- |
+-- | @param ncod  integer - the code the C++ side draws by
+-- | @return entry | nil - the live catalogue row, not a copy
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.find_by_ncod(ncod)
     return by_ncod[ncod]
 end
@@ -1354,14 +1429,20 @@ for name, letter in pairs(capi.greek_keys) do
     capi.greek_key_ids[vc[name] or name] = letter
 end
 
---[[ Accent recipes for mexpr_accent(). Same shape as capi.round_bracket() above - a size in, a
-table out, tiers narrowest-first. `stroke` is passed only for its HEIGHT, which becomes the pen
-width when the accent has to be DRAWN rather than set from a glyph (mexpr_frac's divline idiom).
-
-hat and tilde run out of glyphs after their third cmex10 variant; past that mexpr_accent draws the
-shape itself, continuing at the last tier's own height so there is no step at the boundary. A bar
-has no glyph at all in these fonts, so it is always drawn - hence no tiers.
-@date 2026-09-08 08:50 ]]
+--[[ @brief `\hat` as an accent recipe for mexpr_accent(), in tiers of widening glyphs.
+-- |
+-- | A RECIPE LIKE A BRACKET'S: a size in, a table out, tiers narrowest-first. `stroke` is passed
+-- | only for its HEIGHT, which becomes the pen width when the accent is DRAWN rather than set from
+-- | a glyph.
+-- |
+-- | PAST THE LAST TIER mexpr_accent draws the shape itself, continuing at the last tier's height so
+-- | there is no step at the boundary. The same holds for tilde.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return {kind, stroke, tiers} - kind "MEXPR_ACCENT_HAT"; the OT1 "^" then three cmex10 widehats
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.hat_accent(fontsz)
     return {
         kind = "MEXPR_ACCENT_HAT",
@@ -1375,15 +1456,18 @@ function capi.hat_accent(fontsz)
     }
 end
 
---[[ Vector arrows. The RIGHT one has a real accent glyph - cmmi 0x7E, what LaTeX's own \\vec
-uses - at 17x8 against a letter's ~17 wide, so an ordinary single-letter vector resolves to it.
-There is no left-pointing counterpart in Computer Modern at any size, and no wider right one either,
-so everything else is drawn (MEXPR_ACCENT_ARROW_R/_L, math_expr_composer.h). That matters here
-rather than being a corner case: a vector over a STACK is exactly what this is for, and no glyph
-is anywhere near that wide.
-
-The left one therefore lists no tiers at all - the drawn shape is its only form.
-@date 2026-09-08 08:50 ]]
+--[[ @brief `\vec` - a right-pointing arrow over the base - as an accent recipe. Always DRAWN.
+-- |
+-- | NO TIERS ON PURPOSE. cmmi does have a \\vec glyph, but it is 8 tall against the drawn head's
+-- | 4.25, so letting short targets use it would make the head change size with the target - which
+-- | it must not. The drawn arrow (MEXPR_ACCENT_ARROW_R, math_expr_composer.h) serves every width,
+-- | and a vector over a STACK is exactly what this is for.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return {kind, stroke, tiers} - kind "MEXPR_ACCENT_ARROW_R", tiers empty
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.vec_accent(fontsz)
     return {
         kind = "MEXPR_ACCENT_ARROW_R",
@@ -1395,8 +1479,13 @@ function capi.vec_accent(fontsz)
     }
 end
 
---[[ A left-pointing arrow over the base. The mirror of vec_accent, and separate rather than a flag
-because the two are different glyphs, not one glyph reflected. @date 2026-09-12 03:55 ]]
+--[[ @brief A left-pointing arrow over the base. Always drawn - Computer Modern has no such glyph.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return {kind, stroke, tiers} - kind "MEXPR_ACCENT_ARROW_L", tiers empty
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.vec_left_accent(fontsz)
     return {
         kind = "MEXPR_ACCENT_ARROW_L",
@@ -1405,9 +1494,14 @@ function capi.vec_left_accent(fontsz)
     }
 end
 
---[[ `\tilde`, in TIERS: several widths of tilde, so a wide base gets a wide accent instead of one
-character stretched out of shape. The stroke is the fallback for a base wider than every tier.
-@date 2026-09-12 03:55 ]]
+--[[ @brief `\tilde` in TIERS of widths, so a wide base gets a wide accent, not a stretched one.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return {kind, stroke, tiers} - kind "MEXPR_ACCENT_TILDE"; the OT1 "~" then three cmex10
+-- |         widetildes. Past the last, the shape is drawn, as for hat_accent
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.tilde_accent(fontsz)
     return {
         kind = "MEXPR_ACCENT_TILDE",
@@ -1421,14 +1515,26 @@ function capi.tilde_accent(fontsz)
     }
 end
 
---[[ `\bar` - a plain rule over the base, and no tiers at all, because the rule already stretches
-to any width. @date 2026-09-12 03:55 ]]
+--[[ @brief `\bar` - a plain rule over the base, with no tiers: the rule stretches to any width.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return {kind, stroke, tiers} - kind "MEXPR_ACCENT_RULE", tiers empty
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.bar_accent(fontsz)
     return { kind = "MEXPR_ACCENT_RULE", stroke = capi.hline_basic(fontsz), tiers = {} }
 end
 
---[[ ONE dot. Two and three dots are made by merging this with itself rather than by a wider glyph -
-there is no ddot in these fonts either. @date 2026-09-12 03:55 ]]
+--[[ @brief ONE accent dot, as a glyph request.
+-- |
+-- | Two and three dots are made by merging this with itself, since there is no ddot in these fonts.
+-- |
+-- | @param fontsz  size - the size index
+-- | @return {size, code} - a glyph request, not an accent recipe
+-- |
+-- | @date 2026-09-13 20:45
+--]]
 function capi.dot_accent_char(fontsz) return {size = fontsz, code = 249} end
 
 

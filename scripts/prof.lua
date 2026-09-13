@@ -1,35 +1,41 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-TIMING
-wrap(name: string, fn: function)        -> fn'
-    An instrumented copy of `fn`, reporting its own inclusive time.
-begin(name: string) / stop(name: string) -> nothing
-    A named scope for a PHASE that is not one function. Every begin
-    needs its stop.
-event(name: string)                     -> nothing
-    Tags the current frame with something that happened in it.
-now_ms()                                -> ms
-    The profiler's own clock, so hand timing reads the same one.
-
-THE PANEL
-set_enabled(on: boolean) / enabled()    -> nothing / boolean
-overlay_visible()                       -> boolean
-    `enabled` is "timing is being collected", which a spike recording
-    does with the overlay hidden - these are not the same question.
-reset()                                 -> nothing
-report()                                -> text
-
-SPIKE RECORDING
-record_start(path: string, threshold_ms: number) -> ok
-record_stop() / recording()             -> nothing / boolean
-spike_count()                           -> n
-    Every frame slower than the threshold, with its breakdown, to a
-    file. INDEPENDENT OF THE OVERLAY on purpose: the overlay costs
-    real milliseconds and has itself been the largest item in a spike.
-
---- internal, not on the module table --------------------------------------------------------------
-    everything is a thin pass to perf_composer.h
-@date 2026-09-12 03:35
-================================================================================================= ]]
+-- | TIMING
+-- | wrap(name: string, fn: function)        -> function
+-- |     An instrumented copy of `fn`, reporting its own inclusive time.
+-- | begin(name: string) / stop(name: string) -> nothing
+-- |     A named scope for a PHASE that is not one function. Every begin
+-- |     needs its stop.
+-- | event(name: string)                     -> nothing
+-- |     Tags the current frame with something that happened in it.
+-- | now_ms()                                -> number
+-- |     The profiler's own clock, so hand timing reads the same one.
+-- |
+-- | THE PANEL
+-- | set_enabled(on: boolean) / enabled()    -> nothing / boolean
+-- | overlay_visible()                       -> boolean
+-- |     set_enabled shows or hides the PANEL; `enabled` is "timing is
+-- |     being collected", which a spike recording does with the panel
+-- |     hidden - these are not the same question.
+-- | reset()                                 -> nothing
+-- | report()                                -> text
+-- |
+-- | SPIKE RECORDING
+-- | record_start(path: string, threshold_ms: number) -> nothing
+-- | record_stop() / recording()             -> nothing / boolean
+-- | spike_count()                           -> integer
+-- |     Every frame slower than the threshold, with its breakdown, to a
+-- |     file. INDEPENDENT OF THE OVERLAY on purpose: the overlay costs
+-- |     real milliseconds and has itself been the largest item in a spike.
+-- |
+-- | Every entry is a NO-OP STUB when perf_composer.h is not registered (the test harness): wrap
+-- | hands `fn` back, the queries answer false / 0 / "profiler not registered".
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     call_traced, refresh; everything else is a thin pass to perf_composer.h
+-- |
+-- | @date 2026-09-13 18:15
+-- | ===============================================================================================
+--]]
 
 --[[
 prof.lua - Lua front end for perf_composer.h's profiler.
@@ -115,10 +121,24 @@ local function call_traced(name, fn, ...)
     return table.unpack(r, 1, r.n)
 end
 
---[[ An instrumented copy of `fn`, reporting its own inclusive time under `name`. The wrapper is
-the whole edit - no call site changes, and deleting the wrap line removes the instrumentation.
-Costs one local read while profiling is off, which is why it can sit on the hottest functions.
-@date 2026-09-08 08:45 ]]
+--[[ @brief An instrumented copy of `fn`, reporting its own inclusive time under `name`.
+-- |
+-- | THE WRAPPER IS THE WHOLE EDIT - `mexpru.same = prof.wrap("lua.same", mexpru.same)` - so no
+-- | call site changes, and deleting that line removes the instrumentation.
+-- |
+-- | COSTS ONE LOCAL READ WHILE PROFILING IS OFF: a comparison and a tail call, no C++ crossing,
+-- | which is why it can sit on the hottest functions.
+-- |
+-- | @details While on, every return value comes back with its arity and embedded nils intact
+-- |          (call_traced). There is no pcall: an error skips the scope's end, and
+-- |          perf_composer.h bounds that damage to the frame that threw.
+-- |
+-- | @param name  string - the scope's name in the report, "lua.<function>" by convention
+-- | @param fn    function - left untouched
+-- | @return function - the wrapper; `fn` itself when the profiler is not registered
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.wrap(name, fn)
     return function(...)
         if not enabled then
@@ -128,25 +148,46 @@ function prof.wrap(name, fn)
     end
 end
 
---[[ Opens a named scope for a PHASE that is not a single function; every begin needs its stop on
-every path out, which is why wrap() is preferred wherever a function boundary exists. @date 2026-09-08 08:45 ]]
+--[[ @brief Opens a named scope for a PHASE that is not a single function.
+-- |
+-- | EVERY BEGIN NEEDS ITS STOP on every path out, which is why wrap() is preferred wherever a
+-- | function boundary exists. Nothing is recorded while timing is off.
+-- |
+-- | @param name  string - the scope's name; stop(name) must pass the same one
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.begin(name)
     if enabled then
         vc.prof_begin(name)
     end
 end
 
---[[ Closes the scope prof.begin(name) opened. @date 2026-09-08 08:45 ]]
+--[[ @brief Closes the scope prof.begin(name) opened.
+-- |
+-- | @param name  string - the same name begin was given
+-- |
+-- | @note Checks `enabled` again rather than remembering begin's answer: switching timing on
+-- |       between a begin and its stop sends a stop with no begin to perf_composer.h.
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.stop(name)
     if enabled then
         vc.prof_end(name)
     end
 end
 
---[[ Tags the current frame with something that happened in it. This is the half that turns a timing
-report into a diagnosis: "frame took 38ms" plus "events: key:Backspace undo" says what to go and
-look at, where the timings alone only say where the time went.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Tags the current frame with something that happened in it.
+-- |
+-- | THE HALF THAT TURNS A TIMING REPORT INTO A DIAGNOSIS: "frame took 38ms" plus "events:
+-- | key:Backspace undo" says what to go and look at, where the timings alone only say where the
+-- | time went. Nothing is recorded while timing is off.
+-- |
+-- | @param name  string - the tag, e.g. "key:Backspace"
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.event(name)
     if enabled then
         vc.prof_event(name)
@@ -159,78 +200,136 @@ local function refresh()
     vc.prof_enable(enabled)
 end
 
---[[ Shows/hides the PANEL. Turning it off must not stop a recording that is running - the whole
-point of the recording mode is to leave it on with the panel hidden.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Shows or hides the profiler PANEL, despite the name.
+-- |
+-- | TURNING IT OFF DOES NOT STOP A RUNNING RECORDING - the whole point of the recording mode is to
+-- | leave it on with the panel hidden. Timing is recomputed as "panel OR recording".
+-- |
+-- | @param on  boolean - any truthy value shows it
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.set_enabled(on)
     overlay = on and true or false
     refresh()
 end
 
---[[ Whether timing is actually being collected right now - the panel OR a recording. @date 2026-09-08 08:45 ]]
+--[[ @brief Whether timing is being collected right now - for the panel OR a recording.
+-- |
+-- | @return boolean - NOT whether the panel is shown; that is overlay_visible
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.enabled()
     return enabled
 end
 
--- Whether the PANEL should be drawn - what content.lua asks. Not the same as enabled(): a recording
--- runs with this false, which is the whole point.
---[[ Whether the profiler PANEL is on screen. Distinct from `enabled` above, which is true while
-timing is being collected for any reason - a spike recording collects with the overlay hidden. @date 2026-09-12 03:35 ]]
+--[[ @brief Whether the profiler PANEL should be drawn - what content.lua asks.
+-- |
+-- | DISTINCT FROM enabled(), which is true while timing is collected for any reason: a spike
+-- | recording collects with this false, which is the whole point.
+-- |
+-- | @return boolean - what set_enabled last set
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.overlay_visible()
     return overlay
 end
 
---[[ Clears the worst-frame record, so the next spike is measured against a fresh high-water mark
-rather than against something that already happened. @date 2026-09-08 08:45 ]]
+--[[ @brief Clears the worst-frame record.
+-- |
+-- | So the next spike is measured against a fresh high-water mark rather than against something
+-- | that already happened.
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.reset()
     vc.prof_reset()
 end
 
---[[ The formatted report, already sorted and laid out in C++. The overlay only splits it on
-newlines, so "what a millisecond means" is decided in exactly one place. @date 2026-09-08 08:45 ]]
+--[[ @brief The formatted report, already sorted and laid out in C++.
+-- |
+-- | THE OVERLAY ONLY SPLITS IT ON NEWLINES, so "what a millisecond means" is decided in exactly one
+-- | place.
+-- |
+-- | @return string - multi-line text
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.report()
     return vc.prof_report()
 end
 
--- Raw clock, milliseconds, for a one-off measurement that doesn't deserve a named scope.
---[[ The profiler's own clock, in milliseconds. Used so a caller timing something by hand reads the
-same clock the frame breakdown does,
-        rather than a second one that drifts against it. @date 2026-09-12 03:35 ]]
+--[[ @brief The profiler's own clock, in milliseconds.
+-- |
+-- | FOR A ONE-OFF MEASUREMENT that does not deserve a named scope: a caller timing something by
+-- | hand reads the same clock the frame breakdown does, rather than a second one that drifts
+-- | against it. Works whether or not timing is on.
+-- |
+-- | @return number - milliseconds, from an arbitrary origin; only differences mean anything
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.now_ms()
     return vc.prof_now_ms()
 end
 
---[[ Spike recording (perf_composer.h). Writes every frame slower than `threshold_ms` to `path`,
-with its full breakdown and event tags, appending across runs.
-
-Independent of the overlay ON PURPOSE. The overlay costs real milliseconds and has itself been the
-biggest single item in a spike frame, so watching for spikes with it on measures the watching. This
-is the mode to actually hunt a lag in: recording on, overlay off, use the app normally, read the
-file afterwards. prof_record_start() turns profiling on by itself, since recording with it off would
-silently write nothing.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Starts a spike recording: every frame slower than `threshold_ms` goes to `path`.
+-- |
+-- | INDEPENDENT OF THE OVERLAY ON PURPOSE. The overlay costs real milliseconds and has itself been
+-- | the biggest single item in a spike frame, so watching for spikes with it on measures the
+-- | watching. This is the mode to hunt a lag in: recording on, overlay off, use the app normally,
+-- | read the file afterwards.
+-- |
+-- | TIMING TURNS ON BY ITSELF, since recording with it off would silently write nothing.
+-- |
+-- | @details Each frame is written with its full breakdown and event tags, appending across runs
+-- |          (perf_composer.h).
+-- |
+-- | @param path          string | nil - defaults to "perf_spikes.log". The data prefix is the
+-- |                      caller's to add, as content.lua does, so --test writes under test_run/
+-- | @param threshold_ms  number | nil - defaults to 25
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.record_start(path, threshold_ms)
     vc.prof_record_start(path or "perf_spikes.log", threshold_ms or 25.0)
     refresh()
 end
 
---[[ Ends a spike recording and closes its file. Timing goes back to following the panel alone. @date 2026-09-08 08:45 ]]
+--[[ @brief Ends a spike recording and closes its file.
+-- |
+-- | Timing goes back to following the panel alone.
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.record_stop()
     vc.prof_record_stop()
     refresh()
 end
 
---[[ Whether a spike recording is running - the overlay says so, since the mode is deliberately
-invisible otherwise. @date 2026-09-08 08:45 ]]
+--[[ @brief Whether a spike recording is running.
+-- |
+-- | The overlay says so, since the mode is deliberately invisible otherwise.
+-- |
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.recording()
     return vc.prof_recording()
 end
 
---[[ How many frames the running spike recording has written so far.
-
-What the overlay shows to say a recording is doing something: a threshold set too high records
-nothing,
-        and without a count that is indistinguishable from a recording that never started. @date 2026-09-12 03:35 ]]
+--[[ @brief How many frames the spike recording has written so far.
+-- |
+-- | WHAT THE OVERLAY SHOWS TO SAY A RECORDING IS DOING SOMETHING: a threshold set too high records
+-- | nothing, and without a count that is indistinguishable from a recording that never started.
+-- |
+-- | @return integer
+-- |
+-- | @date 2026-09-13 18:15
+--]]
 function prof.spike_count()
     return vc.prof_spike_count()
 end

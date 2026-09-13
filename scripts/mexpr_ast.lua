@@ -1,57 +1,63 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-THE PARSE
-build(fontset: fontset, container: mformula.container, decls: {decl}, ns: ast.ns)
-      -> node | nil, reason, ns
-    A ROW AS MEANING - the parser's actual output. Also tags each
-    mexpr node with the ast node it names (`u.ast_id`), which is how a
-    click later resolves to a node.
-describe(fontset: fontset, container: mformula.container, decls: {decl}) -> {line, ...}
-    The same parse as indented lines, for the F4 viewer.
-
-NAMES
-parse_name(fontset: fontset, container: mformula.container) -> pattern | nil, reason
-parse_use(fontset: fontset, container: mformula.container, decls: {decl}) -> use | nil, reason
-parse_use_units(units, decls: {decl}, opts: table) -> use | nil, reason
-    A declaration versus a use. Superscripts are refused in the first
-    and allowed in the second: `f^2` is not a name, but `f^2(x)` is a
-    use of one.
-match_use(use, decl_tokens)             -> args | nil
-resolve_use(use, decls: {decl})         -> {candidate, ...}, verdict
-check_declarations(decls: {decl})       -> accepted, refused
-    Checked AS A SET: the question is whether two collide, so a name
-    that is fine alone can still be refused beside another.
-
-BUILT-INS
-builtin_functions() / named_operators() -> {name = arity} sorted
-new_decl(fields: table)                 -> decl
-DECL_SHAPE                              the declaration's shape
-    One declaration as the document hands it over. Declared here rather
-    than in editor_definition, which builds it: this is the layer that
-    decides what a declaration IS, and the dependency runs this way.
-
-builtin_declarations(fontset: fontset)  -> {decl, ...}
-is_builtin_name(fontset: fontset, text: string) -> reason | nil
-is_builtin_word(name: string)           -> boolean
-    The consecrated names, as REAL DECLARATIONS in the same shape a
-    definition box hands out, so resolution has one path and not two.
-
-PIECES
-MARK_STATUSES                           {status -> meaning}
-    The three a parse mark may carry: ok, work, bad. Declared here and
-    checked by the drawing side at load, so the two cannot drift.
-
-parse_number(text: string)              -> node | nil, reason
-parse_domain(fontset: fontset, container: mformula.container) -> name, set | nil, reason
-    A parameter cell, which must be a membership and nothing else.
-
---- internal, not on the module table --------------------------------------------------------------
-    new_parse_ctx() THE ONE creator for the `ctx_parse` the cascade carries down
-    unit()         the ONE creator for the parser's per-slot container - a DIFFERENT
-                   table from mexpru's `u`, despite both being called `u` in use
-    the unit list, the parser cascade (build_sum -> build_product ->
-    read_factor), the pattern trie and the ast tagging
-@date 2026-09-12 03:45
-================================================================================================= ]]
+-- | THE PARSE
+-- | build(fontset: fontset, container: mexpru.container, decls: {decl}, ns: ast.ns)
+-- |       -> node | nil, reason, ns
+-- |     A ROW AS MEANING - the parser's actual output. Also tags each
+-- |     mexpr node with the ast node it names (`u.ast_id`), which is how a
+-- |     click later resolves to a node.
+-- | describe(fontset: fontset, container: mexpru.container, decls: {decl}) -> {line, ...}
+-- |     The same parse as indented lines, for the F4 viewer.
+-- |
+-- | NAMES
+-- | parse_name(fontset: fontset, container: mexpru.container) -> pattern | nil, reason, node, marks
+-- | parse_use(fontset: fontset, container: mexpru.container, decls: {decl}) -> use | nil, reason
+-- | parse_use_units(units: {unit}, decls: {decl}, opts: table) -> use | nil, reason, node, marks
+-- |     A declaration versus a use. Superscripts are refused in the first
+-- |     and allowed in the second: `f^2` is not a name, but `f^2(x)` is a
+-- |     use of one.
+-- | match_use(use: mexpr_ast.use, decl_tokens: {string}) -> args, nil, spec | nil, reason
+-- | resolve_use(use: mexpr_ast.use, decls: {decl}) -> hit | nil, reason, count
+-- |     The most specific matching declaration wins; a genuine tie is an
+-- |     error, and the losers ride along on the hit as `shadowed`.
+-- | check_declarations(decls: {decl})       -> {root, accepted, refused}
+-- |     Checked AS A SET: the question is whether two collide, so a name
+-- |     that is fine alone can still be refused beside another.
+-- |
+-- | BUILT-INS
+-- | builtin_functions()                     -> {{name, arity}, ...} sorted
+-- | named_operators()                       -> {name, ...} sorted
+-- | new_decl(fields: table)                 -> decl
+-- | DECL_SHAPE                              the declaration's shape
+-- |     One declaration as the document hands it over. Declared here rather
+-- |     than in editor_definition, which builds it: this is the layer that
+-- |     decides what a declaration IS, and the dependency runs this way.
+-- |
+-- | builtin_declarations(fontset: fontset)  -> {decl, ...}
+-- | is_builtin_name(fontset: fontset, text: string) -> boolean
+-- | is_builtin_word(name: string)           -> boolean
+-- |     The consecrated names, as REAL DECLARATIONS in the same shape a
+-- |     definition box hands out, so resolution has one path and not two.
+-- |
+-- | PIECES
+-- | MARK_STATUSES                           {status -> meaning}
+-- |     The three a parse mark may carry: ok, work, bad. Declared here and
+-- |     checked by the drawing side at load, so the two cannot drift.
+-- |
+-- | parse_number(text: string)              -> {m, n, sign} | nil
+-- | parse_domain(fontset: fontset, container: mexpru.container)
+-- |       -> {var, set, marks} | nil, reason, node, marks
+-- |     A parameter cell, which must be a membership and nothing else.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     new_parse_ctx() THE ONE creator for the `ctx_parse` the cascade carries down
+-- |     unit()         the ONE creator for the parser's per-slot container - a DIFFERENT
+-- |                    table from mexpru's `u`, despite both being called `u` in use
+-- |     the unit list, the parser cascade (build_sum -> build_product ->
+-- |     read_factor), the pattern trie and the ast tagging
+-- |
+-- | @date 2026-09-13 18:45
+-- | ===============================================================================================
+--]]
 
 --[[
 mexpr_ast.lua - the bridge from the EDITED tree (mexpr) to MEANING.
@@ -377,8 +383,17 @@ mexpr_ast.DECL_SHAPE = sealed.declare("mexpr_ast", "decl", {
                  .. "builtin_declarations and by nothing else",
 })
 
---[[ Builds one. THE ONE CREATOR, called by editor_definition.declaration.
-@date 2026-09-12 20:00 ]]
+--[[ @brief Builds a declaration. THE ONE CREATOR, called by editor_definition and by
+-- |        builtin_declarations.
+-- |
+-- | @param fields  table - a literal with the DECL_SHAPE fields; it is sealed in place, not copied
+-- | @return mexpr_ast.decl - `fields` itself
+-- |
+-- | @note The seal does NOT check the literal's keys: every key is already present when `wrap`
+-- |       runs, so a misspelt `buitlin = true` passes silently. `check_keys` would catch it.
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.new_decl(fields)
     return mexpr_ast.DECL_SHAPE.wrap(fields)
 end
@@ -633,28 +648,31 @@ end
 -- Numbers
 -- ################################################################################################
 
---[[ A written decimal, as the exact rational ast.new_num() wants: {m, n, sign} meaning
-sign * m / n.
-
-    "12"     -> 12/1        "3.14"  -> 314/100        "-0.5" -> -5/10
-
-NOT REDUCED. 3.14 stays 314/100 rather than becoming 157/50, matching what
-docs/phase2_design.md section 4.2 fixes as the representation. Reducing is a normalisation, and
-normalisations belong to the equality machinery (section 9), not to reading a literal - the two
-spellings must be able to differ until something decides they do not.
-
-Returns nil for anything that is not a well-formed literal, so `1.2.3` and a bare `.` are refused
-rather than silently becoming something.
-
-WHAT THIS IS NOT. It reads LITERALS only, and a literal is not the same thing as a number.
-Verbatim, 2026-09-07: "remember sqrt(2) is also a number". `sqrt(2)` reaches the bridge as
-`(2)^{1/2}` (section 6c - the radical is rewritten on input and never exists as a node), which is
-an EXPRESSION that happens to have a constant value. So "is this a number" is a question about
-whether an expression has any free variables, answerable only once expressions can be parsed and
-their linked variables computed (section 6b's triple). This function answers the much smaller
-question "is this run of glyphs a written numeral", which is what a lexer can know. Do not extend
-it to try to recognise constant expressions - that check belongs where variables are resolved.
-@date 2026-09-08 08:55 ]]
+--[[ @brief A written decimal, as the exact rational ast.new_num() wants.
+-- |
+-- |     "12"     -> 12/1        "3.14"  -> 314/100        "-0.5" -> -5/10
+-- |
+-- | NOT REDUCED. 3.14 stays 314/100 rather than becoming 157/50, matching what
+-- | docs/phase2_design.md section 4.2 fixes as the representation. Reducing is a normalisation,
+-- | and normalisations belong to the equality machinery (section 9), not to reading a literal.
+-- |
+-- | LITERALS ONLY, and a literal is not the same thing as a number. Verbatim, 2026-09-07:
+-- | "remember sqrt(2) is also a number". `sqrt(2)` reaches the bridge as `(2)^{1/2}`, an EXPRESSION
+-- | with a constant value, and "is this a number" is a question about free variables that belongs
+-- | where variables are resolved. This answers only "is this run of glyphs a written numeral".
+-- |
+-- | @details One leading `+` or `-` is read; "++1" and "+-1" fail. The arithmetic is integer
+-- |          throughout, since a float denominator would poison every rational built from it.
+-- |
+-- | @param text  string - the glyphs' descs concatenated, e.g. "3.14"
+-- | @return {m, n, sign} | nil - sign * m / n; nil for anything that is not a well-formed literal,
+-- |         so `1.2.3` and a bare `.` are refused rather than silently becoming something
+-- |
+-- | @note Do not extend it to recognise constant expressions - that check belongs where variables
+-- |       are resolved.
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.parse_number(text)
     local sign, body = 1, text
     if body:sub(1, 1) == "-" then
@@ -1452,14 +1470,20 @@ local function read_pattern(p, units)
     }
 end
 
---[[ A row read as the DECLARATION of a name.
-
-The left-hand side of a definition: the pattern, its literals and its numbered free variables.
-Superscripts are REFUSED here - a name has no exponent, so `f^2` is not a name - which is the
-asymmetry parse_use exists on the other side of.
-
-Returns the pattern, or nil plus the reason it is not a name.
-@date 2026-09-12 03:45 ]]
+--[[ @brief A row read as the DECLARATION of a name.
+-- |
+-- | THE LEFT-HAND SIDE OF A DEFINITION: the pattern, its literals and its numbered free variables.
+-- | Superscripts are REFUSED here - a name has no exponent, so `f^2` is not a name - which is the
+-- | asymmetry parse_use exists on the other side of. The whole row must be the name.
+-- |
+-- | @param fontset    fontset - NOT USED; kept so every public entry here reads the same way
+-- | @param container  mexpru.container - checked
+-- | @return pattern | nil, string, node, marks - the pattern: {name, vars, arity, tokens, text,
+-- |         marks, sups, exprs, groups, var_nodes, base_nodes, base_drop, consumed}; or nil, the
+-- |         reason it is not a name, the node to blame, and the marks painted so far
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.parse_name(fontset, container)
     mexpru.check_container(container)
     --[[ `fontset` IS NOT USED. It is here so every public entry in this file reads the same way -
@@ -1497,30 +1521,33 @@ local function arg_literal(units)
     return nil
 end
 
---[[ Does this use match that declaration? Returns the arguments that land in the declaration's
-PARAMETER positions, or nil plus the reason it did not match.
-
-WALKED POSITION BY POSITION, because a use site cannot build the key by itself and never could: it
-knows it has `F`, four subscript arguments and three call arguments, but only the DECLARATION knows
-which of those positions are parameters and which are literal parts of the name. Author, 2026-09-10:
-"only the declaration gives the shape".
-
-So the two token lists are walked together. A `(k)` in the declaration is a parameter and swallows
-whatever the use put there; anything else is a literal and the use must have written exactly that.
-Markers - the base, `sub`, `()` - must agree outright, which is what stops `F_{a}` matching `F(a)`.
-
-The comparison is string equality on tokens the two sides emitted the same way. No unification, no
-matching a literal against a placeholder in the other direction: a declaration's literal is a part
-of its NAME, so a use that wrote something else has named something else.
-@date 2026-09-10 05:40 ]]
+--[[ @brief Does this use match that declaration?
+-- |
+-- | WALKED POSITION BY POSITION, because a use site cannot build the key by itself: it knows it has
+-- | `F`, four subscript arguments and three call arguments, but only the DECLARATION knows which of
+-- | those positions are parameters and which are literal parts of the name. Author, 2026-09-10:
+-- | "only the declaration gives the shape".
+-- |
+-- | A `(k)` in the declaration is a parameter and swallows whatever the use put there; anything
+-- | else is a literal and the use must have written exactly that. Markers - the base, `sub`, `()` -
+-- | must agree outright, which is what stops `F_{a}` matching `F(a)`.
+-- |
+-- | STRING EQUALITY on tokens both sides emitted the same way. No unification: a declaration's
+-- | literal is part of its NAME, so a use that wrote something else has named something else.
+-- |
+-- | @param use          mexpr_ast.use - checked
+-- | @param decl_tokens  {string} | nil - the declaration's token list; nil matches like `{}`, which
+-- |                     matches only another empty one
+-- | @return args, nil, spec | nil, string - the use's argument rows that land in PARAMETER
+-- |         positions, and `spec`: per argument position, 1 where the declaration pinned a literal
+-- |         and 0 where it left a parameter (what resolve_use ranks by); or nil and why not
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.match_use(use, decl_tokens)
     --[[ `use` is dereferenced on the next line, so it is required. `decl_tokens` is not: a
     declaration with no tokens is a real thing to test against, and `{}` matches only another empty
-    one, which is the correct answer rather than a special case.
-
-    The `use` container - {tokens, args, sups, consumed} - stays unsealed because it never leaves
-    this file; parse_use_units builds it and resolve_use and this function read it. The note `unit`
-    carries applies: if it ever crosses a file boundary it should be sealed. ]]
+    one, which is the correct answer rather than a special case. ]]
     USE_SHAPE.check(use, "use")
     local ut, dt = use.tokens or {}, decl_tokens or {}
     if #ut ~= #dt then
@@ -1574,21 +1601,27 @@ local function more_specific(a, b)
     return 0
 end
 
---[[ Every declaration this use could mean, and the verdict.
-
-EXACTLY ONE OR IT IS AN ERROR. Author, 2026-09-10: "you should walk the variable with multiple
-candidates, at the end if you don't have exactly one candidate, then you have multiple match
-errors". Zero is "not declared"; two or more is an ambiguity that has to be reported rather than
-guessed at, because picking one silently is how a formula ends up meaning something nobody wrote.
-
-`decls` is content.declarations_before(...).order - a LIST, walked in document order, since every
-one of them has to be tried rather than looked up by a key the use cannot construct.
-
-THE COUNT COMES BACK AS A THIRD VALUE on failure, because "none" and "several" are different
-answers and a caller can act on the difference. read_factor is the one that needs it: it tries
-several extents of a row and treats the ones that do not resolve as "read this some other way",
-which would bury an ambiguity as "not declared" if it could only see that resolution failed.
-@date 2026-09-10 05:10 ]]
+--[[ @brief Which declaration this use means: the most specific match, or why there is none.
+-- |
+-- | EVERY DECLARATION IS TRIED, in list order, since none can be looked up by a key the use cannot
+-- | construct. Zero matches is "not declared".
+-- |
+-- | THE MOST RESTRICTIVE MATCH WINS - a literal pinned leftmost beats an open parameter (see the
+-- | comment inside). Only a GENUINE TIE, two declarations pinning exactly the same positions, is an
+-- | error, because picking one silently is how a formula ends up meaning something nobody wrote.
+-- |
+-- | @param use    mexpr_ast.use - forwarded to match_use, which checks it
+-- | @param decls  {mexpr_ast.decl} | nil - checked element by element; nil is no declarations
+-- | @return hit | nil, string, integer - {decl, args, spec, shadowed}, where `shadowed` lists the
+-- |         texts of the other matches when there were several; or nil, the reason, and the number
+-- |         of matches (0 for none, >1 for a tie)
+-- |
+-- | @note THE COUNT IS WHAT read_factor NEEDS: it tries several extents of a row and reads the ones
+-- |       that do not resolve some other way, which would bury a tie as "not declared" if it could
+-- |       only see that resolution failed.
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.resolve_use(use, decls)
     --[[ `use` is only FORWARDED to match_use, which checks it. The declarations are not: this
     walks `d.tokens` on each, so a wrong element is dereferenced here. ]]
@@ -1656,38 +1689,35 @@ local USE_OPTS = sealed.declare("mexpr_ast", "use opts", {
     partial = "accept a use that stops early; `consumed` says how far it got",
 })
 
---[[ Reads a row as a USE of a name rather than a declaration of one, and hands back the exact keys
-it might be, most specific first.
-
-    f(34)   ->  keys {"f(),34", "f(),(1)"},  args {<the 34 row>}
-    a_{n+1} ->  keys {"a,sub,(1)"},          args {<the n+1 row>}
-
-ONE KEY, not a set of candidates. An earlier draft offered two readings of `f(34)` - the literal
-`f(),34` and the placeholder `f(),(1)` - and let the declaration table choose. That was wrong, and
-the correction is worth keeping because the wrong version was plausible: author, 2026-09-10, "the
-name of `f(34)`, evaluated in expr context is still `f(),(1)`, that is the signature of the
-function, it gives it it's identity, 34 is only the argument".
-
-So an argument NEVER contributes to identity at a use site, whatever is written in it. A literal
-argument is still an argument, and this row's KEY is `f(),(1)` either way.
-
-WHICH DECLARATION IT RESOLVES TO IS A DIFFERENT QUESTION, and this comment used to answer it
-wrongly. It said `F(0)` stays `CALL("F(),(1)", NUM(0))` even when a specialisation `F(),0` is
-declared - that was an elaboration nobody had ruled on, and the ruling went the other way, author
-2026-09-10: "let's try the most restrictive one". The key a use builds is still the open one; what
-answers to it is chosen by resolve_use, and a declaration that pinned the position wins. The two
-were never the same question.
-
-Returns nil plus a reason when the row is not a name in either reading, which is case 1's hard
-error: a formula containing something that is not a name is invalid, not partially understood.
-
-HALF THE JOB, deliberately. This answers "which names could this be" and hands back the argument
-rows untouched; it does NOT resolve them or build anything. The expression parser's actual output is
-a TREE - `f(34)` is `CALL("f(),(1)", NUM(34))`, or an error if that key is not declared - and this
-function is the step before it: resolution against content.declarations_before() and the node
-building both live above, because both need a namespace and a declaration table that a row alone
-cannot supply. See docs/phase2_design.md, "Case 1 in full".
-@date 2026-09-10 03:45 ]]
+--[[ @brief Reads a unit list as a USE of a name, rather than a declaration of one.
+-- |
+-- |     f(34)   ->  key "f(),(1)",    args {<the 34 row>}
+-- |     a_{n+1} ->  key "a,sub,(1)",  args {<the n+1 row>}
+-- |
+-- | ONE KEY, and an argument NEVER contributes to it, whatever is written in it. Author,
+-- | 2026-09-10: "the name of `f(34)`, evaluated in expr context is still `f(),(1)`, that is the
+-- | signature of the function, it gives it it's identity, 34 is only the argument".
+-- |
+-- | WHICH DECLARATION IT RESOLVES TO IS A DIFFERENT QUESTION, answered by resolve_use - where a
+-- | declaration that pinned the position, `F(),0`, wins over `F(),(1)` for `F(0)`.
+-- |
+-- | HALF THE JOB, deliberately. This hands back the argument rows untouched; it does NOT resolve
+-- | or build anything. The declarations are consulted DURING the read only to decide whether a
+-- | decorated group is an argument or part of the name.
+-- |
+-- | @details POWERS ARE ALLOWED, unlike in parse_name: `f^2(x)` is a use of `f`, and the power
+-- |          comes back in `sups` for the expression parser to apply.
+-- |
+-- | @param units  {unit} - as row_units builds them
+-- | @param decls  {mexpr_ast.decl} | nil
+-- | @param opts   table | nil - checked by key against USE_OPTS:
+-- |                 no_call  do not read a following bracket group as a call
+-- |                 partial  the name may stop before the units do; `consumed` says where
+-- | @return mexpr_ast.use | nil, string, node, marks - sealed {key, tokens, args, sups, marks,
+-- |         consumed}; or nil, the reason the units are not a name, the node to blame, and marks
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.parse_use_units(units, decls, opts)
     assert(type(units) == "table", "parse_use_units needs a unit list, as row_units builds")
     assert(decls == nil or type(decls) == "table", "decls must be a declaration list, or nil")
@@ -1718,14 +1748,19 @@ function mexpr_ast.parse_use_units(units, decls, opts)
             sups = res.sups or {}, marks = res.marks, consumed = res.consumed}
 end
 
--- The whole row, which is what a caller with a container has. Both halves exist because a
--- relation's SIDE is a unit list with no container of its own.
---[[ A whole row read as a USE of a name.
-
-The container form of parse_use_units below, which carries the reasoning; this only turns the row
-into units first. Powers ARE allowed here and refused in a declaration - `f^2(x)` is a use of `f`
-with an operation on it.
-@date 2026-09-12 03:45 ]]
+--[[ @brief A whole row read as a USE of a name.
+-- |
+-- | THE CONTAINER FORM OF parse_use_units above, which carries the reasoning; this only turns the
+-- | row into units first. Both exist because a relation's SIDE is a unit list with no container of
+-- | its own.
+-- |
+-- | @param fontset    fontset - NOT USED; kept so every public entry here reads the same way
+-- | @param container  mexpru.container - checked
+-- | @param decls      {mexpr_ast.decl} | nil
+-- | @return as parse_use_units, with no options
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.parse_use(fontset, container, decls)
     mexpru.check_container(container)
     --[[ `fontset` IS NOT USED. It is here so every public entry in this file reads the same way -
@@ -2894,10 +2929,15 @@ are meant to differ. ]]
 
 local builtin_cache = nil
 
---[[ The built-in FUNCTION names with their arities, sorted - for anything that has to list them
-to a person. Sorted for the same reason builtin_declarations is: `pairs` over string keys is
-randomised per process, and a help page whose order changed between runs would be its own small bug.
-@date 2026-09-11 12:40 ]]
+--[[ @brief The built-in FUNCTION names with their arities, for listing them to a person.
+-- |
+-- | SORTED, because `pairs` over string keys is randomised per process, and a help page whose order
+-- | changed between runs would be its own small bug.
+-- |
+-- | @return {{name: string, arity: integer}, ...} - a fresh list, by name
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.builtin_functions()
     local out = {}
     for word, arity in pairs(BUILTIN_ARITY) do
@@ -2907,10 +2947,15 @@ function mexpr_ast.builtin_functions()
     return out
 end
 
---[[ The big operators written as WORDS - the binders, `lim` through `argmax` - sorted, same reason.
-The glyph operators are left out: those are one keystroke, not a word typed letter by letter, and
-they are already covered where the symbols are.
-@date 2026-09-11 12:40 ]]
+--[[ @brief The big operators written as WORDS - the binders, `lim` through `argmax`.
+-- |
+-- | THE GLYPH OPERATORS ARE LEFT OUT: those are one keystroke, not a word typed letter by letter,
+-- | and they are already covered where the symbols are.
+-- |
+-- | @return {string, ...} - a fresh list, sorted for the same reason as builtin_functions
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.named_operators()
     local out = {}
     for spelling in pairs(BIGOP_BY_SPELLING) do
@@ -2922,28 +2967,28 @@ function mexpr_ast.named_operators()
     return out
 end
 
---[[ The built-ins as REAL DECLARATIONS - the same shape a definition box hands out, so resolution
-cannot tell them apart from something the user wrote.
-
-That was the intention from the start; read_pattern's own comment states it - "a built-in is an
-INJECTED DEFINITION - it reaches resolution through the same declaration set as everything written
-by hand, so this reads the name and resolution answers, once" - and until now nothing produced them,
-so `sin(x)` serialized correctly and then failed to build.
-
-BUILT BY PARSING, not by writing the tuples out. A declaration is a token walk (`sin(),(1)`), and
-hand-writing one here would be a second opinion about what a token is - the exact drift the
-`tokens`/`groups` fields ride along on the pattern to avoid. Parsing `\sin (x)` through the ordinary
-name parser guarantees a built-in keys identically to a use of it, because the same code produced
-both.
-
-THE ARGUMENT NAMES ARE MEANINGLESS - `x`, `y` - and that is not sloppiness but the rule: a
-parameter's spelling was never identity, `f(x)` and `f(z)` are one name. Any letter would do.
-
-SORTED, because `pairs` over string keys is randomised per process and declaration ORDER is the
-tie-break when two candidates are equally specific. An unsorted list would rank ties differently
-between runs, which is the shape of a bug this project has already had once (read_constraints,
-2026-09-10).
-@date 2026-09-11 12:10 ]]
+--[[ @brief The built-ins as REAL DECLARATIONS - the same shape a definition box hands out.
+-- |
+-- | SO RESOLUTION CANNOT TELL THEM APART from something the user wrote: a built-in is an injected
+-- | definition, reaching resolution through the same declaration set as everything written by hand.
+-- |
+-- | BUILT BY PARSING, not by writing the tuples out. A declaration is a token walk (`sin(),(1)`),
+-- | and hand-writing one here would be a second opinion about what a token is. Parsing `\sin (x)`
+-- | through the ordinary name parser guarantees a built-in keys identically to a use of it.
+-- |
+-- | THE ARGUMENT NAMES ARE MEANINGLESS - `x`, `y` - by rule: a parameter's spelling was never
+-- | identity, `f(x)` and `f(z)` are one name.
+-- |
+-- | @details SORTED BY TEXT, because `pairs` over string keys is randomised per process and a list
+-- |          that changed order between runs is the shape of a bug this project has had once
+-- |          (read_constraints, 2026-09-10). BUILT ONCE and cached for the process.
+-- |
+-- | @param fontset  fontset - used to build the rows parsed; only the first call's matters, since
+-- |                 the result is cached
+-- | @return {mexpr_ast.decl, ...} - each with `builtin = true`; the CACHED list, not a copy
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.builtin_declarations(fontset)
     if builtin_cache then
         return builtin_cache
@@ -3001,13 +3046,17 @@ local function with_builtins(fontset, decls)
     return out
 end
 
---[[ Is `text` one of the consecrated names - a key nothing in a document may claim?
-
-Separate from with_builtins because the two answer different questions at different times: that one
-assembles the list a parse resolves against, this one is what check_declarations asks BEFORE
-accepting a definition, so the refusal can name the reason instead of the definition silently never
-taking effect.
-@date 2026-09-11 16:00 ]]
+--[[ @brief Is `text` a consecrated KEY - `sin(),(1)` - that nothing in a document may claim?
+-- |
+-- | BY KEY, so `sin_{n}` is not one. is_builtin_word asks about the word instead, which is the
+-- | stricter question and the one check_declarations uses.
+-- |
+-- | @param fontset  fontset - passed to builtin_declarations
+-- | @param text     string - a declaration's pattern text
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.is_builtin_name(fontset, text)
     for _, d in ipairs(mexpr_ast.builtin_declarations(fontset)) do
         if d.text == text then
@@ -3017,21 +3066,30 @@ function mexpr_ast.is_builtin_name(fontset, text)
     return false
 end
 
---[[ THE PARSER'S ACTUAL OUTPUT: a row as a real ast.lua tree.
-
-Core: the top of the cascade - build_connective, since the connectives sit above the relations - and
-the place the mexpr-to-ast tags are written as it goes, so a click on a glyph can later name the
-node it produced.
-
-Params: `decls` is what the DOCUMENT declares; the built-ins are added HERE rather than by the
-caller, so being in scope is a property of the language and not something a call site can forget.
-`ns` is optional and a fresh namespace is made when it is missing.
-
-Returns ALWAYS THREE VALUES in the same order, success or not: `node, err, ns`. Returning
-`node, ns` on success and `nil, err, ns` on failure would put the namespace in a different slot
-depending on the outcome, and a caller destructuring all three would silently bind `ns` to nil on
-the happy path - which is exactly what happened here first.
-@date 2026-09-12 03:50 ]]
+--[[ @brief THE PARSER'S ACTUAL OUTPUT: a row as a real ast.lua tree.
+-- |
+-- | THE TOP OF THE CASCADE - build_connective, since the connectives sit above the relations - and
+-- | the place the mexpr-to-ast tags are written as it goes, so a click on a glyph can later name
+-- | the node it produced.
+-- |
+-- | THE BUILT-INS ARE ADDED HERE rather than by the caller, so being in scope is a property of the
+-- | language and not something a call site can forget. A document declaration colliding with one
+-- | is dropped.
+-- |
+-- | @param fontset    fontset - needed for the built-in declarations
+-- | @param container  mexpru.container - checked
+-- | @param decls      {mexpr_ast.decl} | nil - what the DOCUMENT declares above this row; checked
+-- |                   when given
+-- | @param ns         ast.ns | nil - checked when given; a fresh namespace is made when missing
+-- | @return node | nil, string | nil, ast.ns - ALWAYS THREE VALUES in the same order: `node, nil,
+-- |         ns` or `nil, err, ns`
+-- |
+-- | @note `node, ns` on success would put the namespace in a different slot depending on the
+-- |       outcome, and a caller destructuring all three would bind `ns` to nil on the happy path -
+-- |       which is exactly what happened here first.
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.build(fontset, container, decls, ns)
     mexpru.check_container(container)
     --[[ `decls` is OPTIONAL - with_builtins turns nil into just the built-ins, which is what a
@@ -3351,43 +3409,47 @@ local function contains_definition(decl, decls)
     return nil
 end
 
---[[ Every definition of a document, checked against the rules, in document order.
-
-Returns the trie and a list of {decl, why} for the ones refused. A refused definition is NOT in the
-trie and is left out of the accepted list, so what comes back is a set that satisfies the invariants
-rather than the set that was written.
-
-ORDER IS THE DOCUMENT'S, and it decides which of two conflicting definitions survives: the earlier
-one. That is the same rule as content.declarations_before - a name means what was said above it -
-applied to the definitions themselves.
-
-WHAT THIS DOES NOT DO YET. Accepting a definition can break one BELOW it, since inserting a box
-shifts what every later box can see, and this only ever looks backwards. The pass that answers "does
-accepting this at position k break anything on either side of k" is described in
-docs/phase2_design.md 18d and is not written.
-@date 2026-09-10 10:10 ]]
---[[ Is this the name of a built-in - a word no document may claim?
-
-BY NAME, NOT BY KEY, so `sin_{n}` and `sin(x,y)` are refused alongside `sin(x)`. The point is that
-the WORD means sine; a document that could attach a second meaning to it under a different arity
-would be just as confusing as one that redefined it outright, and the reader has no way to know
-which was meant.
-
-Needs no fontset, unlike builtin_declarations, because it asks about the word rather than the token
-walk - which is also what lets check_declarations call it at all. @date 2026-09-11 17:20 ]]
+--[[ @brief Is this the name of a built-in - a WORD no document may claim?
+-- |
+-- | BY NAME, NOT BY KEY, so `sin_{n}` and `sin(x,y)` are refused alongside `sin(x)`. The WORD means
+-- | sine; a document that could attach a second meaning to it under a different arity would be just
+-- | as confusing as one that redefined it outright.
+-- |
+-- | @details Needs no fontset, unlike builtin_declarations, because it asks about the word rather
+-- |          than the token walk - which is what lets check_declarations call it at all. Built-in
+-- |          FUNCTIONS only; the named big operators are not in the list.
+-- |
+-- | @param name  string | nil - a declaration's bare name; nil is not one
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.is_builtin_word(name)
     return name ~= nil and BUILTIN_ARITY[name] ~= nil
 end
 
---[[ Which of these declarations may coexist, and why the rest may not.
-
-Core: the document's declarations are checked AS A SET, not one at a time, because the question is
-whether two of them collide - a name that is fine alone is refused beside one it is ambiguous with.
-Returns accepted and refused lists, each refusal carrying its reason so the editor can say it.
-
-Detail: a consecrated name is refused FIRST, before any conflict question, because the answer is
-different in kind - not "this collides with another definition" but "that word is not available".
-@date 2026-09-12 03:45 ]]
+--[[ @brief Which of these declarations may coexist, and why the rest may not.
+-- |
+-- | CHECKED AS A SET, not one at a time, because the question is whether two collide - a name that
+-- | is fine alone is refused beside one it is ambiguous with.
+-- |
+-- | ORDER IS THE DOCUMENT'S, and it decides which of two conflicting definitions survives: the
+-- | earlier one - the same rule as content.declarations_before, applied to the definitions
+-- | themselves. A refused definition is left out of the trie and the accepted list, so what comes
+-- | back satisfies the invariants rather than being the set that was written.
+-- |
+-- | @details In order, a definition is refused for: a consecrated word; a trie conflict; containing
+-- |          an accepted name; or making an already accepted one ambiguous.
+-- |
+-- | @param decls  {mexpr_ast.decl} - checked element by element
+-- | @return {root, accepted, refused} - the trie, the accepted decls, and {decl, why} per refusal
+-- |
+-- | @note Only looks BACKWARDS. Inserting a box above existing ones can still break those below;
+-- |       they are re-checked next frame and the later one is refused, without telling the user
+-- |       which box became invalid - docs/phase2_design.md 18d.
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.check_declarations(decls)
     check_decls(decls, "decls")
     local root, accepted, refused = trie_node(), {}, {}
@@ -3440,24 +3502,26 @@ function mexpr_ast.check_declarations(decls)
     return {root = root, accepted = accepted, refused = refused}
 end
 
---[[ The parse of `container`, as indented lines for the F4 viewer:
-
-    EQ
-      CALL "F(),(1)"
-        NUM 0
-      REF "y"
-
-RENDERS THE REAL TREE. It builds an actual ast.lua node and walks that, rather than describing the
-row a second time - so the viewer cannot show a shape the parser did not build. An earlier version
-walked the row itself, which was a parallel traversal free to drift from the real one; for a tool
-whose whole job is to say what the parser did, that is the one bug it must not have.
-
-`decls` is content.declarations_before(...).order - the LIST, because resolution walks candidates
-rather than looking up a key the use site cannot build.
-
-FAILURE IS SHOWN AS FAILURE. Anything with no parser yet - addition, a bare parenthesis, a chained
-relation - stops the build, and the reason is what appears. Nothing is approximated.
-@date 2026-09-10 06:40 ]]
+--[[ @brief The parse of `container`, as indented lines for the F4 viewer.
+-- |
+-- |     EQ
+-- |       CALL "F(),(1)"
+-- |         NUM 0
+-- |       REF "y"
+-- |
+-- | RENDERS THE REAL TREE. It calls build and walks the node that comes back, rather than
+-- | describing the row a second time - so the viewer cannot show a shape the parser did not build.
+-- |
+-- | FAILURE IS SHOWN AS FAILURE. Whatever stops the build - a chained relation, something with no
+-- | parser yet - becomes the one line shown. Nothing is approximated.
+-- |
+-- | @param fontset    fontset - forwarded to build
+-- | @param container  mexpru.container - forwarded to build, which checks it
+-- | @param decls      {mexpr_ast.decl} | nil - the LIST content.declarations_before gives
+-- | @return {{depth: integer, text: string}, ...} - one "no tree: <reason>" line on failure
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.describe(fontset, container, decls)
     local out = {}
     local node, err, ns = mexpr_ast.build(fontset, container, decls)
@@ -3469,28 +3533,31 @@ function mexpr_ast.describe(fontset, container, decls)
     return out
 end
 
---[[ Parses a PARAMETER cell, which must be a membership and nothing else:
-
-        <name> \in <set>          n \in \N ,  v_{max} \in \R ^{2}
-
-Requested 2026-09-07: "the param boxes should reject anything else than apartenance of named to
-set". A parameter cell is a domain restriction, so it names the variable and the set it is drawn
-from; an expression that is not a membership does not restrict anything and is refused rather than
-half-understood.
-
-A SECOND form was floated and then WITHDRAWN the same day: a cell could also have been
-`a = <string or constant>`, binding the parameter to a constant instead of restricting it to a set.
-Verbatim on dropping it: "yeah we get rid if that". Membership is the only accepted form - do not
-re-add the equality case without asking, it was considered and declined.
-
-Returns {var = <name pattern>, set = {<mexpr nodes>}, marks = ...} or nil, message, node, marks.
-
-WHAT IS NOT CHECKED: the SET side. It is handed back as the raw nodes after the membership sign,
-because validating it means parsing a general expression (`\R ^{2}` is a power) and that parser
-does not exist yet - see docs/phase2_design.md section 3, layer 2. Marking those nodes "ok" rather
-than leaving them blank is deliberate: they were read, they are simply not yet understood, and
-painting them as unreached would be a lie about how far the parse got.
-@date 2026-09-08 08:55 ]]
+--[[ @brief Parses a PARAMETER cell, which must be a membership and nothing else.
+-- |
+-- |         <name> \in <set>          n \in \N ,  v_{max} \in \R ^{2}
+-- |
+-- | A DOMAIN RESTRICTION: it names the variable and the set it is drawn from. Requested 2026-09-07:
+-- | "the param boxes should reject anything else than apartenance of named to set". An expression
+-- | that is not a membership restricts nothing, and is refused rather than half-understood.
+-- |
+-- | THE SET SIDE IS NOT CHECKED. It is handed back as the raw nodes after the membership sign and
+-- | marked "ok" - read, not yet understood - because validating it means parsing a general
+-- | expression (`\R ^{2}` is a power), and this reader was written before that parser existed.
+-- |
+-- | @details With no membership sign at all, everything typed is marked "work" rather than "bad":
+-- |          a cell on its way to `n \in \N` spends every keystroke before the sign in that state.
+-- |
+-- | @param fontset    fontset - NOT USED, like parse_name's
+-- | @param container  mexpru.container - checked
+-- | @return {var, set, marks} | nil, string, node, marks - `var` is the name pattern, `set` the
+-- |         mexpr nodes after the sign; or nil, the reason, the node to blame, and the marks
+-- |
+-- | @note A second form, `a = <constant>`, was floated and WITHDRAWN the same day - verbatim: "yeah
+-- |       we get rid if that". Do not re-add it without asking.
+-- |
+-- | @date 2026-09-13 18:45
+--]]
 function mexpr_ast.parse_domain(fontset, container)
     mexpru.check_container(container)
     local p = new_parser()

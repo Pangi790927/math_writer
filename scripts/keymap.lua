@@ -1,44 +1,46 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-BINDINGS AS TEXT
-parse(text: string)                     -> bind | nil, reason
-parse_filter(text: string)              -> bind | nil, reason
-check_bind(bind: keymap.bind)           -> bind
-format(bind: keymap.bind)                      -> text
-    "Ctrl+Shift+K" both ways. parse_filter differs in one thing: a
-    chord with NO key is a legitimate answer, which is what the search
-    box means by "everything on Ctrl".
-filter_matches(bind: bind, filter)      -> boolean
-filter_ids(filter)                      -> {id = true}
-
-ASKING, PER FRAME
-begin_frame()                           -> nothing
-pressed(id: id)                         -> boolean
-mods()                                  -> ctrl, shift, alt
-    THE call. One refresh per frame backs both, so every question
-    asked in a frame gets one consistent answer.
-
-NAMES AND LABELS
-label(id: id) / key_name(id: id) / key_of(name: string) / key_label(name: string)
-owner_of(id: id)                        -> "cpp" | "lua"
-each(fn: function)                      -> nothing
-    In the registry's own order, which is what F1 prints and F2 lists.
-
-EDITING
-set_bind(id: id, index: number, text: string) -> ok, reason
-remove_bind(id: id, index: number)      -> ok
-conflicts(bind: bind, except_id)        -> {id, ...}
-reset(id: id)                           -> ok
-    reset with no id is "default all".
-
-PERSISTENCE
-serialize() / deserialize(text: string, warn)
-dirty() / clear_dirty()
-    One line per action that differs from the factory binds.
-
---- internal, not on the module table --------------------------------------------------------------
-    DEFAULTS, the alias table, the live actions and the mod refresh
-@date 2026-09-12 03:45
-================================================================================================= ]]
+-- | BINDINGS AS TEXT
+-- | parse(text: string)                     -> bind | nil, reason
+-- | parse_filter(text: string)              -> bind | nil, reason
+-- | check_bind(bind: keymap.bind)           -> bind
+-- | format(bind: keymap.bind)               -> text
+-- |     "Ctrl+Shift+K" both ways. parse_filter differs in one thing: a
+-- |     chord with NO key is a legitimate answer, which is what the search
+-- |     box means by "everything on Ctrl".
+-- | filter_matches(bind: keymap.bind, filter: keymap.bind | nil) -> boolean
+-- | filter_ids(filter: keymap.bind | nil)   -> {id = true}
+-- |
+-- | ASKING, PER FRAME
+-- | begin_frame()                           -> nothing
+-- | pressed(id: id)                         -> boolean
+-- | mods()                                  -> ctrl, shift, alt
+-- |     THE call. One refresh per frame backs both, so every question
+-- |     asked in a frame gets one consistent answer.
+-- |
+-- | NAMES AND LABELS
+-- | label(id: id) / key_name(id: integer) / key_of(name: string) / key_label(name: string)
+-- | owner_of(id: id)                        -> "cpp" | nil
+-- | each(fn: function(id, action))          -> nothing
+-- |     In the registry's own order, which is what F1 prints and F2 lists.
+-- |
+-- | EDITING
+-- | set_bind(id: id, index: number, text: string) -> ok, reason
+-- | remove_bind(id: id, index: number)      -> ok
+-- | conflicts(bind: keymap.bind, except_id: id | nil) -> {id, ...}
+-- | reset(id: id | nil)                     -> ok
+-- |     reset with no id is "default all".
+-- |
+-- | PERSISTENCE
+-- | serialize() / deserialize(text: string, warn: function | nil)
+-- | dirty() / clear_dirty()
+-- |     One line per action that differs from the factory binds.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     DEFAULTS, the alias table, the live actions and the mod refresh
+-- |
+-- | @date 2026-09-13 21:00
+-- | ===============================================================================================
+--]]
 
 --[[
 keymap.lua - the one place that decides whether a key press means an ACTION.
@@ -206,11 +208,6 @@ PRETTY["ImGuiKey_Insert"]     = "Insert"
 PRETTY["ImGuiKey_PageUp"]     = "PageUp"
 PRETTY["ImGuiKey_PageDown"]   = "PageDown"
 
---[[ The tokenising half of parse(), split out so parse() and parse_filter() cannot disagree about
-what a binding string means. It answers with whatever the text described, INCLUDING a bind with no
-key in it - deciding whether that is acceptable is the caller's business, and it is the only thing
-the two callers differ on.
-@date 2026-09-09 23:40 ]]
 --[[ THE `bind` CONTAINER - one key combination, parsed.
 
 WHAT A BIND IS, which nothing said before: the three modifiers as plain booleans, the key by its
@@ -240,11 +237,23 @@ local function new_bind()
     return BIND_SHAPE.wrap{ctrl = false, shift = false, alt = false, any_mods = false, key = nil}
 end
 
---[[ Asserts that this is a parsed bind, for a function that takes one. Returns it. @date 2026-09-12 16:40 ]]
+--[[ @brief Asserts that `bind` is a parsed bind, for a function that takes one.
+-- |
+-- | @param bind  any
+-- | @return keymap.bind - `bind`
+-- | @throws naming the type that arrived, for anything but a sealed keymap.bind
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.check_bind(bind)
     return BIND_SHAPE.check(bind, "bind")
 end
 
+--[[ The tokenising half of parse(), split out so parse() and parse_filter() cannot disagree about
+what a binding string means. It answers with whatever the text described, INCLUDING a bind with no
+key in it - deciding whether that is acceptable is the caller's business, and it is the only thing
+the two callers differ on.
+@date 2026-09-09 23:40 ]]
 local function parse_tokens(text)
     if type(text) ~= "string" then
         return nil, "not text"
@@ -316,13 +325,23 @@ local function parse_tokens(text)
     return bind
 end
 
---[[ "Ctrl+Shift+K" -> {ctrl=true, shift=true, alt=false, key="ImGuiKey_K"}, or nil plus a reason.
-
-Case-insensitive on the modifiers and on named keys; a single printable character keeps its own
-case for the alias lookup ("/" and "." are keys, not letters). Returns the REASON on failure
-because the customiser shows it in the box rather than just refusing silently - a field that
-rejects without saying why is the thing that makes a settings screen infuriating.
-@date 2026-09-09 23:40 ]]
+--[[ @brief "Ctrl+Shift+K" -> a bind {ctrl=true, shift=true, alt=false, any_mods=false, key=...}.
+-- |
+-- | THE REASON COMES BACK ON FAILURE, because the customiser shows it in the box - a field that
+-- | rejects without saying why is what makes a settings screen infuriating.
+-- |
+-- | A KEY IS REQUIRED: "Ctrl+" is refused here, and accepted by parse_filter.
+-- |
+-- | @details Case-insensitive on the modifiers and named keys; "Control" means Ctrl, and "All" or
+-- |          "Any" is the any-modifiers wildcard. A key name resolves through the aliases, then the
+-- |          real ImGui names, then only the unambiguous shapes - one letter or digit, an F-key.
+-- |
+-- | @param text  string - anything else answers nil, "not text"
+-- | @return keymap.bind | nil, string - sealed; or nil and why: "no key, only modifiers",
+-- |         "two keys: a and b", "unknown key: x"
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.parse(text)
     local bind, err = parse_tokens(text)
     if not bind then
@@ -334,13 +353,18 @@ function keymap.parse(text)
     return bind
 end
 
---[[ Like parse(), but a bind with NO key is a legitimate answer rather than an error: "Ctrl+" is a
-complete thought when the thing being described is a filter rather than a binding.
-
-Returns nil, nil for text that describes nothing at all (empty, or only whitespace and "+"), which
-the customiser reads as "no filter" - distinct from nil plus a reason, which is a typo worth
-showing. Both callers of parse_tokens() are here, so "Ctrl" means exactly one thing in this file.
-@date 2026-09-09 23:40 ]]
+--[[ @brief Like parse(), for a SEARCH: a chord with no key is a legitimate answer.
+-- |
+-- | "Ctrl+" IS A COMPLETE THOUGHT when what is being described is a filter rather than a binding.
+-- | Both this and parse() go through one tokeniser, so "Ctrl" means exactly one thing in this file.
+-- |
+-- | @param text  string | nil
+-- | @return keymap.bind | nil, string | nil - the filter; nil, nil for text describing nothing
+-- |         (not a string, empty, only spaces and "+"), which the customiser reads as "no filter";
+-- |         nil and a reason for a typo worth showing
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.parse_filter(text)
     if type(text) ~= "string" or text:match("^[%s+]*$") then
         return nil, nil
@@ -355,21 +379,23 @@ function keymap.parse_filter(text)
     return bind
 end
 
---[[ Does `bind` answer to `filter`? The rule the F2 customiser's search box runs on.
-
-WHICH HALVES ARE COMPARED IS DECIDED BY WHICH HALVES THE FILTER HAS, and that is the whole design:
-a filter naming modifiers and a key matches both, a filter naming only modifiers ignores the key,
-and one naming only a key ignores the modifiers. Author's own words, 2026-09-09: "I want to filter
-only those with maching cotrol and key, if key is missing, match only by contor and in reverse the
-same". So "Ctrl+" finds every Ctrl binding whatever key it uses, and "K" finds every binding on K
-whatever modifiers it carries.
-
-MODIFIERS COMPARE EXACTLY, not as a subset: "Ctrl+" answers Ctrl+S but NOT Ctrl+Shift+Z. Searching
-for a chord you half-remember is the point, and a Ctrl filter that returns all forty Ctrl-anything
-bindings has not narrowed anything. A bind carrying the "+All" wildcard has stopped caring about
-modifiers by its own definition, so it answers any modifier filter - refusing it would hide exactly
-the bindings that are hardest to find by memory.
-@date 2026-09-09 23:40 ]]
+--[[ @brief Does `bind` answer to `filter`? The rule the F2 customiser's search box runs on.
+-- |
+-- | WHICH HALVES ARE COMPARED IS DECIDED BY WHICH HALVES THE FILTER HAS: modifiers and a key match
+-- | both, only modifiers ignores the key, only a key ignores the modifiers. Author, 2026-09-09: "I
+-- | want to filter only those with maching cotrol and key, if key is missing, match only by contor
+-- | and in reverse the same".
+-- |
+-- | MODIFIERS COMPARE EXACTLY, not as a subset: "Ctrl+" answers Ctrl+S but NOT Ctrl+Shift+Z, since
+-- | a Ctrl filter returning forty bindings has narrowed nothing. A "+All" bind has stopped caring
+-- | about modifiers by definition, so it answers any modifier filter.
+-- |
+-- | @param bind    keymap.bind - checked when there is a filter
+-- | @param filter  keymap.bind | nil - checked; nil is "everything" and matches without looking
+-- | @return boolean - false for a bind with no key, whatever the filter
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.filter_matches(bind, filter)
     --[[ A NIL FILTER IS "EVERYTHING", which is the documented answer and the reason the customiser
     can hand its own state straight through. A nil BIND is not an answer - it is a caller that lost
@@ -399,10 +425,17 @@ function keymap.filter_matches(bind, filter)
     return true
 end
 
---[[ The inverse. Modifier order is fixed at Ctrl+Shift+Alt regardless of how it was typed, so the
-same bind always reads the same way and two spellings of one combo cannot look different in the
-customiser.
-@date 2026-09-08 08:40 ]]
+--[[ @brief A bind as text - the inverse of parse().
+-- |
+-- | ONE SPELLING PER BIND: modifier order is fixed at Ctrl+Shift+Alt however it was typed, so two
+-- | spellings of one combo cannot look different in the customiser, or in the save file.
+-- |
+-- | @param bind  keymap.bind - checked
+-- | @return string - "Ctrl+Shift+K", with "+All" trailing for the wildcard; "(unbound)" for a bind
+-- |         with no key
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.format(bind)
     keymap.check_bind(bind)
     if not bind or not bind.key then
@@ -449,8 +482,13 @@ end
 -- Bumped by keymap.begin_frame(); only used to invalidate the modifier cache above.
 local frame_counter = 0
 
---[[ Called once per frame by main.lua, before anything asks about a key: it is what invalidates
-the modifier cache above, so a bind never matches on last frame's modifiers. @date 2026-09-08 08:40 ]]
+--[[ @brief Marks a new frame. Call once per frame, before anything asks about a key.
+-- |
+-- | It invalidates the modifier cache, so a bind never matches on last frame's modifiers. main.lua
+-- | calls it; only it knows where a frame begins.
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.begin_frame()
     frame_counter = frame_counter + 1
 end
@@ -769,13 +807,25 @@ is. install_defaults() deliberately does NOT set it: loading is not an edit.
 @date 2026-09-08 08:40 ]]
 local dirty = false
 
---[[ Whether anything has been rebound since the last write. main.lua asks on the frame the
-customiser closes; see the `dirty` flag's own comment for why saving waits that long. @date 2026-09-08 08:40 ]]
+--[[ @brief Whether anything has been rebound since the last write.
+-- |
+-- | main.lua asks once the customiser is closed; the `dirty` flag's own comment says why saving
+-- | waits that long. Set by set_bind, remove_bind and reset; not by deserialize.
+-- |
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.dirty()
     return dirty
 end
 
---[[ Called by whoever wrote the file, to say the divergence on disk is current. @date 2026-09-08 08:40 ]]
+--[[ @brief Declares the keymap on disk current. Called by whoever wrote the file.
+-- |
+-- | @note Also called by main.lua right after loading, since deserialize leaves the flag as it was.
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.clear_dirty()
     dirty = false
 end
@@ -808,11 +858,17 @@ install_defaults()
 -- The API the editors use
 -- #############################################################################################
 
---[[ THE call. True when any of this action's binds matches this frame.
-
-An unknown id is an error rather than a silent false: a typo'd id would otherwise mean "this
-shortcut quietly never works again", which is invisible in a way a missing key press is not.
-@date 2026-09-08 08:40 ]]
+--[[ @brief THE call: true when any of this action's binds was pressed this frame.
+-- |
+-- | MODIFIERS MATCH EXACTLY, unless a bind carries the "+All" wildcard. Whether a held key repeats
+-- | is the ACTION's `repeat_`, not the bind's - it is a property of what the action does.
+-- |
+-- | @param id  id - a registered action, "edit.undo"
+-- | @return boolean
+-- | @throws for an unknown id: a typo'd id would otherwise be a shortcut that quietly never works
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.pressed(id)
     local action = actions[id]
     if not action then
@@ -826,22 +882,31 @@ function keymap.pressed(id)
     return false
 end
 
--- The live modifier state, for the few places that genuinely need to ask (the Alt+letter Greek
--- loop, which is a whole family of keys rather than one action).
---[[ Which modifiers are held right now, as ctrl, shift, alt.
-
-Read through the same once-per-frame refresh `pressed` uses, so every question asked in one frame
-gets one consistent answer - a modifier cannot appear to change halfway through a frame's dispatch.
-@date 2026-09-12 03:45 ]]
+--[[ @brief Which modifiers are held right now.
+-- |
+-- | THE SAME ONCE-PER-FRAME REFRESH `pressed` reads, so a modifier cannot appear to change halfway
+-- | through a frame's dispatch. For the few places that need the raw state - the Alt+letter Greek
+-- | loop, a whole family of keys rather than one action.
+-- |
+-- | @return boolean, boolean, boolean - ctrl, shift, alt; left and right collapsed into one
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.mods()
     refresh_mods(frame_counter)
     return mod_state.ctrl, mod_state.shift, mod_state.alt
 end
 
---[[ What F1 substitutes into its prose. The FIRST bind only - a rebind should never reflow a
-paragraph - and "(unbound)" rather than blank when the list has been emptied, so the sentence
-around it still reads.
-@date 2026-09-08 08:40 ]]
+--[[ @brief An action's bind as a person reads it - what F1 substitutes into its prose.
+-- |
+-- | THE FIRST BIND ONLY, so adding an alternative never reflows a paragraph.
+-- |
+-- | @param id  id
+-- | @return string - format() of the first bind; "(unbound)" for an emptied list AND for an unknown
+-- |         id, so the sentence around it still reads
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.label(id)
     local action = actions[id]
     if not action or not action.binds[1] then
@@ -850,54 +915,88 @@ function keymap.label(id)
     return keymap.format(action.binds[1])
 end
 
---[[ Integer ImGuiKey id -> its name, for the F2 recorder: vc.ImGui_keys_pressed() hands back ids
-and the recorder needs names to build a binding out of them. Nil for an id this build does not know,
-which the caller must handle - it is the only sane answer, and silently inventing a name would put
-an unresolvable key into somebody's saved keymap.
-@date 2026-09-08 08:40 ]]
+--[[ @brief An integer ImGuiKey id -> its name, for the F2 recorder.
+-- |
+-- | vc.ImGui_keys_pressed() hands back ids, and a binding is built out of names.
+-- |
+-- | @param id  integer - an ImGuiKey value
+-- | @return string | nil - nil for an id this build does not know, which the caller must handle:
+-- |         inventing a name would put an unresolvable key into somebody's saved keymap
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.key_name(id)
     return id_to_name[id]
 end
 
---[[ The reverse, and the label a person reads for a key. Both are needed by the glyph customiser,
-which is keyed by physical key rather than by letter: it has to poll the key (id) and show which
-key a row is (label). PRETTY is the same spelling the binding fields accept, so a key reads the
-same everywhere in the customiser.
-@date 2026-09-08 08:40 ]]
+--[[ @brief An ImGuiKey name -> the value to poll it by.
+-- |
+-- | For the glyph customiser, which is keyed by physical key and has to poll the key a row is on.
+-- |
+-- | @param name  string - "ImGuiKey_Q"
+-- | @return integer | string - the integer id; the NAME back when ImGui did not list it, which
+-- |         still polls, through the slow path
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.key_of(name)
     return key_id(name)
 end
 
---[[ The label a person reads for a key name, in the same spelling the binding field accepts. @date 2026-09-08 08:40 ]]
+--[[ @brief The label a person reads for a key name, in the spelling the binding field accepts.
+-- |
+-- | @param name  string | nil - "ImGuiKey_Home"
+-- | @return string - "Home"; the name without its prefix when there is no pretty form; "?" for nil
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.key_label(name)
     return PRETTY[name] or (name and name:gsub("^ImGuiKey_", "")) or "?"
 end
 
---[[ Who handles this action: "cpp" when main.cpp polls the key itself with glfwGetKey() and this
-registry only DESCRIBES it, nil for everything else. The customiser asks so it can show a note
-where the edit controls would go, rather than offering an edit nothing would read.
-@date 2026-09-09 23:55 ]]
+--[[ @brief Who handles this action: "cpp" when main.cpp polls the key itself, nil otherwise.
+-- |
+-- | A C++-OWNED ACTION IS ONLY DESCRIBED here - main.cpp reads the key with glfwGetKey(). The
+-- | customiser asks so it can show a note where the edit controls would go, rather than offering an
+-- | edit nothing would read.
+-- |
+-- | @param id  id
+-- | @return "cpp" | nil - nil also for an unknown id
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.owner_of(id)
     local action = actions[id]
     return action and action.owner or nil
 end
 
--- Every action, in DEFAULTS order rather than a random hash walk, so the customiser's table and
--- the help are stable between runs.
---[[ Every action with its live binds, in the registry's own order.
-
-THE ORDER IS THE DEFAULTS TABLE'S, which is the order F1 prints and F2 lists, so both stay stable
-across runs and neither depends on how Lua hashes ids.
-@date 2026-09-12 03:45 ]]
+--[[ @brief Every action with its live binds, in the registry's own order.
+-- |
+-- | THE ORDER IS THE DEFAULTS TABLE'S - what F1 prints and F2 lists - so both stay stable across
+-- | runs and neither depends on how Lua hashes ids.
+-- |
+-- | @param fn  function(id: id, action: table) - `action` is the LIVE {desc, repeat_, binds,
+-- |        owner}:
+-- |            read it, and edit through set_bind and friends, which keep `dirty` honest
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.each(fn)
     for _, entry in ipairs(DEFAULTS) do
         fn(entry.id, actions[entry.id])
     end
 end
 
---[[ Every action holding at least one bind that answers `filter`, as a set of ids. nil filter is
-"everything", so the customiser can hand its own state straight through without a special case.
-@date 2026-09-09 23:40 ]]
+--[[ @brief Every action holding at least one bind that answers `filter`, as a set of ids.
+-- |
+-- | @details The rule is filter_matches'. An action with no binds answers no filter.
+-- |
+-- | @param filter  keymap.bind | nil - checked up front; nil is "everything", so the customiser can
+-- |                hand its own state straight through
+-- | @return {[id] = true}
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.filter_ids(filter)
     --[[ CHECKED HERE even though filter_matches below checks it too, which is the one place that
     rule bends. A bad filter would otherwise be caught only if some action happens to HAVE a bind:
@@ -931,13 +1030,22 @@ end
 -- Editing, which is what the F2 customiser drives
 -- #############################################################################################
 
---[[ Accept a typed bind into slot `index` of `id` (index beyond the end appends). Returns
-true, or false plus the reason - the customiser puts that reason in the box.
-
-Conflicts do NOT refuse. Two actions may hold the same bind, and the customiser marks both:
-refusing would make swapping two shortcuts impossible without clearing one first, and the dispatch
-order in the editors already decides which of a colliding pair wins.
-@date 2026-09-08 08:40 ]]
+--[[ @brief Puts a typed bind into one slot of an action.
+-- |
+-- | CONFLICTS DO NOT REFUSE. Two actions may hold the same bind and the customiser marks both:
+-- | refusing would make swapping two shortcuts impossible without clearing one first, and dispatch
+-- | order in the editors already decides which of a colliding pair wins.
+-- |
+-- | A C++-OWNED ACTION IS REFUSED, since main.cpp never reads the binding.
+-- |
+-- | @param id     id
+-- | @param index  integer - the slot; past the end appends
+-- | @param text   string - as parse() takes it
+-- | @return boolean, string | nil - true, marking the keymap dirty; or false and the reason the
+-- |         customiser shows in the box
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.set_bind(id, index, text)
     local action = actions[id]
     if not action then
@@ -959,8 +1067,17 @@ function keymap.set_bind(id, index, text)
     return true
 end
 
---[[ Drops one bind from an action. An action may legitimately end up with none - it then reads as
-"(unbound)" everywhere and simply never fires. @date 2026-09-08 08:40 ]]
+--[[ @brief Drops one bind from an action.
+-- |
+-- | AN ACTION MAY END UP WITH NONE - it then reads as "(unbound)" everywhere and never fires.
+-- |
+-- | @param id     id
+-- | @param index  integer - the slot
+-- | @return boolean - true, marking the keymap dirty; false for an unknown id, an empty slot, or a
+-- |         C++-owned action
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.remove_bind(id, index)
     local action = actions[id]
     if action and action.owner == "cpp" then
@@ -974,9 +1091,17 @@ function keymap.remove_bind(id, index)
     return false
 end
 
---[[ Every action currently holding this exact bind, so the customiser can mark a collision. Order
-follows DEFAULTS, same as each().
-@date 2026-09-08 08:40 ]]
+--[[ @brief Every action currently holding this exact bind, so the customiser can mark a collision.
+-- |
+-- | @details Exact means the same key, the same wildcard, and - without the wildcard - the same
+-- |          three modifiers. A wildcard bind and a plain one on the same key do not collide here.
+-- |
+-- | @param bind       keymap.bind - checked
+-- | @param except_id  id | nil - left out of the answer: the action asking about its own bind
+-- | @return {id, ...} - in DEFAULTS order, like each()
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.conflicts(bind, except_id)
     keymap.check_bind(bind)
     local hits = {}
@@ -995,13 +1120,16 @@ function keymap.conflicts(bind, except_id)
     return hits
 end
 
--- Back to factory, for one action or (with no id) all of them.
---[[ Puts one action back to its factory binds, or the WHOLE map when given no id.
-
-The no-argument form is the customiser's "default all" - not undoable from inside the panel, which
-is why it is armed behind two clicks there. Returns true, or false for an id the registry does not
-know.
-@date 2026-09-12 03:45 ]]
+--[[ @brief Puts one action back to its factory binds, or the WHOLE keymap when given no id.
+-- |
+-- | @param id  id | nil - nil resets every action
+-- | @return boolean - true, marking the keymap dirty; false for an id the registry does not know
+-- |
+-- | @note The no-argument form is the customiser's "default all", armed behind two clicks there
+-- |       because it is not undoable from inside the panel.
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.reset(id)
     if not id then
         install_defaults()
@@ -1026,11 +1154,20 @@ end
 -- Persistence
 -- #############################################################################################
 
---[[ One line per action, "id<TAB>bind, bind, ...", and ONLY for actions that differ from the
-factory setting. That last part is the whole design: a file listing every action would freeze
-today's defaults forever, so a default improved later would never reach anyone who had opened the
-customiser once. What is written is the user's DIVERGENCE, and everything else follows the code.
-@date 2026-09-08 08:40 ]]
+--[[ @brief The keymap as text: one line per action that differs from the factory setting.
+-- |
+-- | ONLY DIVERGENCES, and that is the whole design: a file listing every action would freeze
+-- | today's defaults forever, so a default improved later would never reach anyone who had opened
+-- | the customiser once.
+-- |
+-- | @details Compared as FORMATTED text, so "Shift+Ctrl+Z" typed back in equals the factory
+-- |          "Ctrl+Shift+Z" and writes no line.
+-- |
+-- | @return string - "id<TAB>bind, bind, ..." lines in DEFAULTS order; "(unbound)" for an emptied
+-- |         action; empty when everything is at factory
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.serialize()
     local lines = {}
     for _, entry in ipairs(DEFAULTS) do
@@ -1056,13 +1193,22 @@ function keymap.serialize()
     return table.concat(lines, "\n")
 end
 
---[[ Read one back. Starts from a clean set of defaults, so a file that no longer mentions an
-action leaves that action at factory rather than at whatever the previous load left behind.
-
-An id the code no longer has is SKIPPED, not an error: an old file must not stop the app from
-starting, and the line is reported so it is not silently lost. Same for a bind that no longer
-parses.
-@date 2026-09-08 08:40 ]]
+--[[ @brief Replaces the live keymap with what serialize() wrote.
+-- |
+-- | STARTS FROM A CLEAN SET OF DEFAULTS, so an action the file no longer mentions returns to
+-- | factory rather than keeping whatever the previous load left behind.
+-- |
+-- | AN OLD FILE NEVER STOPS THE APP: an id the code no longer has is skipped, and a bind that no
+-- | longer parses is dropped - each reported through `warn`, so it is not silently lost.
+-- |
+-- | @param text  string | nil - anything but a string leaves the factory keymap in place
+-- | @param warn  function(msg: string) | nil
+-- |
+-- | @note Does not refuse a C++-OWNED action, unlike set_bind: a hand-edited keymap.save can rebind
+-- |       one, and main.cpp will not read it. The dirty flag is left alone.
+-- |
+-- | @date 2026-09-13 21:00
+--]]
 function keymap.deserialize(text, warn)
     install_defaults()
     if type(text) ~= "string" then

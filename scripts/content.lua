@@ -1,52 +1,55 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-new()                                   -> state_doc
-deserialize(text: string, fontset: fontset) -> state_doc | nil, reason
-serialize(state_doc: content.state_doc) -> text
-    A document. THE SAVE FORMAT is every box in order, each as
-    "<kind> <byte length>
-<that many bytes>", so a box's own text can
-    contain anything without escaping.
-
-BOXES
-insert_box(state_doc: content.state_doc, index: number, kind: string) -> index
-add_box(state_doc: content.state_doc, kind: string) -> index
-remove_box(state_doc: content.state_doc, i: number) -> nothing
-move_box(state_doc: content.state_doc, i: number, dir) -> nothing
-    Each fixes up active_index so the caret stays on the same LOGICAL
-    box rather than the same slot.
-box_kinds()                             -> {kind, ...}
-    In the order the radial menu offers them.
-
-DERIVATION
-derive_identity(state_doc: content.state_doc, i: number) -> index
-prune_descendants(state_doc: content.state_doc, id: id) -> nothing
-    A derived box and everything derived from it, however deep - the
-    whole subtree, not one level.
-declarations_before(state_doc: content.state_doc, index: number) -> {order, by_text}
-    Every name declared ABOVE a box, which is what it may resolve a
-    reference against.
-
-FRAME
-draw(state_doc: content.state_doc, fontset: fontset, pos: {x,y}, opts: table) -> nothing
-handle_input(state_doc: content.state_doc, fontset: fontset, pos: {x,y}) -> nothing
-    The panels swallow the frame first; then box routing, the radial
-    menu and the right-click transform menu.
-customiser_open(state_doc: content.state_doc) -> boolean
-FOR THE HELP PAGE
-draw_box_chrome(box_x, box_y, box_w, box_h, kind: string, is_active, rail_x)
-draw_demo_radial(cx, cy, hover)         -> nothing
-radial_extent()                         -> extent
-    The same chrome and the same menu, drawn at an arbitrary point so
-    F1 shows the real thing rather than a picture of it.
-
---- internal, not on the module table --------------------------------------------------------------
-    new_shell()    THE ONE creator for the document `state_doc`, and where its seal is
-                   attached; STATE_FIELDS beside it declares the shape
-    declarations_before() is public above and is THE ONE creator of the `decls`
-    container every parse and gesture downstream receives
-    the rail, the transform menu, the AST overlays and box layout
-@date 2026-09-12 03:45
-================================================================================================= ]]
+-- | new()                                   -> content.state_doc
+-- | deserialize(text: string, fontset: fontset) -> content.state_doc
+-- | serialize(state_doc: content.state_doc) -> text
+-- |     A document. THE SAVE FORMAT is every box in order, each as
+-- |     "<kind> <byte length>\n<that many bytes>", so a box's own text can
+-- |     contain anything without escaping.
+-- |
+-- | BOXES
+-- | insert_box(state_doc: content.state_doc, index: number, kind: string) -> index
+-- | add_box(state_doc: content.state_doc, kind: string) -> index
+-- | remove_box(state_doc: content.state_doc, i: number) -> nothing
+-- | move_box(state_doc: content.state_doc, i: number, dir: number) -> index | nil
+-- |     Each fixes up active_index so the caret stays on the same LOGICAL
+-- |     box rather than the same slot.
+-- | box_kinds()                             -> {kind, ...}
+-- |     In the order the radial menu offers them.
+-- |
+-- | DERIVATION
+-- | derive_identity(state_doc: content.state_doc, i: number) -> index | nil
+-- | prune_descendants(state_doc: content.state_doc, id: id) -> removed
+-- |     A derived box and everything derived from it, however deep - the
+-- |     whole subtree, not one level.
+-- | declarations_before(state_doc: content.state_doc, index: number) -> {order, by_text}
+-- |     Every name declared ABOVE a box, which is what it may resolve a
+-- |     reference against.
+-- |
+-- | FRAME
+-- | draw(state_doc: content.state_doc, fontset: fontset, pos: {x,y}, opts: table) -> nothing
+-- | handle_input(state_doc: content.state_doc, fontset: fontset, pos: {x,y}) -> nothing
+-- |     The panels swallow the frame first; then box routing, the radial
+-- |     menu and the right-click transform menu.
+-- | customiser_open(state_doc: content.state_doc) -> boolean
+-- |
+-- | FOR THE HELP PAGE
+-- | draw_box_chrome(box_x: number, box_y: number, box_w: number, box_h: number, kind: string,
+-- |                 is_active: boolean, rail_x: number | nil) -> close rect
+-- | draw_demo_radial(cx: number, cy: number, hover: string | nil) -> nothing
+-- | radial_extent()                         -> number
+-- |     The same chrome and the same menu, drawn at an arbitrary point so
+-- |     F1 shows the real thing rather than a picture of it.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     new_shell()    THE ONE creator for the document `state_doc`, and where its seal is
+-- |                    attached; STATE_FIELDS beside it declares the shape
+-- |     declarations_before() is public above and is THE ONE creator of the `decls`
+-- |     container every parse and gesture downstream receives
+-- |     the rail, the transform menu, the AST overlays and box layout
+-- |
+-- | @date 2026-09-13 20:30
+-- | ===============================================================================================
+--]]
 
 --[[
 content.lua - THE DOCUMENT: a stack of boxes hanging off a rail, and the shell that manages them.
@@ -347,12 +350,16 @@ local function new_shell()
     })
 end
 
---[[ A fresh document: one empty text box, with the caret in it.
-
-NOT AN EMPTY DOCUMENT. A document with no boxes has nowhere to type and no way to make the first
-one, so `new` is "the smallest document somebody can start working in" rather than "nothing". The
-empty shell is internal for exactly that reason - deserialize needs it, and nothing else should.
-@date 2026-09-12 03:45 ]]
+--[[ @brief A fresh document: one empty text box, with the caret in it.
+-- |
+-- | NOT AN EMPTY DOCUMENT. A document with no boxes has nowhere to type and no way to make the
+-- | first one, so `new` is "the smallest document somebody can start working in". The empty shell
+-- | is internal for exactly that reason - deserialize needs it, and nothing else should.
+-- |
+-- | @return content.state_doc - sealed
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.new()
     local state_doc = new_shell()
     content.add_box(state_doc)
@@ -360,18 +367,26 @@ function content.new()
     return state_doc
 end
 
---[[ Inserts a new (empty) box of `kind` at `index` (1..#boxes+1), fixing up active_index if it was
-at or after the insertion point, and returns `index`. `kind` defaults to KIND_TEXT, so every
-existing caller keeps its old behaviour unchanged.
-
-Each kind carries its editor state_doc under its OWN field - `editor`,
-        `fml` or `def` - and everything
-downstream dispatches on which field is present rather than on `box.kind`. That is what keeps the
-kind test in one place: a box that gained a field gained its controls with it, and nothing has to
-be told twice. Guard on the field when adding code here, not on the kind.
-
-A formula box is also given an id at birth, so a box derived from it can name it as its parent.
-@date 2026-09-08 08:30 ]]
+--[[ @brief Inserts a new, empty box of `kind` at `index`.
+-- |
+-- | EACH KIND CARRIES ITS EDITOR STATE UNDER ITS OWN FIELD - `editor`, `fml` or `def` - and
+-- | everything downstream dispatches on which field is present rather than on `box.kind`. That
+-- | keeps the kind test in one place: guard on the field when adding code, not on the kind.
+-- |
+-- | A FORMULA BOX GETS AN ID AT BIRTH, so a box derived from it can name it as its parent. The next
+-- | id is derived from what is already in the document rather than stored, so a loaded file cannot
+-- | hand out one already in use.
+-- |
+-- | @details active_index shifts down by one when it was at or after `index`, so the caret stays on
+-- |          the same logical box.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @param index      integer - 1 .. #boxes + 1
+-- | @param kind       string | nil - a box kind; nil is a text box. An unknown kind gets no editor
+-- | @return integer - `index`
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.insert_box(state_doc, index, kind)
     STATE_SHAPE.check(state_doc)
     kind = kind or KIND_TEXT
@@ -399,14 +414,32 @@ function content.insert_box(state_doc, index, kind)
     return index
 end
 
---[[ Appends a new (empty) box at the end and returns its index. @date 2026-09-08 08:30 ]]
+--[[ @brief Appends a new, empty box at the end - insert_box at #boxes + 1.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @param kind       string | nil - as for insert_box
+-- | @return integer - its index
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.add_box(state_doc, kind)
     STATE_SHAPE.check(state_doc)
     return content.insert_box(state_doc, #state_doc.boxes + 1, kind)
 end
 
---[[ Removes box i, fixing up active_index to still point at the same logical box (or nil, if the
-removed box was the active one). @date 2026-09-08 08:30 ]]
+--[[ @brief Removes box `i`, keeping the caret on the same logical box.
+-- |
+-- | @details active_index becomes nil when the removed box was the active one. The last layout is
+-- |          dropped, so a click arriving before the next draw cannot hit-test against stale
+-- |          positions.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @param i          integer - the box to remove
+-- |
+-- | @note Not undoable: undo lives inside a box and knows nothing about the document's shape.
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.remove_box(state_doc, i)
     STATE_SHAPE.check(state_doc)
     table.remove(state_doc.boxes, i)
@@ -420,22 +453,24 @@ function content.remove_box(state_doc, i)
     state_doc.last_layout = nil
 end
 
---[[ Moves the box at `i` one place up (dir -1) or down (dir +1), taking the caret with it.
-
-Returns the box's new index, or nil when it could not move (already at an end). The caller uses the
-return to keep the active box active - the point of the gesture is to carry a box somewhere, so
-focus follows the box rather than staying at the position.
-
-Reordering is SAFE with respect to derivations, and not by luck: a derived box points at its parent
-by `fml.id`, never by position, and content.prune_descendants() is a fixpoint over that relation
-rather than a walk in document order - as its own comment says, "a box can be moved anywhere in the
-list and its lineage still holds". A parent may therefore end up below its child; the curve between
-them simply draws the other way.
-
-Not undoable, exactly like content.remove_box(): undo lives inside a box and knows nothing about
-the document's shape. Moving is reversible by moving back, which is a good deal cheaper than
-teaching undo about it.
-@date 2026-09-08 08:30 ]]
+--[[ @brief Moves the box at `i` one place up or down.
+-- |
+-- | SAFE WITH RESPECT TO DERIVATIONS, and not by luck: a derived box points at its parent by
+-- | `fml.id`, never by position, and prune_descendants is a fixpoint over that relation. A parent
+-- | may end up below its child; the curve between them simply draws the other way.
+-- |
+-- | @details The last layout is dropped, as remove_box does.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @param i          integer - the box to move
+-- | @param dir        integer - -1 up, +1 down
+-- | @return integer | nil - the box's new index, or nil when it could not move (already at an end).
+-- |         active_index is NOT updated here: the caller uses the return to keep focus on the box
+-- |
+-- | @note Not undoable, like remove_box. Moving back is the undo.
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.move_box(state_doc, i, dir)
     STATE_SHAPE.check(state_doc)
     local j = i + dir
@@ -450,22 +485,21 @@ function content.move_box(state_doc, i, dir)
     return j
 end
 
---[[ Derives a new formula box from the one at `i` by the IDENTITY transformation: the new box
-holds exactly what the old one holds, and records that it came from it.
-
-The identity is a real derivation, not a placeholder for one - "this follows from that, unchanged"
-is a legitimate step, and it is the only transformation that needs no machinery at all: because the
-input and the output are the same expression, there is nothing to convert. No mexpr -> ast ->
-transform -> ast -> mexpr round trip happens here, and none is needed; the LaTeX is copied and the
-parent recorded. Every later transformation will differ from this one only in what it does between
-those two points.
-
-The new box goes directly BELOW its source, which is where a derivation reads. Returns its index,
-or nil when the box at `i` is not a formula box with content to derive from.
-
-The id comes from content.insert_box(), which derives the next one from what is already in the
-document - so a derived box can never collide with an id already in use.
-@date 2026-09-08 08:30 ]]
+--[[ @brief Derives a new formula box from the one at `i` by the IDENTITY transformation.
+-- |
+-- | A REAL DERIVATION, not a placeholder: "this follows from that, unchanged" is a legitimate step,
+-- | and the only one that needs no machinery - input and output are the same expression, so the
+-- | LaTeX is copied and the parent recorded, with no mexpr -> ast -> mexpr round trip.
+-- |
+-- | THE NEW BOX GOES DIRECTLY BELOW its source, which is where a derivation reads.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @param i          integer - the source box
+-- | @return integer | nil - the new box's index; nil when the box at `i` is not a formula box with
+-- |         content to derive from
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.derive_identity(state_doc, i)
     STATE_SHAPE.check(state_doc)
     local src = state_doc.boxes[i]
@@ -479,22 +513,26 @@ function content.derive_identity(state_doc, i)
     return i + 1
 end
 
---[[ Removes every box DERIVED from `id`, however far down the chain - the whole subtree, not just
-the immediate children.
-
-Called when a formula box is pasted into, which replaces its content and makes it a root
-(editor_formula.lua). Everything below it was derived from what used to be there, so those steps no
-longer follow from anything: leaving them would leave a derivation whose premise had been swapped
-out underneath it, which is the exact failure docs/phase2_design.md section 1's immutability exists
-to prevent. Requested 2026-09-07: "also should remove all childs".
-
-A fixpoint over the parent relation rather than a recursive walk, so it does not depend on children
-appearing after their parents in the document - a box can be moved anywhere in the list and its
-lineage still holds.
-
-DESTRUCTIVE AND NOT UNDOABLE: undo lives inside each editor, and this removes whole boxes. A paste
-into a box with a long derivation under it discards all of it.
-@date 2026-09-08 08:30 ]]
+--[[ @brief Removes every box DERIVED from `id`, however far down the chain - the whole subtree.
+-- |
+-- | CALLED WHEN A FORMULA BOX IS PASTED INTO, which replaces its content and makes it a root.
+-- | Everything below was derived from what used to be there, so those steps no longer follow from
+-- | anything - the exact failure docs/phase2_design.md section 1's immutability exists to prevent.
+-- | Requested 2026-09-07: "also should remove all childs".
+-- |
+-- | A FIXPOINT OVER THE PARENT RELATION rather than a recursive walk, so it does not depend on
+-- | children appearing after their parents - a box can be moved anywhere and its lineage holds.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @param id         id | nil - the root whose descendants go; the root itself stays. nil removes
+-- |                   nothing
+-- | @return integer - how many boxes were removed
+-- |
+-- | @note DESTRUCTIVE AND NOT UNDOABLE. A paste into a box with a long derivation under it discards
+-- |       all of it.
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.prune_descendants(state_doc, id)
     STATE_SHAPE.check(state_doc)
     if not id then
@@ -525,15 +563,22 @@ function content.prune_descendants(state_doc, id)
     return removed
 end
 
---[[ THE SAVE FORMAT: every box in order, each as "<kind> <byte length>\n<that many bytes>".
-
-Length-prefixed rather than delimited, because a box's own text can legitimately contain any
-character, newlines included - there is no delimiter guaranteed not to collide with real content,
-so this sidesteps the question instead of picking one and hoping.
-
-A text box's body is the same $$LaTeX$$ form edit.copy produces, so saving is exactly "select all,
-copy" done to every box in turn, and the file stays readable without this program.
-@date 2026-09-08 08:30 ]]
+--[[ @brief The document as text: every box in order, each "<kind> <byte length>\n<bytes>".
+-- |
+-- | LENGTH-PREFIXED rather than delimited, because a box's own text can contain any character,
+-- | newlines included, and no delimiter is guaranteed not to collide with real content.
+-- |
+-- | THE BODY IS OPAQUE HERE: each box's own editor writes it, so this layer stays "kind, length,
+-- | bytes" and a new box kind changes nothing in this function. A text box's body is the same
+-- | $$LaTeX$$ form edit.copy produces, so the file stays readable without this program.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @return string
+-- |
+-- | @note A box with no editor still writes its kind and an empty body, rather than being dropped.
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.serialize(state_doc)
     STATE_SHAPE.check(state_doc)
     local parts = {}
@@ -560,16 +605,24 @@ function content.serialize(state_doc)
     return table.concat(parts)
 end
 
---[[ Inverse of serialize(): parses the length-prefixed box list back into a fresh state_doc (same
-shell new() itself builds - see new_shell()). Silently stops at the first malformed length prefix
-(a corrupt/truncated/foreign file) rather than erroring, same leniency insert_text() itself already
-has for content it can't make sense of - whatever boxes parsed cleanly before that point are kept
-rather than losing everything. Always ends up with at least one box, even from an empty/unreadable
-string, so the caller never has to special-case "the file had nothing usable in it". `fontset` is
-only needed for editor.from_text()'s benefit (building any $$...$$ formula embeds a box's saved
-text contains - always at mexpru.DEFAULT_SIZE, the same fixed LOGICAL baseline every other new
-formula gets, regardless of state_doc.font_size - see mexpru.DEFAULT_SIZE's own comment).
-@date 2026-09-08 08:30 ]]
+--[[ @brief A document read back from what serialize() wrote.
+-- |
+-- | NEVER FAILS. It stops silently at the first malformed length prefix - a corrupt, truncated or
+-- | foreign file - and keeps every box that parsed before it, rather than losing everything.
+-- |
+-- | ALWAYS AT LEAST ONE BOX, even from an empty or unreadable string, so the caller never has to
+-- | special-case "the file had nothing usable in it".
+-- |
+-- | @details Two headers are accepted: "<kind> <len>", and a bare "<len>" from before box kinds
+-- |          existed, read as a text box. An unknown kind is also read as a text box. The caret
+-- |          starts in box 1.
+-- |
+-- | @param text     string - as serialize() produced it
+-- | @param fontset  fontset - formulas are built at once, at mexpru.DEFAULT_SIZE whatever the zoom
+-- | @return content.state_doc - a fresh document
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.deserialize(text, fontset)
     local state_doc = new_shell()
     local pos = 1
@@ -1005,10 +1058,16 @@ end
 -- Input handling
 -- #################################################################################################
 
---[[ Whether the F2 customiser is on screen. Exists for main.lua, which saves the keymap, the glyph
-map and the plugin list only once the panel is closed (see its own comment) - it needs to ask
-without reaching into this module's state_doc table for a field name that is nobody else's business.
-@date 2026-09-12 03:50 ]]
+--[[ @brief Whether the F2 customiser is on screen.
+-- |
+-- | FOR main.lua, which saves the keymap, the glyph map and the plugin list only once the panel is
+-- | closed - so it can ask without reaching into the document for a field that is nobody else's.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.customiser_open(state_doc)
     STATE_SHAPE.check(state_doc)
     return state_doc.show_alt_help == true
@@ -1289,19 +1348,25 @@ local function draw_transform_menu(menu)
     end
 end
 
---[[ One frame of input for the whole document.
-
-Core - THE PANELS COME FIRST AND SWALLOW EVERYTHING. While F1 or F2 is up, no input reaches any box
-this frame, so nothing can be typed into or clicked through from behind a full-screen overlay.
-Opening one closes the other rather than stacking them.
-
-Core: after that, this decides WHICH box has the caret and hands the frame to it - box-level
-routing - and owns the gestures that are about the document rather than about a formula: the radial
-new-box menu, box movement, derivation, and the right-click transform menu.
-
-Params: `pos` is where the document was last drawn, needed because every hit test here is against
-the boxes the previous frame left on screen. Returns nothing; everything it does is to `state_doc`.
-@date 2026-09-12 03:45 ]]
+--[[ @brief One frame of input for the whole document.
+-- |
+-- | THE PANELS COME FIRST AND SWALLOW EVERYTHING. While F1 or F2 is up, no input reaches any box,
+-- | so nothing can be typed into or clicked through from behind a full-screen overlay. Opening one
+-- | closes the other rather than stacking them; closing F2 drops its half-finished edits.
+-- |
+-- | THEN BOX-LEVEL ROUTING: which box has the caret, and the frame handed to it - plus the gestures
+-- | about the document rather than a formula: the radial new-box menu, box movement, derivation,
+-- | and the right-click transform menu.
+-- |
+-- | @param state_doc  content.state_doc - checked; everything this does is to it
+-- | @param fontset    fontset
+-- | @param pos        {x, y} - where the document was last drawn; every hit test is against the
+-- |                   boxes the previous frame left on screen
+-- |
+-- | @note Nothing is saved here: main.lua owns every file path.
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.handle_input(state_doc, fontset, pos)
     STATE_SHAPE.check(state_doc)
     -- F1/F2 each toggle their own full-screen panel on/off; while either is showing, every other
@@ -2013,18 +2078,23 @@ local function draw_prof_overlay()
     prof.stop("lua.prof_overlay")
 end
 
---[[ A box's own CHROME: the coloured fill, the focus border, the connector out to the rail and
-the close "x". Everything about a box that is not its content.
-
-Split out of content.draw()'s layout loop 2026-09-07 so the F1 help can draw a real example box
-rather than a hand-made imitation of one. That is the whole point of it being a function: the help
-shows what the editor actually paints, so a change to the box style reaches the documentation on
-the same commit and cannot silently drift out of date.
-
-`rail_x` nil draws no connector (the help's standalone examples), otherwise the node and the line
-to it are drawn as in the document. Returns the close button's rect, which the real caller stores
-in its layout for hit-testing and the help simply ignores.
-@date 2026-09-08 08:30 ]]
+--[[ @brief A box's CHROME: fill, focus border, rail connector and close "x" - all but its content.
+-- |
+-- | ONE FUNCTION FOR THE DOCUMENT AND THE HELP. The F1 help draws a real example box through this
+-- | rather than an imitation of one, so a change to the box style reaches the documentation on the
+-- | same commit and cannot drift.
+-- |
+-- | @param box_x      number - the box's left edge, screen space
+-- | @param box_y      number - its top edge
+-- | @param box_w      number - its width
+-- | @param box_h      number - its height
+-- | @param kind       string | nil - picks the fill colour; nil or unknown draws as a text box
+-- | @param is_active  boolean - the thicker, brighter focus border
+-- | @param rail_x     number | nil - where the rail runs; nil draws no connector (the help)
+-- | @return {x, y, w, h} - the close button's rect, which the document keeps for hit-testing
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.draw_box_chrome(box_x, box_y, box_w, box_h, kind, is_active, rail_x)
     local kind_colors = KIND_COLORS[kind or KIND_TEXT] or KIND_COLORS[KIND_TEXT]
     vc.ImGui_AddRectFilled({x=box_x, y=box_y}, {x=box_x + box_w, y=box_y + box_h},
@@ -2052,68 +2122,71 @@ function content.draw_box_chrome(box_x, box_y, box_w, box_h, kind, is_active, ra
     return close
 end
 
---[[ Draws the radial new-box menu at an arbitrary point, for the F1 help.
-
-Goes through the SAME draw_radial_at() the live menu uses - the fields it reads are exactly the
-four this builds, and nothing about the wedges, colours or geometry is restated here. If the menu
-gains a fourth sector or changes colour, the help picture changes with it.
-
-`hover` names a sector to light up (content.box_kinds() supplies the names), or nil for none. The
-result is inert by construction: this only draws, and the menu's behaviour lives entirely in
-radial_handle_input(), which the help never calls.
-@date 2026-09-08 08:30 ]]
+--[[ @brief Draws the radial new-box menu at an arbitrary point, for the F1 help.
+-- |
+-- | THE SAME draw_radial_at() THE LIVE MENU USES, with nothing about the wedges, colours or
+-- | geometry restated here - if the menu gains a sector or changes colour, the help picture changes
+-- | with it. INERT BY CONSTRUCTION: the menu's behaviour lives in radial_handle_input(), which the
+-- | help never calls.
+-- |
+-- | @param cx     number - the centre, screen space
+-- | @param cy     number
+-- | @param hover  string | nil - a kind from box_kinds() to light up, or nil for none
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.draw_demo_radial(cx, cy, hover)
     draw_radial_at({cx = cx, cy = cy, hover = hover, selected = nil, over_center = false})
 end
 
---[[ How much room a drawn menu needs around its centre - the help uses it to reserve space
-without knowing the geometry. @date 2026-09-08 08:30 ]]
+--[[ @brief How much room a drawn radial menu needs around its centre.
+-- |
+-- | The help reserves space with it without knowing the geometry.
+-- |
+-- | @return number - the radius of the outermost, hovered ring
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.radial_extent()
     return RADIAL_OUTER_HOVER
 end
 
---[[ The kinds, in the order the radial menu offers them, for the help's own example. Exposed
-rather than duplicated so a fourth kind appears in the documentation automatically. @date 2026-09-08 08:30 ]]
+--[[ @brief The box kinds, in the order the radial menu offers them.
+-- |
+-- | Exposed for the help's own example rather than duplicated there, so a new kind appears in the
+-- | documentation automatically.
+-- |
+-- | @return {string, ...} - a fresh list: text, formula, definition
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.box_kinds()
     return {KIND_TEXT, KIND_FORMULA, KIND_DEFINITION}
 end
 
---[[ THE `decls` CONTAINER - what names are in scope at a box, and THE ONE CREATOR for it.
-
-WHERE `decls` COMES FROM, since it is passed through four files and created in none of them: here.
-Everything downstream - mexpr_ast.build, ast_gestures, the transform menu - receives `.order` from
-this call and never builds one. Each entry is editor_definition.declaration()'s table:
-
-    text     the pattern as serialized text, which is the KEY a use resolves against
-    name     the declared name on its own
-    arity    how many arguments it takes
-    tokens   the pattern's token list, carried rather than re-split from `text` - resolving a use
-             walks two token lists position by position, and splitting the string again would be a
-             second, drifting definition of what a token is
-    groups   its argument groups, carried for the same reason
-    box_index which box declared it, added here
-
-The container itself is {by_text, order}: the same accepted declarations twice, keyed for lookup
-and ordered for iteration, because a resolver wants the lookup and a person reading the document
-wants the sequence.
-
-SCOPE IS DOCUMENT POSITION, and that is the whole rule: a box sees the definitions above it and
-nothing else. Author, 2026-09-10: "the definition module should know to provide all the definitions
-for the boxes above an i'th box, the idea is that later definitions will be unknown". So a document
-reads top to bottom the way a proof does - a name means what it meant where it was used, and
-inserting a definition cannot silently change the meaning of everything above it.
-
-STRICTLY above: box `index` does not see its own declaration. A definition that could refer to
-itself is a different feature (recursion) and needs to be asked for deliberately rather than falling
-out of an off-by-one here.
-
-REDECLARATION: a later box wins, because the walk goes downward and overwrites. That makes the
-answer well-defined rather than correct - whether shadowing should be allowed at all, or reported as
-a conflict the way keymap.conflicts() reports one, is open. It is written down here so the next
-reader knows it was chosen rather than stumbled into.
-
-WHAT WAS WRITTEN IS NOT WHAT IS IN SCOPE - see the note inside.
-@date 2026-09-12 05:10 ]]
+--[[ @brief What names are in scope at a box - THE ONE CREATOR of the `decls` every parse receives.
+-- |
+-- | WHERE `decls` COMES FROM, since it is passed through four files and created in none of them.
+-- | mexpr_ast.build, ast_gestures and the transform menu receive `.order` from this call and never
+-- | build one.
+-- |
+-- | SCOPE IS DOCUMENT POSITION: a box sees the definitions STRICTLY above it and nothing else - not
+-- | its own, since self-reference is recursion and would have to be asked for. Author, 2026-09-10:
+-- | "the idea is that later definitions will be unknown". A document reads top to bottom the way a
+-- | proof does, and inserting a definition cannot change the meaning of anything above it.
+-- |
+-- | WHAT WAS WRITTEN IS NOT WHAT IS IN SCOPE. The declarations above are checked as a set
+-- | (mexpr_ast.check_declarations) and only the accepted ones come back; of two that conflict, the
+-- | EARLIER wins - the same rule, applied to the definitions themselves.
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @param index      integer | nil - the box asking; nil means below every box
+-- | @return {by_text, order} - the accepted declarations twice: keyed by `text` for lookup, and in
+-- |         document order for iteration. Each is editor_definition.declaration()'s decl, with
+-- |         `box_index` set to the box that declared it
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.declarations_before(state_doc, index)
     STATE_SHAPE.check(state_doc)
     local by_text, order = {}, {}
@@ -2143,21 +2216,28 @@ function content.declarations_before(state_doc, index)
     return {by_text = by_text, order = order}
 end
 
---[[ Draws the whole document: every box stacked down from `pos`, each connected to the rail, with
-the derivation curves between formula boxes - or, while a panel is open, that panel instead.
-
-A panel covers the whole display, so nothing underneath shows or can be mistaken for something
-still live; handle_input() backs that up by having already returned for the frame. The profiler
-overlay is drawn on top of either, because a lag spike is over before anyone could switch views.
-
-Records the layout it drew (`state_doc.last_layout`, `last_rail_x`,
-        `last_total_height`) for the next
-frame's hit-testing and scroll clamping - one frame of lag, which is the bargain every mouse-facing
-helper here already makes.
-
-  pos   the document's top-left, before scrolling
-  opts  {max_width = n} to lay out narrower than the window, which the F1 help's examples use
-@date 2026-09-08 08:30 ]]
+--[[ @brief Draws the whole document - or, while F1 or F2 is open, that panel instead.
+-- |
+-- | THE DOCUMENT: every box stacked down from `pos`, each connected to the rail, with derivation
+-- | curves between formula boxes. A panel covers the whole display, so nothing underneath can be
+-- | mistaken for something still live.
+-- |
+-- | OVERLAYS GO ON TOP OF EITHER - the profiler, and the F4/F5/F6 AST views - because a lag spike
+-- | is over before anyone could switch views. Each AST view runs inside a pcall and shows its error
+-- | in place, since it parses half-typed input every frame.
+-- |
+-- | @details Records the layout it drew (`last_layout`, `last_rail_x`, `last_total_height`) for the
+-- |          next frame's hit-testing and scroll clamping - one frame of lag, the bargain every
+-- |          mouse-facing helper here makes.
+-- |
+-- | @param state_doc  content.state_doc - checked; read and written
+-- | @param fontset    fontset
+-- | @param pos        {x, y} - the document's top-left, before scrolling
+-- | @param opts       table | nil - {max_width = n} lays out narrower than the window, for the F1
+-- |                   help's examples
+-- |
+-- | @date 2026-09-13 20:30
+--]]
 function content.draw(state_doc, fontset, pos, opts)
     STATE_SHAPE.check(state_doc)
     --[[ Drawn LAST, on top of everything, including the F1/F2 panels - so opening one of those

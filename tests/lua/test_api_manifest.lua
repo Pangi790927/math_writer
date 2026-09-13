@@ -47,6 +47,30 @@ local MIGRATED = {"editor", "transforms", "transforms_old", "transforms/distribu
 @date 2026-09-12 01:25 ]]
 local PENDING = {}
 
+--[[ @brief Files whose manifest and manifest-listed function headers are in the gutter style.
+-- |
+-- | THE COMMENT-STYLE ROLLOUT TRACKER, the same way MIGRATED is the manifest one. A file named here
+-- | FAILS when any of those comments is not in the style; every other migrated file is only
+-- | ENUMERATED - each unconverted comment printed as `file: name` - so the remaining work is the
+-- | test's own output and cannot drift from the source. Adding a name here is the last step of
+-- | converting a file.
+-- |
+-- | @note Only the comments documenting what the manifest names are targeted. Internal helpers'
+-- |       comments and comments inside function bodies keep the old style; author, 2026-09-13:
+-- |       "I only want to target the comments documenting those functions in the manifest, the
+-- |       rest can stay as today".
+-- |
+-- | @date 2026-09-13 16:30
+--]]
+local COMMENT_STYLE_DONE = {["transforms/distribute"] = true, main = true, mformula_latex = true,
+                            panel_help = true, sealed = true, glyphmap = true, prof = true,
+                            transforms = true, mexpr_ast = true, editor = true,
+                            editor_formula = true, input_recorder = true,
+                            ast_gestures = true, ast_mexpr = true,
+                            panel_keymap = true, editor_definition = true,
+                            editor_text = true, content = true, char = true,
+                            keymap = true, mexpru = true, ast = true, mformula_new = true}
+
 --[[ Blanks long comments, keeping newlines so nothing shifts. Needed because the manifest block
 itself is a comment full of function names - without this, every file would appear to define
 everything it documents. @date 2026-09-12 01:25 ]]
@@ -77,14 +101,50 @@ local function read(name)
     return src
 end
 
---[[ The manifest block's text, or nil when the file has none.
+--[[ @brief A comment block's text with the `-- |` gutter and the closing line removed.
+-- |
+-- | THE LAYOUT IS NOT THE CONTENT. Every check below reads a manifest by column - an entry starts
+-- | at column zero, prose is indented - and that is a property of the text, not of how the comment
+-- | around it is drawn. Stripping `-- |` plus the one space after it gives back exactly the columns
+-- | the manifest was written in, so a guttered block and a bare one read the same.
+-- |
+-- | @details The space is only removed where a gutter was, so an unconverted manifest's indented
+-- |          prose keeps its indent. An old-style close on the last text line is left alone;
+-- |          nothing below reads it.
+-- |
+-- | @param text  string - the block, as matched out of the source
+-- | @return string - the same lines, gutter-free
+-- |
+-- | @date 2026-09-13 16:00
+--]]
+local function strip_gutter(text)
+    local out = {}
+    for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+        if not line:match("^%s*%-%-%]%]%s*$") then
+            local body, n = line:gsub("^%s*%-%- |", "", 1)
+            if n > 0 then
+                body = body:gsub("^ ", "", 1)
+            end
+            out[#out + 1] = body
+        end
+    end
+    return table.concat(out, "\n")
+end
 
-Matched on the banner rather than on "the first comment", because every one of these files already
-opened with a prose header before the manifest existed and the two are separate blocks on purpose:
-the header says what the module IS, the manifest says what you may call.
-@date 2026-09-12 01:25 ]]
+--[[ @brief The manifest block's text, gutter stripped, or nil when the file has none.
+-- |
+-- | MATCHED ON THE BANNER rather than on "the first comment", because every one of these files
+-- | already opened with a prose header before the manifest existed and the two are separate blocks
+-- | on purpose: the header says what the module IS, the manifest says what you may call.
+-- |
+-- | @param src  string - the whole file
+-- | @return string | nil - the manifest from its banner to the end of its block, through strip_gutter
+-- |
+-- | @date 2026-09-13 16:00
+--]]
 local function manifest_of(src)
-    return src:match("(WHAT THIS FILE OFFERS.-%]%])")
+    local block = src:match("(WHAT THIS FILE OFFERS.-%]%])")
+    return block and strip_gutter(block)
 end
 
 --[[ The module table's name, taken from the file's own `return`, and every public name hung on it.
@@ -183,7 +243,8 @@ file exist in the first place. Its manifest already says, in one line, that noth
 @date 2026-09-12 02:05 ]]
 local NO_HEADER_CHECK = {transforms_old = true}
 
---[[ Does a documented comment block sit directly above `fname`'s definition?
+--[[ Where the comment block directly above `fname`'s definition starts and ends: `first, last`;
+false when there is none; nil when the file does not define `fname`. @date 2026-09-13 16:30
 
 THE OTHER HALF OF THE CONVENTION, and the half the manifest depends on. Author, 2026-09-12: the
 manifest stays small, and "the functions that where named will now have large descriptions where you
@@ -195,7 +256,7 @@ Checked mechanically: the line above the definition ends a block comment, and th
 `@date`. Presence, not quality - the skill's shape is a reading and cannot be asserted. It does
 catch the two real failures, which are a function documented nowhere and a comment left undated.
 @date 2026-09-12 02:05 ]]
-local function has_header(lines, fname)
+local function header_span(lines, fname)
     --[[ THE MODULE-QUALIFIED FORM WINS, and is looked for across the whole file before the local
     one is considered. A file may hold both - glyphmap has `local function key_label` doing the work
     and `function glyphmap.key_label` exporting it - and it is the EXPORTED one whose header this
@@ -217,23 +278,118 @@ local function has_header(lines, fname)
         end
     end
 
-    for i, line in ipairs(lines) do
-        if i == at then
-            local above = lines[i - 1]
-            if not (above and above:match("%]%]%s*$")) then
-                return false
-            end
-            for j = i - 1, 1, -1 do
-                if lines[j]:match("^%s*%-%-%[%[") then
-                    return table.concat(lines, "\n", j, i - 1):find("@date", 1, true) ~= nil
-                end
-            end
+    --[[ Named in a manifest but not defined in the file: a different failure, and one the presence
+    check above would report as "no header". Reported honestly as what it is. ]]
+    if not at then
+        return nil
+    end
+    local above = lines[at - 1]
+    if not (above and above:match("%]%]%s*$")) then
+        return false
+    end
+    for j = at - 1, 1, -1 do
+        if lines[j]:match("^%s*%-%-%[%[") then
+            return j, at - 1
+        end
+    end
+    return false
+end
+
+--[[ @brief Does a dated comment block sit directly above `fname`'s definition?
+-- |
+-- | The presence check described on header_span above, which finds the block; this only asks
+-- | whether that block carries an `@date`.
+-- |
+-- | @param lines  string[] - the file, one entry per line
+-- | @param fname  string - the function's bare name
+-- | @return boolean | nil - true when dated, false when missing or undated, nil when the file
+-- |         does not define `fname` at all
+-- |
+-- | @date 2026-09-13 16:30
+--]]
+local function has_header(lines, fname)
+    local first, last = header_span(lines, fname)
+    if not first then
+        return first
+    end
+    return table.concat(lines, "\n", first, last):find("@date", 1, true) ~= nil
+end
+
+--[[ @brief The column every converted comment line stays within, and every manifest ruler is drawn
+-- |        to exactly. @date 2026-09-13 18:20
+--]]
+local RULER_WIDTH = 100
+
+--[[ @brief Is the block from `first` to `last` written in the gutter style CLAUDE.md describes?
+-- |
+-- | THE SHELL ONLY. Opens with `--[[ @brief`, every inner line starts with the gutter, and the
+-- | block closes on its own line - or, for a brief-only comment, all of it sits on one line with
+-- | its `@date`. Whether the sections under the tags are any good is a reading, as it is for the
+-- | header check.
+-- |
+-- | @param lines  string[] - the file, one entry per line
+-- | @param first  integer - the block's opening line
+-- | @param last   integer - the block's closing line
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 16:30
+--]]
+local function is_gutter_style(lines, first, last)
+    if not lines[first]:match("^%s*%-%-%[%[ @brief") then
+        return false
+    end
+    --[[ THE 100-COLUMN RULER holds for every line of a converted header, the same one the manifest's
+    -- | rulers are drawn to.
+    --]]
+    for k = first, last do
+        if #lines[k] > RULER_WIDTH then
             return false
         end
     end
-    --[[ Named in a manifest but not defined in the file: a different failure, and one the presence
-    check above would report as "no header". Reported honestly as what it is. ]]
-    return nil
+    if first == last then
+        return lines[first]:find("@date", 1, true) ~= nil
+    end
+    for k = first + 1, last - 1 do
+        if not lines[k]:match("^%s*%-%- |") then
+            return false
+        end
+    end
+    return lines[last]:match("^%s*%-%-%]%]%s*$") ~= nil
+end
+
+--[[ @brief Is the file's manifest block written in the gutter style, rulers included?
+-- |
+-- | A manifest has no `@brief` - it is a list, not a documented target - so what is asked for is
+-- | the gutter on every line and the three RULERS at exactly 100 columns: the banner, the
+-- | `--- internal` separator when there is one, and a closing `=` rule as the last line before the
+-- | block closes. Author, 2026-09-13, on the first draft: the separator "is too long", the banner
+-- | "is too small (100 char ruller)", and "I want to end the manifest with this".
+-- |
+-- | @param src  string - the whole file
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 17:40
+--]]
+local function manifest_is_gutter_style(src)
+    local banner, block = src:match("([^\n]*WHAT THIS FILE OFFERS[^\n]*)\n(.-%]%])")
+    if not block or #banner ~= RULER_WIDTH or not banner:match("^%-%-%[%[ =+ WHAT") then
+        return false
+    end
+    local lines = {}
+    for line in (block .. "\n"):gmatch("([^\n]*)\n") do
+        lines[#lines + 1] = line
+    end
+    for k = 1, #lines - 1 do
+        if not lines[k]:match("^%-%- |") or #lines[k] > RULER_WIDTH then
+            return false
+        end
+        if lines[k]:match("^%-%- | %-%-%- internal") and #lines[k] ~= RULER_WIDTH then
+            return false
+        end
+    end
+    local rule = lines[#lines - 1]
+    return rule ~= nil and #rule == RULER_WIDTH and rule:match("^%-%- | =+$") ~= nil
+            and lines[#lines]:match("^%-%-%]%]%s*$") ~= nil
 end
 
 --[[ The parameter list a manifest entry advertises, per function.
@@ -423,12 +579,21 @@ local function runtime_only_names(name, static_names)
 end
 
 function run_test()
+    local style_pending = {}
     for _, name in ipairs(MIGRATED) do
         local raw = read(name)
         check(name .. ".lua exists", raw ~= nil)
         if raw then
             local manifest = manifest_of(raw)
             check(name .. ".lua has a manifest block", manifest ~= nil)
+            --[[ A FROZEN file is not converted either: restyling it is editing it. ]]
+            if manifest and not NO_HEADER_CHECK[name] and not manifest_is_gutter_style(raw) then
+                if COMMENT_STYLE_DONE[name] then
+                    check(name .. ".lua: the manifest block is not in the gutter style", false)
+                else
+                    style_pending[#style_pending + 1] = name .. ": (manifest)"
+                end
+            end
             if manifest then
                 local code = strip_long_comments(raw)
                 local mod, names = public_names(code)
@@ -475,6 +640,19 @@ function run_test()
                                     "%s.lua: `%s` is exported but has no dated comment header",
                                     name, shown), found)
                         end
+                        --[[ THE STYLE ROLLOUT: enforced for a converted file, enumerated for the
+                        -- | rest. Only a header that exists is judged - a missing one is already
+                        -- | reported just above, and would otherwise be counted twice.
+                        --]]
+                        local first, last = header_span(lines, fn)
+                        if first and not is_gutter_style(lines, first, last) then
+                            if COMMENT_STYLE_DONE[name] then
+                                check(string.format("%s.lua: `%s`'s header is not in the gutter "
+                                        .. "style", name, shown), false)
+                            else
+                                style_pending[#style_pending + 1] = name .. ": " .. shown
+                            end
+                        end
                     end
                 end
                 --[[ A file with a module table and no public names is almost certainly a parse
@@ -518,6 +696,11 @@ function run_test()
         end
     end
     print("manifests: " .. #MIGRATED .. " migrated, " .. pending .. " still to write")
+
+    for _, entry in ipairs(style_pending) do
+        print("comment style pending: " .. entry)
+    end
+    print("comment style: " .. #style_pending .. " manifest comments still in the old style")
 
     print("checks: " .. checks_run .. ", failed: " .. checks_failed)
     if checks_failed > 0 then

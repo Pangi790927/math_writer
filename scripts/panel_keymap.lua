@@ -1,23 +1,25 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-new_state()                             -> state_keymap
-    The panel's state. Created with the content state and lives there.
-
-draw(state_keymap: panel_keymap.state_keymap) -> nothing
-    The whole F2 screen: Shortcuts, Letters and Transforms.
-
-escape(state_keymap: panel_keymap.state_keymap) -> handled
-    Escape, offered to the panel BEFORE it is allowed to close it - so
-    an in-progress edit is abandoned first and the panel stays open.
-
-closed(state_keymap: panel_keymap.state_keymap) -> nothing
-    Drops every in-progress edit when the panel goes away. What was
-    committed is already in the keymap; this discards the rest.
-
---- internal, not on the module table --------------------------------------------------------------
-    the recorder, the binding cells, the letters table and
-    draw_transforms
-@date 2026-09-12 03:25
-================================================================================================= ]]
+-- | new_state()                             -> panel_keymap.state_keymap
+-- |     The panel's state. Created with the content state and lives there.
+-- |
+-- | draw(state_keymap: panel_keymap.state_keymap) -> nothing
+-- |     The whole F2 screen: Shortcuts, Letters and Transforms.
+-- |
+-- | escape(state_keymap: panel_keymap.state_keymap) -> handled
+-- |     Escape, offered to the panel BEFORE it is allowed to close it - so
+-- |     an in-progress edit is abandoned first and the panel stays open.
+-- |
+-- | closed(state_keymap: panel_keymap.state_keymap) -> nothing
+-- |     Drops every in-progress edit when the panel goes away. What was
+-- |     committed is already in the keymap; this discards the rest.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     the recorder (`rec`, one for the whole module), the binding cells, the letters table and
+-- |     draw_transforms
+-- |
+-- | @date 2026-09-13 19:50
+-- | ===============================================================================================
+--]]
 
 --[[
 panel_keymap.lua - the F2 screen: the keybind table.
@@ -111,17 +113,18 @@ local STATE_KEYMAP_FIELDS = {
 }
 local STATE_KEYMAP_SHAPE = sealed.declare("panel_keymap", "state_keymap", STATE_KEYMAP_FIELDS)
 
---[[ The panel's own state, created with the content state and living there.
-
-  section     which half is on screen: "keys" or "letters"
-  editing     which cell is being typed into, as an id-and-index key, or nil
-  buffer      what has been typed into it so far - always a string, see buffer_of()
-  error       why the current cell will not commit; panel_error the same for the panel
-  focus_next  ask ImGui for keyboard focus on the next frame, after a cell has just been opened
-  confirm_all the two-click arm on "default all", see draw_letters()
-@date 2026-09-08 08:45 ]]
+--[[ @brief A fresh F2 panel state, on the Shortcuts section with nothing being edited.
+-- |
+-- | IT LIVES ON THE CONTENT STATE, created with it, so what is on screen survives closing and
+-- | reopening the panel - everything but the in-progress edit, which closed() drops.
+-- |
+-- | @return panel_keymap.state_keymap - sealed; STATE_KEYMAP_FIELDS says what each field holds.
+-- |         Starts with section "keys", an empty buffer and search text, and no filter
+-- |
+-- | @date 2026-09-13 19:50
+--]]
 function panel_keymap.new_state()
-    --[[ `section` is which category is on screen: "keys" or "letters".
+    --[[ `section` is which category is on screen: "keys", "letters" or "transforms".
 
     `filter_text` is what the search box holds, kept as TEXT and not only as the parsed bind: it is
     what the box has to show while it is being edited, and a half-typed "Ctrl+" has to survive
@@ -645,12 +648,23 @@ local function draw_letters(state_keymap, line_h)
     end
 end
 
---[[ Draws the whole screen. Called from content.draw() while the panel is open; content's
-handle_input has already returned early, so this owns the frame.
-
-Returns nothing - every effect goes through keymap, which is also what makes this panel testable
-without a display: the registry can be driven directly and asked what it now holds.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Draws the whole F2 screen: Shortcuts, Letters and Transforms, and handles their input.
+-- |
+-- | THIS OWNS THE FRAME. It is called from content.draw() while the panel is open, and content's
+-- | handle_input has already returned early - so it reads keys and submits real widgets itself.
+-- |
+-- | EVERY EFFECT GOES THROUGH A REGISTRY - keymap, glyphmap or transforms - which is what makes the
+-- | panel testable without a display: the registry can be driven directly and asked what it holds.
+-- | Nothing is written to disk here; main.lua saves once the panel closes.
+-- |
+-- | @details A failure while drawing the rows is caught and shown as `panel_error` above the table,
+-- |          and the font stack is always popped, since an unbalanced one corrupts every window
+-- |          drawn after this one.
+-- |
+-- | @param state_keymap  panel_keymap.state_keymap - checked; read and written
+-- |
+-- | @date 2026-09-13 19:50
+--]]
 function panel_keymap.draw(state_keymap)
     STATE_KEYMAP_SHAPE.check(state_keymap)
     local size = vc.ImGui_GetDisplaySize()
@@ -948,16 +962,21 @@ function panel_keymap.draw(state_keymap)
     vc.ImGui_PopFont()
 end
 
---[[ Escape, offered to the panel BEFORE it is allowed to close the panel.
-
-Returns true when it was used up here. A recording in progress and a half-typed binding are both
-things Escape should abandon on their own - closing the whole panel because someone backed out of
-one field would lose every other edit they had not committed yet. Only when there is nothing to
-back out of does Escape mean "close".
-
-Recording is checked first: it is the more modal of the two, and the recorder can be armed while a
-different row still holds a stale edit target.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Escape, offered to the panel BEFORE it is allowed to close the panel.
+-- |
+-- | ONE STEP BACK AT A TIME. A recording in progress and a half-typed binding are each abandoned on
+-- | their own - closing the whole panel because someone backed out of one field would lose every
+-- | other edit not committed yet. Only when there is nothing to back out of does Escape mean
+-- | "close".
+-- |
+-- | @details Recording is checked first: it is the more modal of the two, and the recorder can be
+-- |          armed while a different row still holds a stale edit target.
+-- |
+-- | @param state_keymap  panel_keymap.state_keymap - checked
+-- | @return boolean - true when Escape was used up here; false means the caller may close
+-- |
+-- | @date 2026-09-13 19:50
+--]]
 function panel_keymap.escape(state_keymap)
     STATE_KEYMAP_SHAPE.check(state_keymap)
     if rec then
@@ -971,14 +990,19 @@ function panel_keymap.escape(state_keymap)
     return false
 end
 
--- Called when the panel closes, so an abandoned recording cannot survive into the next opening.
---[[ Drops every piece of in-progress editing when the panel goes away.
-
-Core: a half-typed binding, a half-recorded chord and an error message are all about a cell that is
-about to stop existing, so none of them may survive to the next time the panel opens - reopening on
-someone else's abandoned edit is how a stray keystroke lands in the wrong row. What is COMMITTED is
-already in the keymap by then; this discards only what was not.
-@date 2026-09-12 03:25 ]]
+--[[ @brief Drops every piece of in-progress editing when the panel goes away.
+-- |
+-- | NOTHING HALF-DONE SURVIVES TO THE NEXT OPENING. A half-typed binding, a half-recorded chord and
+-- | an error message are all about a cell that is about to stop existing, and reopening on an
+-- | abandoned edit is how a stray keystroke lands in the wrong row. What is COMMITTED is already in
+-- | the registries by then; this discards only what was not.
+-- |
+-- | @details Kept: the section, the search text and its filter, and the "default all" arm.
+-- |
+-- | @param state_keymap  panel_keymap.state_keymap - checked
+-- |
+-- | @date 2026-09-13 19:50
+--]]
 function panel_keymap.closed(state_keymap)
     STATE_KEYMAP_SHAPE.check(state_keymap)
     rec = nil

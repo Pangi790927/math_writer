@@ -1,59 +1,62 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-
-register(spec: transforms.spec)         -> nothing
-    Adds one transformation. Called by a plugin at require time and by
-    nothing else. `spec` is {id, label, params, offer, apply}.
-
-apply(id: id, ns: ast.ns, root: ast.node, params: {name=id}) -> new_root | nil, reason
-    THE ENTRY POINT. Finds the plugin, checks its params are present,
-    runs it inside the sentinel. The source tree is never mutated.
-
-offers(ns: ast.ns, root: ast.node, node: ast.node | nil) -> {option, ...}
-    Every plugin's answer to "what applies at this ast node", in
-    registration order. An option is {id, label, params} - ids, never
-    closures. An empty list is the ordinary answer, and a nil `node` -
-    a click that resolved to none - is one of the ways to get it.
-
-list()                                  -> {spec, ...}
-get(id: id)                             -> spec | nil
-    The registry itself, for anything that wants to name what exists.
-    `list` is in plugin-folder order, which is menu order.
-
-is_active(id: id)                       -> boolean
-set_active(id: id, on: boolean)         -> existed
-    Whether a transformation offers and runs, and the only way to
-    change it. A plugin is OFF unless it declares default_active.
-
-serialize()                             -> text
-load(text: string)                      -> applied, skipped
-dirty() / clear_dirty()                 -> boolean / nothing
-    The activation state as `transforms.save` holds it: divergences
-    from each plugin's default, one `id<TAB>on|off` per line. `load`
-    never registers anything - it only flips flags on plugins the
-    folder scan already found, and skips ids nothing answers to.
-
-option(id: id, label: string, params: {name=id}) -> transforms.option
-check_option(option: transforms.option) -> option
-    One transformation that COULD be run here. A plugin's offer()
-    returns one; it carries IDS, never nodes, so it survives being held
-    in a menu across frames without keeping a tree alive.
-
-check_ctx(ctx: transforms.ctx)          -> ctx
-    Asserts a plugin was handed the real ctx. For the first line of an
-    offer() or an apply().
-
-check(cond: any, msg: string, ...)      -> cond
-    FOR PLUGINS ONLY. Refuses, from inside apply() or offer(), by
-    throwing a tagged table that `apply` above converts to nil+reason.
-    `msg` is formatted with ... when extra arguments are given.
-
---- internal, not on the module table --------------------------------------------------------------
-    make_ctx()     the ONE creator for the `ctx` a plugin receives, and where its
-                   seal is attached; CTX_FIELDS beside it declares the shape
-    is_refusal, guarded, missing_param, CTX_SHAPE, SPEC_FIELDS, SPEC_SHAPE,
-    PLUGIN_DIR
-@date 2026-09-12 01:25
-================================================================================================= ]]
+-- |
+-- | register(spec: transforms.spec)         -> nothing
+-- |     Adds one transformation. Called by a plugin at require time and by
+-- |     nothing else. `spec` is {id, label, params, offer, apply,
+-- |     default_active}.
+-- |
+-- | apply(id: id, ns: ast.ns, root: ast.node, params: {name=id}) -> new_root | nil, reason
+-- |     THE ENTRY POINT. Finds the plugin, checks its params are present,
+-- |     runs it inside the sentinel. The source tree is never mutated.
+-- |
+-- | offers(ns: ast.ns, root: ast.node, node: ast.node | nil) -> {option, ...}
+-- |     Every active plugin's answer to "what applies at this ast node", in
+-- |     registration order. An option is {id, label, params} - ids, never
+-- |     closures. An empty list is the ordinary answer, and a nil `node` -
+-- |     a click that resolved to none - is one of the ways to get it.
+-- |
+-- | list()                                  -> {spec, ...}
+-- | get(id: id)                             -> spec | nil
+-- |     The registry itself, for anything that wants to name what exists.
+-- |     `list` is in plugin-folder order, which is menu order.
+-- |
+-- | is_active(id: id)                       -> boolean
+-- | set_active(id: id, on: boolean)         -> existed
+-- |     Whether a transformation offers and runs, and the only way to
+-- |     change it. A plugin is OFF unless it declares default_active.
+-- |
+-- | serialize()                             -> text
+-- | load(text: string)                      -> applied, skipped
+-- | dirty() / clear_dirty()                 -> boolean / nothing
+-- |     The activation state as `transforms.save` holds it: divergences
+-- |     from each plugin's default, one `id<TAB>on|off` per line. `load`
+-- |     never registers anything - it only flips flags on plugins the
+-- |     folder scan already found, and skips ids nothing answers to.
+-- |
+-- | option(id: id, label: string, params: {name=id}) -> transforms.option
+-- | check_option(option: transforms.option) -> option
+-- |     One transformation that COULD be run here. A plugin's offer()
+-- |     returns one; it carries IDS, never nodes, so it survives being held
+-- |     in a menu across frames without keeping a tree alive.
+-- |
+-- | check_ctx(ctx: transforms.ctx)          -> ctx
+-- |     Asserts a plugin was handed the real ctx. For the first line of an
+-- |     offer() or an apply().
+-- |
+-- | check(cond: any, msg: string, ...)      -> cond
+-- |     FOR PLUGINS ONLY. Refuses, from inside apply() or offer(), by
+-- |     throwing a tagged table that the dispatcher converts to nil+reason.
+-- |     `msg` is formatted with ... when extra arguments are given.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     make_ctx()     the ONE creator for the `ctx` a plugin receives, and where its
+-- |                    seal is attached; CTX_FIELDS beside it declares the shape
+-- |     is_refusal, guarded, missing_param, CTX_SHAPE, SPEC_FIELDS, SPEC_SHAPE,
+-- |     OPTION_SHAPE, PLUGIN_DIR
+-- |
+-- | @date 2026-09-13 18:30
+-- | ===============================================================================================
+--]]
 
 --[[
 transforms.lua - THE REGISTRY: every algebraic transformation the editor can run, and the one door
@@ -111,21 +114,28 @@ local function is_refusal(e)
     return type(e) == "table" and getmetatable(e) == REFUSAL
 end
 
---[[ Refuses the transformation in hand, from inside a plugin.
-
-THE ONLY WAY A PLUGIN MAY SAY NO. It throws, so the plugin's own code after it does not run and
-does not have to be written as a chain of early returns - which is what lets a transformation read
-as the algebra it performs rather than as a wall of guards. `apply` below turns the throw back into
-an ordinary nil+reason at the boundary, so nothing outside this file ever sees an exception.
-
-Params: `cond` is returned unchanged when truthy, so the call can stand in an expression. `msg` is
-the reason a human will read, in a menu or a log; it is `string.format`ed with the remaining
-arguments when any are given, and taken literally when none are - so a message containing a stray
-`%` is safe as long as nothing is being interpolated into it.
-
-Note: level 0 on the throw, so Lua does not prefix the message with this file and line. The reason
-is shown to a user, and "transforms.lua:84: distribute needs a sum" is not a sentence.
-@date 2026-09-12 01:25 ]]
+--[[ @brief Refuses the transformation in hand, from inside a plugin.
+-- |
+-- | THE ONLY WAY A PLUGIN MAY SAY NO. It throws, so the plugin's own code after it does not run and
+-- | does not have to be written as a chain of early returns - which is what lets a transformation
+-- | read as the algebra it performs rather than as a wall of guards.
+-- |
+-- | THE THROW NEVER LEAVES THIS FILE. `apply` turns it back into an ordinary nil+reason, and
+-- | `offers` into "contributes nothing", both through `guarded` - the one place that catches.
+-- |
+-- | @param cond  any - returned unchanged when truthy, so the call can stand in an expression
+-- | @param msg   string - the reason a human will read, in a menu or a log
+-- | @param ...   any - when given, `msg` is string.format'ed with them; when not, it is taken
+-- |              literally, so a stray `%` is safe as long as nothing is interpolated
+-- | @return any - `cond`
+-- | @throws a REFUSAL-tagged table carrying the text, when `cond` is falsy
+-- |
+-- | @note Level 0 on the throw, so Lua does not prefix the message with this file and line. The
+-- |       reason is shown to a user, and "transforms.lua:84: distribute needs a sum" is not a
+-- |       sentence.
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.check(cond, msg, ...)
     if not cond then
         local text = select("#", ...) > 0 and string.format(msg, ...) or msg
@@ -158,26 +168,34 @@ local SPEC_FIELDS = {
 }
 local SPEC_SHAPE = sealed.declare("transforms", "spec", SPEC_FIELDS)
 
---[[ Adds one transformation to the registry.
-
-CALLED AT REQUIRE TIME, from the bottom of a plugin file, and never from anywhere else. The folder
-scan at the end of this file requires every plugin, so the registry is fully populated the moment
-this file finishes loading and nothing has to worry about one appearing halfway through a frame.
-
-`spec` fields:
-    id      the name apply() and an option carry. Must be unique; a second registration under the
-            same id is a programming error and is refused loudly rather than silently winning.
-    label   what a menu shows. Plain text.
-    params  list of parameter NAMES the apply below requires. Checked by apply() before the plugin
-            runs, so a plugin never writes "did I get my arguments" itself.
-    offer   optional. offer(ctx) -> option | {option, ...} | nil. What this transformation can do
-            at the ast node the user pointed at.
-    apply   apply(ctx) -> new_root. The algebra. Refuses with transforms.check.
-
-REGISTRATION ORDER IS KEPT and is what `offers` and `list` iterate, so the order transformations
-appear in a menu is the order the folder scan found them in - which vc.path_list_dir sorts, so it is
-the same on every machine, and is not however Lua happens to hash the ids.
-@date 2026-09-12 01:25 ]]
+--[[ @brief Adds one transformation to the registry.
+-- |
+-- | CALLED AT REQUIRE TIME, from the bottom of a plugin file, and never from anywhere else. The
+-- | folder scan at the end of this file requires every plugin, so the registry is fully populated
+-- | the moment this file finishes loading and nothing has to worry about one appearing halfway
+-- | through a frame.
+-- |
+-- | REGISTRATION ORDER IS KEPT and is what `offers` and `list` iterate, so the order
+-- | transformations appear in a menu is the order the folder scan found them in - which
+-- | vc.path_list_dir sorts, so it is the same on every machine.
+-- |
+-- | OFF UNLESS THE PLUGIN ASKS OTHERWISE: `active` starts as `default_active == true`.
+-- |
+-- | @param spec  transforms.spec - a table literal written in the plugin; its keys are checked,
+-- |              then it is sealed and kept LIVE:
+-- |                id              the name apply() and an option carry; must be unique
+-- |                label           what a menu shows. Plain text
+-- |                params          list of parameter NAMES apply requires; checked by apply()
+-- |                                before the plugin runs, so a plugin never checks it has them
+-- |                offer           optional. offer(ctx) -> option | {option, ...} | nil
+-- |                apply           apply(ctx) -> new_root. The algebra. Refuses with check
+-- |                default_active  optional. true to ship switched on
+-- | @throws (a plain error, not a refusal) when `spec` has no id, has an undeclared key, has no
+-- |         apply function, or reuses a registered id - a programming error, refused loudly rather
+-- |         than silently winning
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.register(spec)
     assert(type(spec) == "table" and spec.id, "a transform spec needs an id")
     --[[ BEFORE anything reads a field, and it cannot be left to the seal at the bottom: the spec
@@ -200,32 +218,39 @@ function transforms.register(spec)
     ORDER[#ORDER + 1] = spec
 end
 
---[[ Whether `id` currently offers and runs.
-
-Core: the one question the dispatcher asks before doing anything on a plugin's behalf, and the one a
-panel renders as a tick. An unknown id is not active - a saved file naming a plugin that has since
-been deleted answers false rather than throwing.
-
-Params: `id` as registered. Returns a boolean, never nil, so it can be used directly as a condition.
-@date 2026-09-12 02:30 ]]
+--[[ @brief Whether `id` currently offers and runs.
+-- |
+-- | THE QUESTION A PANEL RENDERS AS A TICK - the same flag `apply` and `offers` read before doing
+-- | anything on a plugin's behalf. An unknown id is not active: a saved file naming a plugin that
+-- | has since been deleted answers false rather than throwing.
+-- |
+-- | @param id  id - as registered
+-- | @return boolean - never nil, so it can be used directly as a condition
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.is_active(id)
     local spec = REGISTRY[id]
     return (spec ~= nil) and spec.active == true
 end
 
---[[ Turns a transformation on or off.
-
-Core: THE ONLY WAY THE SET OF AVAILABLE TRANSFORMATIONS CHANGES at runtime. Everything else reads
-`active`; this writes it. Taking one off removes it from every future menu and makes apply refuse it
-by name, so an option left over in a menu from before the change cannot still run it.
-
-Detail: it does not persist anything. Writing `transforms.save` is main.lua's, the same way the
-keymap and the glyph map are written by their owner rather than by the module that holds them - a
-module that writes files cannot be loaded by a test without a file appearing somewhere.
-
-Params: `id` as registered, `on` truthy to activate. Returns true when the id existed, false when
-nothing answered to it - which a caller loading a saved file wants to know about.
-@date 2026-09-12 02:30 ]]
+--[[ @brief Turns a transformation on or off.
+-- |
+-- | THE ONLY WAY THE SET OF AVAILABLE TRANSFORMATIONS CHANGES at runtime. Everything else reads
+-- | `active`; this writes it. Taking one off removes it from every future menu and makes apply
+-- | refuse it by name, so an option left over in a menu from before the change cannot still run.
+-- |
+-- | @details Marks the state dirty only when the flag actually MOVES. Persists nothing: writing
+-- |          `transforms.save` is main.lua's, since a module that writes files cannot be loaded by
+-- |          a test without a file appearing somewhere.
+-- |
+-- | @param id  id - as registered
+-- | @param on  boolean - ONLY `true` activates; any other value, truthy or not, deactivates
+-- | @return boolean - true when the id existed, false when nothing answered to it - which a caller
+-- |         loading a saved file wants to know about
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.set_active(id, on)
     local spec = REGISTRY[id]
     if not spec then
@@ -239,65 +264,73 @@ function transforms.set_active(id, on)
     return true
 end
 
---[[ Has the activation state changed since it was last written?
-
-Core: the signal main.lua watches so `transforms.save` is written when there is something to write
-and not once per frame - the arrangement keymap and glyphmap already use, and the reason all three
-can be saved from the same place on the same condition.
-
-Detail: set by set_active only when a flag actually MOVES, so ticking a box and un-ticking it leaves
-nothing to save. Loading a file does not dirty anything: what was just read is by definition what is
-on disk.
-
-Returns a boolean. `clear_dirty` is called by whoever did the writing.
-@date 2026-09-12 02:40 ]]
+--[[ @brief Has the activation state changed since it was last written?
+-- |
+-- | THE SIGNAL main.lua WATCHES, so `transforms.save` is written when there is something to write
+-- | and not once per frame - the arrangement keymap and glyphmap already use, which is why all
+-- | three are saved from the same place on the same condition.
+-- |
+-- | @details Set by set_active only when a flag MOVES. Loading a file does not leave it dirty: what
+-- |          was just read is by definition what is on disk.
+-- |
+-- | @return boolean
+-- |
+-- | @note Ticking a box and un-ticking it leaves it dirty - each tick moved the flag - so an
+-- |       unchanged file is written once more. Harmless, and the file comes out identical.
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.dirty()
     return dirty
 end
 
---[[ Declares the activation state written, so `dirty` goes quiet until something moves again.
-
-Core: called by WHOEVER DID THE WRITING and nobody else - main.lua, immediately after it has put
-transforms.serialize()'s text on disk. Clearing it without writing loses a change silently, which is
-the only way to misuse this.
-
-Detail: not called by `load`, which clears the flag itself for a different reason - what was just
-read is already what is on disk, so there was never anything to write back.
-@date 2026-09-12 02:50 ]]
+--[[ @brief Declares the activation state written, so `dirty` goes quiet until something moves.
+-- |
+-- | CALLED BY WHOEVER DID THE WRITING and nobody else - main.lua, immediately after it has put
+-- | transforms.serialize()'s text on disk.
+-- |
+-- | @details `load` does not call this; it clears the flag itself, since what was just read is
+-- |          already what is on disk.
+-- |
+-- | @note Clearing it without writing loses a change silently, which is the only way to misuse it.
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.clear_dirty()
     dirty = false
 end
 
---[[ One registered transformation's spec, by id.
-
-For anything that needs to say something ABOUT a transformation rather than run it - render its
-label in a menu, check an id in a saved file still names something that exists, report what a
-logged option referred to.
-
-Detail: the spec is handed back live, not copied, so a caller holds the registry's own table. Read
-it; writing through it changes the transformation for everybody, which is how `active` will be
-toggled later and is not something any current caller should be doing.
-
-Params: `id` as registered. Returns the spec, or nil when nothing answers to that id - which is an
-ordinary answer for an id that came from outside this process, a saved file or a stale option.
-@date 2026-09-12 02:05 ]]
+--[[ @brief One registered transformation's spec, by id.
+-- |
+-- | FOR SAYING SOMETHING ABOUT A TRANSFORMATION rather than running it - render its label in a
+-- | menu, check an id from a saved file still names something, report what a logged option
+-- | referred to.
+-- |
+-- | @param id  id - as registered
+-- | @return transforms.spec | nil - the registry's LIVE, sealed table, not a copy: read it. nil is
+-- |         an ordinary answer for an id from outside this process, a saved file or a stale option
+-- |
+-- | @note Writing through it changes the transformation for everybody. `active` in particular goes
+-- |       through set_active, which is what keeps `dirty` honest.
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.get(id)
     return REGISTRY[id]
 end
 
---[[ Every registered transformation, in registration order.
-
-THE ORDER IS THE PLUGIN LIST'S ORDER, which is the order the require lines at the bottom of this
-file run in - so what a menu shows is arranged by editing that list, not by however Lua happens to
-hash the ids. `offers` walks the same sequence, so a menu and this list can never disagree about
-precedence.
-
-Detail: the live array, not a copy - same caution as `get` above. Its length is the number of
-transformations the application has, which is what a panel listing them wants.
-
-Returns the list; empty only if no plugin loaded at all, which means the require lines at the bottom
-are gone rather than that nothing applies.
-@date 2026-09-12 02:05 ]]
+--[[ @brief Every registered transformation, in registration order.
+-- |
+-- | THE ORDER IS THE FOLDER SCAN'S: scripts/transforms as vc.path_list_dir lists it, sorted, so it
+-- | is the same on every machine and not however Lua happens to hash the ids. `offers` walks the
+-- | same sequence, so a menu and this list can never disagree about precedence.
+-- |
+-- | @return {transforms.spec, ...} - the LIVE array, not a copy; same caution as `get`. Active and
+-- |         inactive alike. Empty only when no plugin loaded at all - an empty folder, or
+-- |         path_composer not registered (see `transforms.load_error`)
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.list()
     return ORDER
 end
@@ -320,15 +353,29 @@ local OPTION_FIELDS = {
 }
 local OPTION_SHAPE = sealed.declare("transforms", "option", OPTION_FIELDS)
 
---[[ Builds one. THE ONE CREATOR, for a plugin's offer() to return.
-
-Params: `params` maps each name the plugin declared to the ast id it resolved. Returns the option.
-@date 2026-09-12 13:00 ]]
+--[[ @brief Builds an option. THE ONE CREATOR, for a plugin's offer() to return.
+-- |
+-- | @param id      id - the plugin's registered id, which apply() will be called with
+-- | @param label   string - what the menu shows
+-- | @param params  table - each name the plugin declared -> what it resolved; distribute passes its
+-- |                own sealed params here
+-- | @return transforms.option - sealed. Nothing is checked here: `offers` checks the option's type
+-- |         on the way out, and apply checks the params are all present
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.option(id, label, params)
     return OPTION_SHAPE.wrap{id = id, label = label, params = params}
 end
 
---[[ Asserts one, for a function that takes an option rather than making it. @date 2026-09-12 13:00 ]]
+--[[ @brief Asserts `option` is one, for a function that takes an option rather than making it.
+-- |
+-- | @param option  any
+-- | @return transforms.option - `option`
+-- | @throws naming the type that arrived, when it is not one built by transforms.option
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.check_option(option)
     return OPTION_SHAPE.check(option, "option")
 end
@@ -358,16 +405,22 @@ plugin to write into the context it was handed, and one that did would be commun
 side channel instead of its return value. @date 2026-09-12 05:45 ]]
 local CTX_SHAPE = sealed.declare("transforms", "ctx", CTX_FIELDS, {readonly = true})
 
---[[ Asserts that a plugin was handed the ctx this file builds, and not something else.
-
-FOR A PLUGIN'S OWN ENTRY POINTS, so `offer` and `apply` check their argument the way every other
-function taking a sealed container does. Today only this file calls them, so the check is documentary
-as much as defensive - but a plugin is meant to be DROPPABLE, and the author of the next one has
-nothing else telling them what `ctx` is at the moment they write `function offer(ctx)`.
-
-Returns `ctx` so it can stand as the first line of a function. Raises, naming both types, when it is
-anything else.
-@date 2026-09-12 07:40 ]]
+--[[ @brief Asserts that a plugin was handed the ctx this file builds, and not something else.
+-- |
+-- | FOR A PLUGIN'S OWN ENTRY POINTS, so `offer` and `apply` check their argument the way every
+-- | other function taking a sealed container does. Today only this file calls them, so the check is
+-- | documentary as much as defensive - but a plugin is meant to be DROPPABLE, and the author of the
+-- | next one has nothing else telling them what `ctx` is when they write `function offer(ctx)`.
+-- |
+-- | @param ctx  any
+-- | @return transforms.ctx - `ctx`, so the call can stand as a function's first line
+-- | @throws naming both types, when it is anything else
+-- |
+-- | @note The type only: a declared field may still be nil - `node` for an apply, `params` for an
+-- |       offer - so a plugin that reads one checks it itself.
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.check_ctx(ctx)
     return CTX_SHAPE.check(ctx, "ctx")
 end
@@ -435,28 +488,34 @@ local function missing_param(spec, params)
 end
 
 
---[[ Runs one transformation over a tree and gives back the tree it produced.
-
-THE ONE DOOR. Everything that runs a transformation comes through here: the right-click menu, the
-F6 preview, the tests. A caller names the transformation by id and passes its parameters as a plain
-table of ast ids, so nothing outside this file holds a reference to a plugin, and a transformation
-can be swapped out by deleting one require line without any caller noticing.
-
-THE SOURCE TREE IS LEFT ALONE. A plugin rebuilds the path from the root down to what it changed and
-shares every untouched subtree, so the result lives in the SAME namespace and untouched nodes keep
-their ids. That is what lets "did this subtree change?" be answered by identity, and it is what
-makes the mexpr repair afterwards small.
-
-Params:
-    id      a registered transformation's id
-    ns      the namespace `root` lives in; new nodes are minted into it
-    root    the tree to transform - the whole row, not the node the gesture named
-    params  {name = ast id, ...}, as an option's `params` carries them
-
-Returns the new root; or nil and a reason when the id is unknown, switched off, a declared parameter
-is missing, or the plugin refused. RAISED rather than returned: a crash inside a plugin, and an `ns`
-or `root` that is not one - a wrong argument is not a refusal.
-@date 2026-09-12 22:05 ]]
+--[[ @brief Runs one transformation over a tree and gives back the tree it produced.
+-- |
+-- | THE ONE DOOR. Everything that runs a transformation comes through here: the right-click menu,
+-- | the F6 preview, the tests. A caller names the transformation by id and passes the parameters an
+-- | option carries, so nothing outside this file holds a reference to a plugin, and a
+-- | transformation can be removed by deleting its file without any caller noticing.
+-- |
+-- | THE SOURCE TREE IS LEFT ALONE. A plugin rebuilds the path from the root down to what it changed
+-- | and shares every untouched subtree, so the result lives in the SAME namespace and untouched
+-- | nodes keep their ids. That is what lets "did this subtree change?" be answered by identity, and
+-- | what makes the mexpr repair afterwards small.
+-- |
+-- | @details The checks run in this order: arguments, known id, active, every declared parameter
+-- |          present. "Switched off" wins over a missing parameter, because an option built while
+-- |          the plugin was on may still sit in an open menu. `params` itself is the plugin's to
+-- |          check, since the names are its own.
+-- |
+-- | @param id      id - a registered transformation's id
+-- | @param ns      ast.ns - the namespace `root` lives in; new nodes are minted into it; checked
+-- | @param root    ast.node - the whole row, not the node the gesture named; checked
+-- | @param params  table | nil - as an option's `params` carries them; nil reaches the plugin as {}
+-- | @return ast.node | nil, string - the new root; or nil and a reason when the id is unknown,
+-- |         switched off, a declared parameter is missing, or the plugin refused
+-- | @throws RAISED rather than returned: a crash inside a plugin, re-raised with its traceback, and
+-- |         an `ns` or `root` that is not one - a wrong argument is not a refusal
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.apply(id, ns, root, params)
     --[[ `params` is the PLUGIN's table, and it is checked where the plugin reads it rather than
     here: the names are that plugin's own declaration, so distribute seals what its offer() builds
@@ -488,21 +547,31 @@ function transforms.apply(id, ns, root, params)
     return res
 end
 
---[[ Everything that can be done at one ast node.
-
-ASKED ON EVERY RIGHT-CLICK, so it must be cheap and must never throw at the user: a plugin that
-refuses inside its own offer() simply contributes nothing, which is the same answer as not being
-applicable. Only a real crash gets through, and that is deliberate - see `guarded`.
-
-An option is {id, label, params}: ids and plain values, never a closure over the tree. That is what
-lets one sit in a menu across frames, be logged, and be handed to `apply` later without keeping a
-whole namespace alive.
-
-Params: `node` is the ast node the pointer resolved to, NOT the root - aim is the gesture. `root` is
-still needed because most offers have to look at the node's surroundings to answer.
-
-Returns a list, empty when nothing applies. Empty is the common answer and is not a failure.
-@date 2026-09-12 01:25 ]]
+--[[ @brief Everything that can be done at one ast node: every active plugin's options, in order.
+-- |
+-- | ASKED ON EVERY RIGHT-CLICK, so it must be cheap and must never throw at the user: a plugin that
+-- | refuses inside its own offer() simply contributes nothing, the same answer as not being
+-- | applicable. Only a real crash gets through, deliberately - see `guarded`.
+-- |
+-- | AN OPTION CARRIES IDS, never a closure over the tree. That is what lets one sit in a menu
+-- | across frames, be logged, and be handed to `apply` later without keeping a namespace alive.
+-- |
+-- | @details A plugin may return one option or a list of them. Whatever it returns is checked
+-- |          here, at the boundary with code this file did not write: a hand-built option would
+-- |          otherwise draw in the menu and refuse when run. A plugin with no offer is skipped.
+-- |
+-- | @param ns    ast.ns - checked
+-- | @param root  ast.node - the whole row; checked. Needed because most offers look at the node's
+-- |              surroundings
+-- | @param node  ast.node | nil - what the pointer resolved to, NOT the root: aim is the gesture.
+-- |              nil (empty space, a glyph with no ast id) answers the empty list; anything else
+-- |              is checked
+-- | @return {transforms.option, ...} - empty when nothing applies, which is the common answer and
+-- |         not a failure
+-- | @throws when a plugin crashes, or hands back something that is not an option
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.offers(ns, root, node)
     ast.check_ns(ns)
     ast.check_node(root, "root")
@@ -546,21 +615,24 @@ function transforms.offers(ns, root, node)
     return out
 end
 
---[[ Which transformations are NOT in their default state, as text.
-
-Core: configuration, not document - the same standing as keymap.save and glyphmap.save, and written
-to its own file for the same reason. Someone else's copy of this project should not inherit which
-plugins you happen to have ticked.
-
-Core: ONLY DIVERGENCES ARE WRITTEN, exactly as keymap.serialize does it. A plugin sitting at its own
-`default_active` produces no line, so the file stays short, and a plugin whose default CHANGES later
-is not held to the old value by a stale entry nobody remembers writing.
-
-Detail: one `id<TAB>on|off` per line. Unknown ids are not this function's problem - `load` below
-ignores them, which is what makes a savefile survive a plugin being deleted.
-
-Returns the text, possibly empty - which is the correct content for "everything is as it shipped".
-@date 2026-09-12 02:30 ]]
+--[[ @brief Which transformations are NOT in their default state, as text.
+-- |
+-- | CONFIGURATION, NOT DOCUMENT - the same standing as keymap.save and glyphmap.save, and written
+-- | to its own file for the same reason: someone else's copy of this project should not inherit
+-- | which plugins you happen to have ticked.
+-- |
+-- | ONLY DIVERGENCES ARE WRITTEN, exactly as keymap.serialize does it. A plugin at its own
+-- | `default_active` produces no line, so the file stays short, and a plugin whose default CHANGES
+-- | later is not held to the old value by a stale entry nobody remembers writing.
+-- |
+-- | @return string - one `id<TAB>on|off` per line, in registration order; empty is the correct
+-- |         content for "everything is as it shipped"
+-- |
+-- | @note A plugin deleted since is simply absent from the output. `load` ignores ids nothing
+-- |       answers to, which is what makes a savefile survive a plugin being deleted.
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.serialize()
     local lines = {}
     for _, spec in ipairs(ORDER) do
@@ -571,20 +643,24 @@ function transforms.serialize()
     return table.concat(lines, "\n")
 end
 
---[[ Applies a saved activation state over the plugins that loaded.
-
-Core: LOADING IS NOT REGISTRATION. The plugins are already there, put there by the scan at the
-bottom of this file; this only flips flags on them. So a savefile can never bring a transformation
-into existence, and a hand-edited one cannot make the editor run something that is not in the
-folder.
-
-Detail: a line naming an id nothing answers to is SKIPPED, not an error. That is the ordinary case
-after a plugin file is deleted or renamed, and refusing the whole file over it would lose every
-other setting in it. The count of skipped lines comes back so a caller can say so if it wants to.
-
-Params: `text` as serialize() produced it; nil or empty is valid and means "leave every default
-alone". Returns applied, skipped.
-@date 2026-09-12 02:30 ]]
+--[[ @brief Applies a saved activation state over the plugins that loaded.
+-- |
+-- | LOADING IS NOT REGISTRATION. The plugins are already there, put there by the scan at the bottom
+-- | of this file; this only flips flags on them. So a savefile can never bring a transformation
+-- | into existence, and a hand-edited one cannot make the editor run something not in the folder.
+-- |
+-- | A LINE NAMING AN UNKNOWN ID IS SKIPPED, not an error. That is the ordinary case after a plugin
+-- | file is deleted or renamed, and refusing the whole file would lose every other setting in it.
+-- |
+-- | @details Lines are applied OVER the current flags - nothing is reset first - and a line that
+-- |          does not read as `id state` is ignored without being counted. Any state but "on" means
+-- |          off. Clears `dirty` afterwards: what was just read is what is on disk.
+-- |
+-- | @param text  string | nil - as serialize() produced it; nil or empty leaves every flag alone
+-- | @return integer, integer - lines applied, and lines naming an unknown id
+-- |
+-- | @date 2026-09-13 18:30
+--]]
 function transforms.load(text)
     local applied, skipped = 0, 0
     for line in tostring(text or ""):gmatch("[^\n]+") do

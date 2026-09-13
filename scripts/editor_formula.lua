@@ -1,33 +1,37 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-new(id: id)                             -> state_formula
-    A fresh, empty box.
-
-draw(state_formula: editor_formula.state_formula, fontset: fontset, pos: {x,y}, sz: size,
-     width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean)
-     -> height
-    Draws the box and returns the height it filled, so the caller can
-    lay out whatever follows without measuring it again.
-
-formula_at(state_formula: editor_formula.state_formula, pos: {x,y}) -> {container, hb} | nil
-    The formula under a screen point. This box holds exactly one, so
-    the search is the containment test alone - same answer
-    editor_text.formula_at gives for a box that holds many.
-
-handle_input(state_formula: editor_formula.state_formula, fontset: fontset, sz: size) -> changed
-    One frame of input. True when the box's CONTENT changed, which
-    only a paste can do.
-
-rescale(state_formula: editor_formula.state_formula, fontset: fontset) -> nothing
-    Re-lays-out after a zoom.
-
-to_text(state_formula: editor_formula.state_formula) -> text
-from_text(state_formula: editor_formula.state_formula, text: string, fontset: fontset) -> ok
-    The save format, length-prefixed like editor_definition's.
-
---- internal, not on the module table --------------------------------------------------------------
-    the draw helpers and the box's own hit rectangle
-@date 2026-09-12 03:20
-================================================================================================= ]]
+-- | new(id: id | nil)                       -> editor_formula.state_formula
+-- |     A fresh, empty box.
+-- |
+-- | draw(state_formula: editor_formula.state_formula, fontset: fontset, pos: {x,y}, sz: size,
+-- |      width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean)
+-- |      -> height
+-- |     Draws the box and returns the height it filled, so the caller can
+-- |     lay out whatever follows without measuring it again.
+-- |
+-- | formula_at(state_formula: editor_formula.state_formula, pos: {x,y}) -> {container, hb} | nil
+-- |     The formula under a screen point. This box holds exactly one, so
+-- |     the search is the containment test alone - same answer
+-- |     editor_text.formula_at gives for a box that holds many.
+-- |
+-- | handle_input(state_formula: editor_formula.state_formula, fontset: fontset, sz: size)
+-- |      -> changed
+-- |     One frame of input. True when the box's CONTENT changed, which
+-- |     only a paste can do.
+-- |
+-- | rescale(state_formula: editor_formula.state_formula, fontset: fontset) -> nothing
+-- |     Re-lays-out after a zoom.
+-- |
+-- | to_text(state_formula: editor_formula.state_formula) -> text
+-- | from_text(state_formula: editor_formula.state_formula, text: string, fontset: fontset)
+-- |      -> nothing
+-- |     The save format, length-prefixed like editor_definition's.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     ensure, clipboard_latex, STATE_FIELDS, STATE_SHAPE, and the field's padding and colours
+-- |
+-- | @date 2026-09-13 19:10
+-- | ===============================================================================================
+--]]
 
 --[[
 editor_formula.lua - the editor inside a FORMULA box (the blue one). One step of a derivation.
@@ -98,19 +102,23 @@ local STATE_FIELDS = {
 }
 local STATE_SHAPE = sealed.declare("editor_formula", "state_formula", STATE_FIELDS)
 
---[[ A fresh, empty box. `latex` is the committed content and the formula is rebuilt from it - the
-string is the truth, not the tree, which is what makes discarding an edit a rebuild rather than an
-undo.
-
-`id` and `parent` are the DERIVATION LINK. Each formula box has an id of its own, and a box
-produced by transforming another records that other's id - which is the proof DAG of
-docs/phase2_design.md section 1 written down: a root has no parent, everything else has exactly one.
-
-The ids live inside the box's own saved body rather than in the box header, so the document format
-above this file does not have to learn about them. Nothing creates a parent yet: that happens when a
-transformation emits a box, and transformations wait on the expression parser. The link is built now
-so it is not retrofitted through the drawing, the format and the loader later.
-@date 2026-09-08 08:06 ]]
+--[[ @brief A fresh, empty formula box.
+-- |
+-- | THE STRING IS THE TRUTH, NOT THE TREE. `latex` is the committed content and the formula is
+-- | rebuilt from it, which is what makes discarding an edit a rebuild rather than an undo.
+-- |
+-- | `id` AND `parent` ARE THE DERIVATION LINK - the proof DAG of docs/phase2_design.md section 1
+-- | written down: a root has no parent, and a box produced by transforming another records that
+-- | other's id. content.lua writes `parent` when it emits a transformed box.
+-- |
+-- | @details The ids live inside the box's own saved body (to_text) rather than in the box header,
+-- |          so the document format above this file does not have to learn about them.
+-- |
+-- | @param id  id | nil - as content.lua assigns it; nil for a box whose id comes from from_text
+-- | @return editor_formula.state_formula - sealed; no latex, no formula, no parent
+-- |
+-- | @date 2026-09-13 19:10
+--]]
 function editor_formula.new(id)
     return STATE_SHAPE.wrap{latex = nil, formula = nil, id = id, parent = nil}
 end
@@ -142,20 +150,28 @@ local function clipboard_latex()
     return inner or text
 end
 
---[[ Draws the box, and returns the height it filled so the caller can lay out what follows.
-
-An EMPTY box still draws a field, so it reads as somewhere a formula can go rather than as blank
-space in a coloured rectangle. Either way this records `state_formula.hit` - the rect a click must land in,
-plus the origin and wrap edge it was drawn at - because handle_input() runs in a different call and
-cannot re-derive any of them.
-
-  pos             top-left of the content; the BASELINE is worked out from measure()'s own `top`
-  sz              the logical size to draw at
-  width_limit     how far right content may reach, as a width from pos.x
-  show_cursor     this is the active box: draws the field's edge and the caret
-  show_wireframe  passed through to the shared host (mexpr's debug boxes)
-  show_graph      passed through: the reachable-position graph
-@date 2026-09-08 08:06 ]]
+--[[ @brief Draws the box, and returns the height it filled so the caller can lay out what follows.
+-- |
+-- | AN EMPTY BOX STILL DRAWS A FIELD, so it reads as somewhere a formula can go rather than as
+-- | blank space in a coloured rectangle.
+-- |
+-- | IT RECORDS `hit` - the rect a click must land in, plus the origin and wrap edge it was drawn
+-- | at - because handle_input() runs in a different call and cannot re-derive any of them. An
+-- | empty box records none.
+-- |
+-- | @param state_formula   editor_formula.state_formula - checked; builds the formula if missing
+-- | @param fontset         fontset
+-- | @param pos             {x, y} - top-left of the content; the BASELINE is worked out from
+-- |                        measure()'s own `top`
+-- | @param sz              size - the logical size to draw at
+-- | @param width_limit     number - how far right content may reach, as a width from pos.x
+-- | @param show_cursor     boolean - this is the active box: the field's edge and the caret
+-- | @param show_wireframe  boolean - passed through: mexpr's debug boxes
+-- | @param show_graph      boolean - passed through: the reachable-position graph
+-- | @return number - the height filled, padding included
+-- |
+-- | @date 2026-09-13 19:10
+--]]
 function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_cursor,
         show_wireframe,
         show_graph)
@@ -201,12 +217,18 @@ function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_
     return (m.bottom - m.top) + 2 * pad
 end
 
---[[ This box's formula, as {container, hb}, when a screen point is over it. Nil otherwise.
-
-The same answer editor_text.formula_at gives for a box that can hold many formulas - this one holds
-exactly one, so the search is the containment test alone. Both exist so a gesture asking "what is
-under the pointer" does not have to know which kind of box it is pointing at.
-@date 2026-09-11 21:40 ]]
+--[[ @brief This box's formula, when a screen point is over it.
+-- |
+-- | THE SAME ANSWER editor_text.formula_at gives for a box that can hold many formulas, so a
+-- | gesture asking "what is under the pointer" does not have to know which kind of box it is on.
+-- | This one holds exactly one, so the search is the containment test alone.
+-- |
+-- | @param state_formula  editor_formula.state_formula - checked
+-- | @param pos            {x, y} | nil - a screen point
+-- | @return {container, hb} | nil - nil for an empty box, one not drawn yet, or a point outside
+-- |
+-- | @date 2026-09-13 19:10
+--]]
 function editor_formula.formula_at(state_formula, pos)
     STATE_SHAPE.check(state_formula)
     if state_formula.formula and editor.point_in_box(pos, state_formula.hit) then
@@ -215,17 +237,32 @@ function editor_formula.formula_at(state_formula, pos)
     return nil
 end
 
---[[ One frame of input. Returns true when the box's CONTENT changed, which only a paste can do -
-in either state_formula, and nothing else may change it at all.
-@date 2026-09-08 08:06 ]]
+--[[ @brief One frame of input: paste, click, drag, selection and navigation - and no edits.
+-- |
+-- | ONLY A PASTE CHANGES CONTENT, empty or filled. Into a filled box it REPLACES the content and
+-- | drops the parent link: what is in the box no longer came from the box it pointed at, so it is
+-- | a root now.
+-- |
+-- | AN EDIT IS DISCARDED by rebuilding from the committed text, so selection, navigation and Ctrl+C
+-- | still work through mformula while the content stays a fixed step of a derivation.
+-- |
+-- | @param state_formula  editor_formula.state_formula - checked
+-- | @param fontset        fontset
+-- | @param sz             size
+-- | @return boolean - true when a paste replaced the content
+-- |
+-- | @note from_latex never fails, so any non-empty clipboard replaces the content - unreadable text
+-- |       arrives as an empty atom. Only an empty clipboard leaves the box as it was.
+-- |
+-- | @date 2026-09-13 19:10
+--]]
 function editor_formula.handle_input(state_formula, fontset, sz)
     STATE_SHAPE.check(state_formula)
-    --[[ PASTE, in either state_formula. Into an empty box it is how content arrives; into a filled one it
+    --[[ PASTE, empty box or filled. Into an empty box it is how content arrives; into a filled one it
     REPLACES the content and drops the parent link, because what is in the box no longer came from
     the box it pointed at - it is a root now (see this file's header).
 
-    A paste that does not parse changes nothing at all: the old content and the old link both stay,
-    rather than the box being emptied by a bad clipboard. ]]
+    The `if built` guard below never fails today: from_latex always returns a container. ]]
     if keymap.pressed("edit.paste") then
         local latex = clipboard_latex()
         if latex then
@@ -271,10 +308,17 @@ function editor_formula.handle_input(state_formula, fontset, sz)
     return false
 end
 
---[[ Re-lays-out the formula after a zoom. `state_formula.hit` is dropped rather than adjusted: it holds
-positions measured at the OLD size, and a click tested against them would land somewhere else than
-where the glyph now is - draw() rebuilds it on the next frame anyway.
-@date 2026-09-08 08:06 ]]
+--[[ @brief Re-lays-out the formula after a zoom.
+-- |
+-- | `hit` IS DROPPED rather than adjusted: it holds positions measured at the OLD size, and a click
+-- | tested against them would land somewhere other than where the glyph now is. draw() rebuilds it
+-- | on the next frame.
+-- |
+-- | @param state_formula  editor_formula.state_formula - checked
+-- | @param fontset        fontset
+-- |
+-- | @date 2026-09-13 19:10
+--]]
 function editor_formula.rescale(state_formula, fontset)
     STATE_SHAPE.check(state_formula)
     if state_formula.formula then
@@ -283,10 +327,18 @@ function editor_formula.rescale(state_formula, fontset)
     state_formula.hit = nil
 end
 
---[[ Saved as a length-prefixed list, the same shape editor_definition.lua uses - one entry today
-(the formula), so that the justification a transformed box will carry (which transform, from which
-source ids, under which rules - section 12) joins it without a second migration of the format.
-@date 2026-09-08 08:06 ]]
+--[[ @brief The box as its saved body.
+-- |
+-- | A LENGTH-PREFIXED LIST, the same shape editor_definition.lua uses, so that the justification a
+-- | transformed box will carry (which transform, from which source ids, under which rules - section
+-- | 12) joins it without another migration of the format.
+-- |
+-- | @param state_formula  editor_formula.state_formula - checked
+-- | @return string - "3\n" then latex, id and parent, each as "<length>\n<text>"; a missing value
+-- |         is written as ""
+-- |
+-- | @date 2026-09-13 19:10
+--]]
 function editor_formula.to_text(state_formula)
     STATE_SHAPE.check(state_formula)
     local parts = {}
@@ -300,10 +352,22 @@ function editor_formula.to_text(state_formula)
     return tostring(#parts) .. "\n" .. table.concat(parts)
 end
 
---[[ Reads back what to_text() wrote. The COUNT is honoured rather than assumed, so a file written
-before the derivation link existed (one entry: just the formula) still loads - it simply has no id
-and no parent, which is what a box with no recorded lineage should be.
-@date 2026-09-08 08:06 ]]
+--[[ @brief Reads back what to_text() wrote, into this box.
+-- |
+-- | THE COUNT IS HONOURED rather than assumed, so a file written before the derivation link existed
+-- | (one entry: just the formula) still loads - it simply has no id and no parent, which is what a
+-- | box with no recorded lineage should be.
+-- |
+-- | @details An unreadable count leaves the box untouched; a truncated entry stops the read. An
+-- |          empty latex keeps whatever the box held. `id` and `parent` are always overwritten -
+-- |          with nil when absent or not a number.
+-- |
+-- | @param state_formula  editor_formula.state_formula - checked
+-- | @param text           string - a saved body
+-- | @param fontset        fontset - the formula is rebuilt immediately
+-- |
+-- | @date 2026-09-13 19:10
+--]]
 function editor_formula.from_text(state_formula, text, fontset)
     STATE_SHAPE.check(state_formula)
     local at = text:find("\n", 1, true)

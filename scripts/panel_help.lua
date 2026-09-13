@@ -1,16 +1,18 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-new_state()                             -> state_help
-draw(state_help: panel_help.state_help, stamp, fontset: fontset) -> nothing
-    The F1 screen: chapter list on the left, the chapter on the right.
-
-chapters()                              -> {chapter, ...}
-    The chapters in listing order, exposed so the help panel is not
-    the only thing that can enumerate them.
-
---- internal, not on the module table --------------------------------------------------------------
-    the chapter texts, layout and scrolling
-@date 2026-09-12 03:25
-================================================================================================= ]]
+-- | new_state()                             -> panel_help.state_help
+-- | draw(state_help: panel_help.state_help, stamp: integer, fontset: fontset) -> nothing
+-- |     The F1 screen: chapter list on the left, the chapter on the right.
+-- |
+-- | chapters()                              -> {chapter, ...}
+-- |     The chapters in listing order - the live table, not a copy. Exposed
+-- |     so a test can check every {placeholder} names a real action.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     the chapter texts, layout and scrolling
+-- |
+-- | @date 2026-09-13 17:15
+-- | ===============================================================================================
+--]]
 
 --[[
 panel_help.lua - the F1 screen: what this editor does that no key list can tell you, with every
@@ -1219,29 +1221,39 @@ local STATE_HELP_FIELDS = {
 }
 local STATE_HELP_SHAPE = sealed.declare("panel_help", "state_help", STATE_HELP_FIELDS)
 
---[[ The panel's state. It is created with the content state and lives there, not here, which is
-what makes a reading position survive closing and reopening the panel.
-
-  chapter         index into CHAPTERS - the chapter on screen
-  scroll_of       chapter index -> the offset that chapter was last read at
-  pending_scroll  a scroll to apply on the coming frames: an offset, "top" or "bottom"
-  pending_frames  how many frames that request has left to run; see draw()
-@date 2026-09-08 07:43 ]]
+--[[ @brief A fresh help panel state, opened on the first chapter.
+-- |
+-- | IT LIVES ON THE CONTENT STATE, not here: created with it and kept there, which is what makes a
+-- | reading position survive closing and reopening the panel.
+-- |
+-- | @return panel_help.state_help - sealed, with
+-- |           chapter         index into CHAPTERS - the chapter on screen; 1
+-- |           scroll_of       chapter index -> the offset that chapter was last read at; empty
+-- |           pending_scroll  a scroll to apply on the coming frames: an offset, "top" or
+-- |                           "bottom"; unset
+-- |           pending_frames  how many frames that request has left to run, see draw(); unset
+-- |
+-- | @date 2026-09-13 17:15
+--]]
 function panel_help.new_state()
     return STATE_HELP_SHAPE.wrap{chapter = 1, pending_scroll = nil, scroll_of = {}}
 end
 
---[[ Draws the whole screen - chapter list on the left, the chapter itself on the right.
-
-Called from content.draw() while state.show_help is set. content's own handle_input has already
-returned early by then, so this owns the frame: it may submit real widgets, and it reads the
-navigation keys itself rather than being handed them.
-
-  state_help   the state from new_state(); read and written
-  stamp    content's keymap revision. It joins the page's cache key, so a rebinding rewrites the
-           prose on the next frame rather than at the next chapter change
-  fontset  the fonts figures and examples are built with; without one they are skipped
-@date 2026-09-08 07:43 ]]
+--[[ @brief Draws the whole F1 screen - chapter list on the left, the chapter itself on the right.
+-- |
+-- | THIS OWNS THE FRAME. It is called from content.draw() while the help is shown, and content's
+-- | own handle_input has already returned early by then - so this may submit real widgets, and it
+-- | reads the navigation keys itself rather than being handed them.
+-- |
+-- | @param state_help  panel_help.state_help - from new_state(); checked; read and written
+-- | @param stamp       integer - content's keymap revision. It joins the page's cache key, so a
+-- |                    rebinding rewrites the prose on the next frame rather than at the next
+-- |                    chapter change
+-- | @param fontset     fontset - the fonts figures and examples are built with; without one they
+-- |                    are skipped
+-- |
+-- | @date 2026-09-13 17:15
+--]]
 function panel_help.draw(state_help, stamp, fontset)
     STATE_HELP_SHAPE.check(state_help)
     local size = vc.ImGui_GetDisplaySize()
@@ -1470,13 +1482,15 @@ function panel_help.draw(state_help, stamp, fontset)
     vc.ImGui_PopFont()
 end
 
--- Exposed for the tests: every {placeholder} in every chapter must name a real action.
--- @date 2026-09-08 07:43
---[[ The help chapters, in the order the panel lists them.
-
-Exposed so the F1 screen is not the only thing that can enumerate them - the keymap panel names the
-same chapters when it points at the help. The live table, not a copy: read it.
-@date 2026-09-12 03:25 ]]
+--[[ @brief The help chapters, in the order the panel lists them.
+-- |
+-- | EXPOSED FOR THE TESTS: test_help_placeholders.lua walks every chapter to check that each
+-- | {placeholder} names a real action, which nothing else would notice until F1 showed a typo.
+-- |
+-- | @return {chapter, ...} - the LIVE table, not a copy: read it, do not write it
+-- |
+-- | @date 2026-09-13 17:15
+--]]
 function panel_help.chapters()
     return CHAPTERS
 end

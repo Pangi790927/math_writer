@@ -1,20 +1,22 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-to_latex(container: mexpru.container, subst: {[mexpru.u] = string}) -> text
-nodes_to_latex(nodes: {node}, subst: {[mexpru.u] = string}) -> text
-    A whole formula, or a RUN of sibling nodes - which is the shape a
-    selection always has. `subst` is optional and passes through to
-    node_to_latex; see its comment.
-
-from_latex(fontset: fontset, sz: size, s: string) -> {root, cursor_pos, version}
-    The inverse, and what a paste from outside arrives through. Always
-    yields a container - an empty atom for unreadable input - because
-    a box with nothing in it is a real state.
-
---- internal, not on the module table --------------------------------------------------------------
-    node_to_latex, the macro table, expand_macros/expand_sqrt and the
-    recursive-descent parser
-@date 2026-09-12 03:25
-================================================================================================= ]]
+-- | to_latex(container: mexpru.container, subst: {[mexpru.u] = string}) -> text
+-- | nodes_to_latex(nodes: {node}, subst: {[mexpru.u] = string}) -> text
+-- |     A whole formula, or a RUN of sibling nodes - which is the shape a
+-- |     selection always has. `subst` is optional and passes through to
+-- |     node_to_latex; see its comment.
+-- |
+-- | from_latex(fontset: fontset, sz: size, s: string) -> mexpru.container
+-- |     The inverse, and what a paste from outside arrives through. Always
+-- |     yields a container - an empty atom for unreadable input - because
+-- |     a box with nothing in it is a real state.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     node_to_latex, the macro table, expand_macros/expand_sqrt and the
+-- |     recursive-descent parser
+-- |
+-- | @date 2026-09-13 17:00
+-- | ===============================================================================================
+--]]
 
 --[[
 mformula_latex.lua - LaTeX-subset serialization for mformula_new's mexpr_t-based tree: to_latex()
@@ -695,15 +697,6 @@ ight), and reserves the
     end
 end
 
---[[ Renders `container`'s tree (an mformula_new container - {root=<horiz mexpr_p>, ...}) as a
-LaTeX-subset string - NOT wrapped in $$ (editor.lua's own selection_to_text() does that, the same
-place it decides a formula embed needs $$ at all). Only covers what mformula_new itself can
-produce: plain glyphs, the greek/symbol shortcuts in char.lua (by their own `desc`), ^{...}/_{...}
-for sup/sub, \frac{...}{...} - nothing fancier (big-op layout tweaks) since nothing in that editor
-builds those yet either.
-@date 2026-09-08 09:00 ]]
---[[ `subst` is optional and passes straight to node_to_latex - see its comment for the shape and
-for why the substitution belongs in that walk rather than in a second one. ]]
 --[[ A substitution map, checked.
 
 WHAT `subst` IS: `{[u table] -> replacement text}`. The key is the node's `u`, never the node
@@ -721,26 +714,44 @@ local function check_subst(subst)
     return subst
 end
 
---[[ A whole formula as LaTeX.
-
-THE DIRECTION THE APP SAVES IN, and the one a copy to the clipboard takes. Walks the container's
-root row through the same node_to_latex every other entry here uses, so a formula, a selection and a
-single node all serialise identically.
-
-Params: `subst` is optional and passes straight through to node_to_latex - see its comment for the
-shape and for what it is for. Returns the text.
-@date 2026-09-12 03:25 ]]
+--[[ @brief A whole formula as LaTeX.
+-- |
+-- | THE DIRECTION THE APP SAVES IN, and the one a copy to the clipboard takes. Walks the
+-- | container's root row through the same node_to_latex every other entry here uses, so a formula,
+-- | a selection and a single node all serialise identically.
+-- |
+-- | NOT WRAPPED IN $$. editor.lua's selection_to_text() does that, in the same place it decides
+-- | whether a formula embed needs $$ at all.
+-- |
+-- | @details Covers what the editor can build: glyphs by their own `desc` (brackets included),
+-- |          ^{...} / _{...} with \limits for big operators, accents, \frac{...}{...}, and verts
+-- |          as matrices or operator names.
+-- |
+-- | @param container  mexpru.container - checked
+-- | @param subst      {[mexpru.u] = string} | nil - checked; passes straight through to
+-- |                   node_to_latex, see its comment for the shape and what it is for
+-- | @return string - the text
+-- |
+-- | @date 2026-09-13 17:00
+--]]
 function mformula_latex.to_latex(container, subst)
     mexpru.check_container(container)
     check_subst(subst)
     return node_to_latex(container.root, subst)
 end
 
---[[ The same rendering for a RUN of sibling nodes rather than a whole tree - what copying a
-selection inside a formula needs (mformula_new's own selection is always a contiguous slice of one
-horiz's children, so this is exactly the shape it has to serialise). Concatenated with no separator,
-identically to how node_to_latex() already walks a horiz's own children.
-@date 2026-09-08 09:00 ]]
+--[[ @brief The same rendering for a RUN of sibling nodes rather than a whole tree.
+-- |
+-- | WHAT COPYING A SELECTION NEEDS: mformula_new's selection is always a contiguous slice of one
+-- | horiz's children, so this is exactly the shape it has to serialise. The parts are concatenated
+-- | with no separator, identically to how node_to_latex() walks a horiz's own children.
+-- |
+-- | @param nodes  {node} - siblings, in order; each is checked through mexpru.u
+-- | @param subst  {[mexpru.u] = string} | nil - checked; as for to_latex
+-- | @return string - the text, empty for an empty run
+-- |
+-- | @date 2026-09-13 17:00
+--]]
 function mformula_latex.nodes_to_latex(nodes, subst)
     check_subst(subst)
     local parts = {}
@@ -1499,17 +1510,27 @@ local function expand_sqrt(s)
     return table.concat(out)
 end
 
---[[ LaTeX back into a container the editors can hold.
-
-THE INVERSE OF to_latex, and what a paste from outside arrives through. `\sqrt` is rewritten into a
-power before anything else looks at the text, so the parser below never has to know about it.
-
-Detail: an empty or wholly unreadable string still yields a container - one empty atom - rather than
-nil, because a box with nothing in it is a real state and every caller would otherwise have to
-invent one. Macros this does not know are dropped silently; see the README on the outstanding set.
-
-Returns {root, cursor_pos, version} with the cursor at the end, which is where typing continues.
-@date 2026-09-12 03:25 ]]
+--[[ @brief LaTeX back into a container the editors can hold.
+-- |
+-- | THE INVERSE OF to_latex, and what a paste from outside arrives through. Macros are expanded
+-- | and `\sqrt` is rewritten into a power before anything else looks at the text, so the parser
+-- | below never has to know about either.
+-- |
+-- | ALWAYS A CONTAINER. An empty or wholly unreadable string still yields one - holding a single
+-- | empty atom - rather than nil, because a box with nothing in it is a real state and every
+-- | caller would otherwise have to invent one.
+-- |
+-- | @details Macros this does not know are dropped silently; CLAUDE.md's "Known WIP" lists the
+-- |          outstanding set.
+-- |
+-- | @param fontset  fontset - C++ userdata, not checked here (virt_composer raises its own error)
+-- | @param sz       size - the size index the glyphs are built at
+-- | @param s        string - the LaTeX-subset text, without $$
+-- | @return mexpru.container - a fresh one, version 0, with the cursor at the end, which is where
+-- |         typing continues
+-- |
+-- | @date 2026-09-13 17:00
+--]]
 function mformula_latex.from_latex(fontset, sz, s)
     -- \sqrt is rewritten into a power before anything else looks at the text - see expand_sqrt().
     local children = parse_latex_children(fontset, expand_sqrt(expand_macros(s)), 1, sz)

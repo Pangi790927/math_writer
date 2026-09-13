@@ -1,39 +1,41 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-
-draw_formula(container: mformula.container, fontset: fontset, sz: size, origin: {x,y}, opts: table)
-             -> {box, markers}
-    Puts one formula on screen with everything around it - highlight,
-    position graph, slot markers - in the one order they may be drawn in.
-    `origin.y` is the BASELINE. See `opts` at the function itself.
-
-formula_click_rect(box: mformula_new.box, markers: {marker}) -> l, r, t, b
-    The rect a click must land in to count as inside this formula, as
-    offsets from the draw origin. Covers the markers, not just the glyphs.
-
-point_in_box(pos: {x,y}, hb: hitbox)    -> boolean
-    A screen point against a drawn box. Inclusive on both edges, and
-    false rather than an error when the box was never drawn.
-
-formula_hit_test(container: mformula.container, fontset: fontset, sz: size, click: {x,y},
-                 draw_x: number, draw_y: number, wrap_edge: number, extend: boolean) -> nothing
-    Places the caret from a click, or extends a selection from a drag.
-    Moves the container's cursor itself.
-
-formula_node_at(container: mformula.container, fontset: fontset, sz: size, click: {x,y},
-                draw_x: number, draw_y: number, wrap_edge: number) -> mexpr node | nil
-    WHICH GLYPH the point is over. Touches neither cursor nor selection,
-    and nil is a real answer.
-
-edit_bracket(container: mformula.container, fontset: fontset, sz: size) -> changed
-    One frame of input. True when the TREE changed, not when the cursor
-    merely moved - the seam an owner's undo hangs off.
-
---- internal, not on the module table --------------------------------------------------------------
-    DRAW_OPTS      every option draw_formula understands; a caller's key is checked
-                   against it, since opts arrives already built
-    in_formula_frame
-@date 2026-09-12 01:25
-================================================================================================= ]]
+-- |
+-- | draw_formula(container: mexpru.container, fontset: fontset, sz: size, origin: {x,y},
+-- |              opts: table) -> {box, markers}
+-- |     Puts one formula on screen with everything around it - highlight,
+-- |     position graph, slot markers - in the one order they may be drawn in.
+-- |     `origin.y` is the BASELINE. See `opts` at the function itself.
+-- |
+-- | formula_click_rect(box: mformula_new.box, markers: {marker}) -> l, r, t, b
+-- |     The rect a click must land in to count as inside this formula, as
+-- |     offsets from the draw origin. Covers the markers, not just the glyphs.
+-- |
+-- | point_in_box(pos: {x,y}, hb: hitbox)    -> boolean
+-- |     A screen point against a drawn box. Inclusive on both edges, and
+-- |     false rather than an error when the box was never drawn.
+-- |
+-- | formula_hit_test(container: mexpru.container, fontset: fontset, sz: size, click: {x,y},
+-- |                  draw_x: number, draw_y: number, wrap_edge: number, extend: boolean) -> nothing
+-- |     Places the caret from a click, or extends a selection from a drag.
+-- |     Moves the container's cursor itself.
+-- |
+-- | formula_node_at(container: mexpru.container, fontset: fontset, sz: size, click: {x,y},
+-- |                 draw_x: number, draw_y: number, wrap_edge: number) -> mexpr node | nil
+-- |     WHICH GLYPH the point is over. Touches neither cursor nor selection,
+-- |     and nil is a real answer.
+-- |
+-- | edit_bracket(container: mexpru.container, fontset: fontset, sz: size) -> changed
+-- |     One frame of input. True when the TREE changed, not when the cursor
+-- |     merely moved - the seam an owner's undo hangs off.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     DRAW_OPTS      every option draw_formula understands; a caller's key is checked
+-- |                    against it, since opts arrives already built
+-- |     in_formula_frame, CURSOR_TRACK_COLOR, EMPTY_SLOT_COLOR
+-- |
+-- | @date 2026-09-13 19:00
+-- | ===============================================================================================
+--]]
 
 --[[
 editor.lua - THE SHARED HALF of the editors: everything needed to render and drive ONE formula
@@ -99,25 +101,35 @@ local DRAW_OPTS = sealed.declare("editor", "draw opts", {
     wrap_edge      = "ABSOLUTE right edge for wrapping, or nil for no wrap",
 })
 
---[[ Draws one formula, with everything that goes around it, and returns what the caller needs to
-route clicks into it:
-
-    { box = <mformula.draw's return>, markers = <slot markers, or nil> }
-
-`opts`:
-    active          this is the formula being edited - gates the caret, the highlight, the graph
-                    and the markers. Only one formula on screen should ever be active.
-    show_wireframe  forwarded to mformula.draw (mexpr's own debug bounding boxes)
-    show_graph      the reachable-position graph (below); ignored unless `active`
-    wrap_edge       ABSOLUTE right edge for wrapping, or nil for no wrap
-
-DRAW ORDER IS LOAD-BEARING and is the whole reason this is one function rather than three the
-caller sequences itself. The highlight goes down first, then the graph, then the formula - so the
-highlight ends up beneath the graph, the glyphs, the vert contours and the blinker, which is what
-"under walk graph and under the mexpr drawing and under the blinker and anything else" asks for.
-None of it can move inside mformula.draw(), because anything drawn in there is already on top of
-the graph.
-@date 2026-09-08 08:01 ]]
+--[[ @brief Draws one formula with everything around it, and returns what routes clicks into it.
+-- |
+-- | DRAW ORDER IS LOAD-BEARING and is the whole reason this is one function rather than three the
+-- | caller sequences itself: highlight, then graph, then slot markers, then the formula - so the
+-- | highlight ends up beneath the graph, the glyphs, the vert contours and the blinker. None of it
+-- | can move inside mformula.draw(), because anything drawn in there is already on top.
+-- |
+-- | THE ACTIVE FORMULA ALONE gets the caret highlight, the graph and the markers. Only one formula
+-- | on screen should ever be active; a soft pulse under every box's caret reads as clutter.
+-- |
+-- | @details `wrap_edge` is converted from ABSOLUTE to relative once, here - see the file header.
+-- |
+-- | @param container  mexpru.container - checked
+-- | @param fontset    fontset
+-- | @param sz         size - the size index to draw at
+-- | @param origin     {x, y} - checked. x is the left edge; y is the BASELINE, not the top
+-- | @param opts       table | nil - checked by key against DRAW_OPTS:
+-- |                     active          this is the formula being edited
+-- |                     show_wireframe  forwarded to mformula.draw: mexpr's debug bounding boxes
+-- |                     show_graph      the reachable-position graph; ignored unless `active`
+-- |                     wrap_edge       ABSOLUTE right edge for wrapping, or nil for no wrap
+-- | @return {box, markers} - `box` is mformula.draw's; `markers` the slot markers, nil unless
+-- |         active
+-- |
+-- | @note A misspelt option is refused rather than ignored: `active` misspelt would make the
+-- |       formula silently uneditable.
+-- |
+-- | @date 2026-09-13 19:00
+--]]
 function editor.draw_formula(container, fontset, sz, origin, opts)
     --[[ Checked here because nothing below does: mformula's cursor_box, reachable_graph,
     slot_markers and draw all take the container and none of them checks it. ]]
@@ -204,14 +216,19 @@ function editor.draw_formula(container, fontset, sz, origin, opts)
     return {box = box, markers = markers}
 end
 
---[[ The rect a click must land in to count as "inside this formula", in the formula's own
-draw-origin frame: returns l, r, t, b as offsets from `origin`.
-
-It has to cover every MARKER too, not just the content bbox - the root's trailing marker in
-particular sticks out past `box.width` on purpose (see draw_formula above). Without that, clicking
-a marker poking past the border reads as "outside" and deactivates the formula instead of
-hit-testing into it.
-@date 2026-09-08 08:01 ]]
+--[[ @brief The rect a click must land in to count as "inside this formula".
+-- |
+-- | IT COVERS EVERY MARKER, not just the content bbox - the root's trailing marker in particular
+-- | sticks out past `box.width` on purpose. Without that, clicking a marker poking past the border
+-- | reads as "outside" and deactivates the formula instead of hit-testing into it.
+-- |
+-- | @param box      mformula_new.box - as draw returned it; checked
+-- | @param markers  {marker} | nil - nil for a formula drawn inactive, which has none
+-- | @return number, number, number, number - l, r, t, b as offsets from the draw origin; t is
+-- |         negative, since the origin is the baseline
+-- |
+-- | @date 2026-09-13 19:00
+--]]
 function editor.formula_click_rect(box, markers)
     --[[ `markers` stays nil-tolerant: a formula that is not the active one is drawn without them,
     and every caller would otherwise guard for that itself. `box` is required - it is what the rect
@@ -229,18 +246,21 @@ function editor.formula_click_rect(box, markers)
     return l, r, t, b
 end
 
---[[ Is a screen point inside a formula's click box?
-
-THE SAME FOUR COMPARISONS were written out in every editor that hosts a formula - the text box, the
-formula box, the definition's slots - and each of them keeps its boxes in the same shape already
-(`{x, y, w, h, draw_x, draw_y, wrap_edge}`, built from editor.formula_click_rect above). So the shape
-was shared and only the test was copied. Author, 2026-09-11: "more small functions not repeated the
-better".
-
-INCLUSIVE ON BOTH EDGES, which is what those copies did: a click exactly on the right edge of a
-formula belongs to it. Nil-tolerant because a box that has not been drawn yet has no rectangle, and
-every caller would otherwise guard for that itself.
-@date 2026-09-11 21:40 ]]
+--[[ @brief Is a screen point inside a formula's click box?
+-- |
+-- | ONE TEST FOR EVERY EDITOR THAT HOSTS A FORMULA - the text box, the formula box, the
+-- | definition's slots - which all keep their boxes as `{x, y, w, h, draw_x, draw_y, wrap_edge}`,
+-- | built from formula_click_rect. The same four comparisons used to be copied into each. Author,
+-- | 2026-09-11: "more small functions not repeated the better".
+-- |
+-- | INCLUSIVE ON BOTH EDGES: a click exactly on the right edge of a formula belongs to it.
+-- |
+-- | @param pos  {x, y} | nil - a screen point
+-- | @param hb   {x, y, w, h} | nil - a drawn box
+-- | @return boolean - false when either is nil: a box not drawn yet has no rectangle
+-- |
+-- | @date 2026-09-13 19:00
+--]]
 function editor.point_in_box(pos, hb)
     --[[ NO TYPE CHECK HERE, deliberately, and it is the one function in this file with none. Both
     arguments are plain rectangles - `{x, y}` and `{x, y, w, h}` - assembled at half a dozen call
@@ -267,36 +287,66 @@ local function in_formula_frame(click, draw_x, draw_y, wrap_edge)
     return {x = click.x - draw_x, y = click.y - draw_y}, wrap_edge and (wrap_edge - draw_x)
 end
 
---[[ Places the formula's cursor from a click (or extends a selection from a drag), given the
-click in SCREEN coordinates and the origin the formula was drawn at.
-
-`extend` true continues a drag rather than starting a fresh cursor. Mutates the container's
-cursor directly - the same convention mformula's own move_*() uses - rather than returning a
-position for the caller to assign.
-@date 2026-09-08 08:01 ]]
+--[[ @brief Places the formula's cursor from a click, or extends a selection from a drag.
+-- |
+-- | MUTATES THE CONTAINER'S CURSOR directly - the same convention mformula's own move_*() uses -
+-- | rather than returning a position for the caller to assign. A caret click snaps to the nearest
+-- | position and always lands.
+-- |
+-- | @param container  mexpru.container - checked by mformula.hit_test
+-- | @param fontset    fontset
+-- | @param sz         size - the size it was drawn at
+-- | @param click      {x, y} - in SCREEN coordinates
+-- | @param draw_x     number - the origin the formula was drawn at
+-- | @param draw_y     number - likewise; the baseline
+-- | @param wrap_edge  number | nil - ABSOLUTE, as given to draw_formula
+-- | @param extend     boolean - true continues a drag rather than starting a fresh cursor
+-- |
+-- | @date 2026-09-13 19:00
+--]]
 function editor.formula_hit_test(container, fontset, sz, click, draw_x, draw_y, wrap_edge, extend)
     local local_click, wrap_width = in_formula_frame(click, draw_x, draw_y, wrap_edge)
     mformula.hit_test(container, fontset, sz, local_click, wrap_width, extend)
 end
 
---[[ WHICH GLYPH a screen point is over, or nil. Touches neither the cursor nor the selection.
-
-What a right-click asks, and a DIFFERENT question from the one above rather than half of it: a caret
-click snaps to the nearest position and always lands, while this answers only for a glyph the point
-is really on. Same frame conversion, different finder - mformula's glyph_at() carries the reasoning.
-@date 2026-09-12 01:10 ]]
+--[[ @brief WHICH GLYPH a screen point is over, or nil. Touches neither cursor nor selection.
+-- |
+-- | WHAT A RIGHT-CLICK ASKS, and a DIFFERENT question from formula_hit_test rather than half of it:
+-- | a caret click snaps to the nearest position and always lands, while this answers only for a
+-- | glyph the point is really on. Same frame conversion, different finder - mformula's glyph_at()
+-- | carries the reasoning.
+-- |
+-- | @param container  mexpru.container - checked by mformula.node_at
+-- | @param fontset    fontset
+-- | @param sz         size
+-- | @param click      {x, y} - in SCREEN coordinates
+-- | @param draw_x     number
+-- | @param draw_y     number - the baseline
+-- | @param wrap_edge  number | nil - ABSOLUTE
+-- | @return mexpr node | nil - nil is a real answer: the point is between glyphs
+-- |
+-- | @date 2026-09-13 19:00
+--]]
 function editor.formula_node_at(container, fontset, sz, click, draw_x, draw_y, wrap_edge)
     local local_click, wrap_width = in_formula_frame(click, draw_x, draw_y, wrap_edge)
     return mformula.node_at(container, fontset, sz, local_click, wrap_width)
 end
 
---[[ Runs one frame of input against a formula and reports whether the tree actually CHANGED, as
-opposed to the cursor merely moving (arrows, a click). `container.version` is bumped by every real
-tree edit, which is exactly that signal, so no caller has to re-derive "was this an edit".
-
-The seam for undo: each owner decides what a step means for it. editor_text.lua snapshots its
-whole char stream; a definition box has no equivalent yet, and what one should be is still open.
-@date 2026-09-08 08:01 ]]
+--[[ @brief Runs one frame of input against a formula, and says whether the TREE changed.
+-- |
+-- | THE SEAM FOR UNDO. Only a real tree edit counts, not the cursor merely moving (arrows, a
+-- | click), so no caller has to re-derive "was this an edit" - and each owner decides what an undo
+-- | step means for it, since editor_text snapshots its whole char stream with the formula.
+-- |
+-- | @details The signal is `container.version`, bumped by every real tree edit and nothing else.
+-- |
+-- | @param container  mexpru.container - checked by mformula.handle_input
+-- | @param fontset    fontset
+-- | @param sz         size
+-- | @return boolean - true when the tree changed this frame
+-- |
+-- | @date 2026-09-13 19:00
+--]]
 function editor.edit_bracket(container, fontset, sz)
     local pre_version = container.version
     mformula.handle_input(container, fontset, sz)

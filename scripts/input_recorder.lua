@@ -1,23 +1,27 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-init()                                  -> nothing
-close()                                 -> nothing
-    Opens the log for this run - APPENDING, so a previous run's tail
-    is still there - and stops the writer thread at shutdown.
-
-poll()                                  -> nothing
-    Once per frame, BEFORE any per-frame logic, so an event reaches
-    disk even if whatever it triggers then crashes.
-
-log_event(text: string)                 -> nothing
-log_error(err)                          -> nothing
-    Something the app itself did, as opposed to an input this module
-    observed. Every line is flushed as it is written, so both are
-    durable without any special handling at the call site.
-
---- internal, not on the module table --------------------------------------------------------------
-    the log path, rotation, and the event formatting
-@date 2026-09-12 03:20
-================================================================================================= ]]
+-- | init()                                  -> nothing
+-- | close()                                 -> nothing
+-- |     Opens the log for this run - APPENDING, so a previous run's tail
+-- |     is still there - and stops the writer thread at shutdown.
+-- |
+-- | poll()                                  -> nothing
+-- |     Once per frame, BEFORE any per-frame logic, so an event reaches
+-- |     disk even if whatever it triggers then crashes.
+-- |
+-- | log_event(text: string)                 -> nothing
+-- | log_error(err: any)                     -> nothing
+-- |     Something the app itself did, as opposed to an input this module
+-- |     observed. Every line is flushed by the writer thread, so both are
+-- |     durable without any special handling at the call site.
+-- |
+-- | All of it is a no-op when async_log_composer.h is not registered.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     the log path, rotation, and the event formatting
+-- |
+-- | @date 2026-09-13 19:20
+-- | ===============================================================================================
+--]]
 
 --[[
 input_recorder.lua - a "flight recorder" for real input, requested live: "I crashed, make
@@ -192,11 +196,18 @@ local function flush_repeat()
     last_err, last_err_count = nil, 0
 end
 
---[[ Opens the log for this run, APPENDING to whatever the previous run left there.
-
-Called from main.lua's test_init(), which runs on a real start and on every Ctrl+R alike - see
-MAX_LOG_BYTES for why that makes rotating here the wrong thing, and what replaced it.
-@date 2026-09-11 00:50 ]]
+--[[ @brief Opens the log for this run, APPENDING to whatever the previous run left there.
+-- |
+-- | A RUN NEVER DISCARDS THE RUN BEFORE IT. This is called from main.lua's test_init(), on a real
+-- | start and on every Ctrl+R alike, and in here the two cannot be told apart - so the log rolls
+-- | over only once it passes MAX_LOG_BYTES, keeping GENERATIONS of it. See MAX_LOG_BYTES.
+-- |
+-- | @details Writes "=== run start ===" and restarts the frame counter, so a reader tells one run
+-- |          from the next by the counter going backwards. Opens nothing when
+-- |          async_log_composer.h is not registered, and every later call is then a no-op.
+-- |
+-- | @date 2026-09-13 19:20
+--]]
 function input_recorder.init()
     --[[ Rolled only when it has grown past the cap - see MAX_LOG_BYTES. A run never discards the
     run before it, which is the whole point: Ctrl+R is indistinguishable from a restart in here, and
@@ -224,11 +235,17 @@ function input_recorder.init()
     write_line("=== run start ===")
 end
 
---[[ Stops the writer. Called from main.lua's test_shutdown(), with main.cpp calling it again as a
-backstop. alog_close() pushes its stop marker BEHIND everything already queued and then joins, so
-this blocks until the last line is on disk - which is the intent: a normal exit waits for the log to
-finish rather than cutting the writer off mid-queue.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Stops the writer thread, after it has written everything already queued.
+-- |
+-- | BLOCKS UNTIL THE LAST LINE IS ON DISK, deliberately: alog_close() pushes its stop marker BEHIND
+-- | everything queued and joins, so a normal exit waits for the log rather than cutting the writer
+-- | off mid-queue.
+-- |
+-- | @details Called from main.lua's test_shutdown(); main.cpp drains the log again as a backstop.
+-- |          Safe to call twice, or when the log never opened.
+-- |
+-- | @date 2026-09-13 19:20
+--]]
 function input_recorder.close()
     if log_open then
         vc.alog_close()   -- drains the queue and joins the writer before returning
@@ -236,9 +253,23 @@ function input_recorder.close()
     end
 end
 
---[[ Call once per frame, BEFORE any real per-frame logic runs - so an event is on disk even if
-whatever it triggers goes on to error out later in the SAME frame.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Records this frame's input: one line per DISTINCT event.
+-- |
+-- | CALL ONCE PER FRAME, BEFORE ANY REAL PER-FRAME LOGIC, so an event is queued for disk even if
+-- | whatever it triggers errors out later in the SAME frame.
+-- |
+-- | WHAT COUNTS AS AN EVENT: a watched key just pressed, a typed character, a left or right click,
+-- | a non-zero wheel tick - each prefixed with the held modifiers, so "Ctrl+Shift+Equal" is one
+-- | line.
+-- |
+-- | @details The frame counter advances even when the log is not open. Only a key press ends a run
+-- |          of repeated errors (see log_error); characters, clicks and wheel ticks do not.
+-- |
+-- | @note The three modifier checks pass key NAMES, the string path WATCHED_KEYS measured at 180us
+-- |       per call - six of them a frame, about 1ms.
+-- |
+-- | @date 2026-09-13 19:20
+--]]
 function input_recorder.poll()
     frame = frame + 1
     if not log_open then
@@ -282,20 +313,36 @@ function input_recorder.poll()
     end
 end
 
---[[ Call from main.lua's own pcall wrapper around the real per-frame logic, with the error value
-pcall itself returned, whenever that call fails. ]]
---[[ Records something the app itself did, as opposed to an input event this module observed - a
-save, say. Same line format and same frame number, so it interleaves with the keystrokes that led to
-it when the log is read back.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Records something the app itself did - a save, say - as opposed to an observed input.
+-- |
+-- | SAME LINE FORMAT AND FRAME NUMBER as the input events, so it interleaves with the keystrokes
+-- | that led to it when the log is read back.
+-- |
+-- | @details Ends a run of repeated errors first, so their count is written above this line.
+-- |
+-- | @param text  any - written through tostring
+-- |
+-- | @date 2026-09-13 19:20
+--]]
 function input_recorder.log_event(text)
     flush_repeat()
     write_line(frame .. " " .. tostring(text))
 end
 
---[[ No special flush handling any more: the writer thread flushes every line it writes, so an error
-is durable as soon as the writer reaches it, the same as any other line.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Records a Lua error, collapsing consecutive identical ones into a count.
+-- |
+-- | CALLED FROM main.lua's pcall around the real per-frame logic, with the error value pcall
+-- | returned. A failure that leaves the app in a bad state throws again every frame, and unfiltered
+-- | that buries the events that caused it - so the first occurrence is written at once, and the
+-- | repeats are counted and summarised when a key press or a log_event ends the run.
+-- |
+-- | @details No special flush: the writer thread flushes every line, so an error is durable as soon
+-- |          as the writer reaches it.
+-- |
+-- | @param err  any - the error value; compared and written through tostring
+-- |
+-- | @date 2026-09-13 19:20
+--]]
 function input_recorder.log_error(err)
     local text = tostring(err)
     if text == last_err then

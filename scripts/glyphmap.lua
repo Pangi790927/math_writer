@@ -1,38 +1,43 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-THE LOOKUP
-entry(key: string, alt, shift)          -> glyph | nil
-    Which glyph this key produces with these modifiers. What the
-    editors call.
-name(key: string, which)                -> text
-    One slot's LaTeX name, "" when empty. `which` is "from_letter",
-    "plain", "alt" or "alt_shift".
-slots(key: string)                      -> {slot} | nil
-key_label(name: string)                 -> text
-
-EDITING
-set(key: string, which, name: string)   -> ok, reason
-    VALIDATED against the glyph catalogue, not merely stored - a name
-    the editor cannot draw is refused with a reason to display.
-rekey(old_key, new_key)                 -> ok, reason
-    Moves a whole row onto another key, which is how a row is
-    identified on a keyboard that does not have the original.
-reset(letter)                           -> ok
-    One row, or the WHOLE map when given no letter.
-each(fn: function)                      -> nothing
-    Every letter in a FIXED order - the customiser's row order and the
-    file's line order at once.
-
-PERSISTENCE
-serialize() / deserialize(text: string, warn)
-dirty() / clear_dirty()
-    One line per row that differs from the factory map. deserialize
-    starts from clean defaults, so a letter the file no longer
-    mentions goes back to factory rather than keeping a stale value.
-
---- internal, not on the module table --------------------------------------------------------------
-    the factory map, the live table and its order
-@date 2026-09-12 03:35
-================================================================================================= ]]
+-- | THE LOOKUP
+-- | entry(key: string, alt: boolean, shift: boolean) -> char entry | nil
+-- |     Which glyph this key produces with these modifiers. What the
+-- |     editors call.
+-- | name(key: string, which: string)        -> text
+-- |     One slot's value, "" when empty. `which` is "from_letter",
+-- |     "plain", "alt" or "alt_shift".
+-- | slots(key: string)                      -> row | nil
+-- |     The live {plain, alt, alt_shift, from_letter} of one key's row.
+-- | key_label(name: string)                 -> text
+-- |     "ImGuiKey_Q" as a person reads it: "Q".
+-- |
+-- | EDITING
+-- | set(key: string, which: string, name: string) -> ok, reason
+-- |     VALIDATED against the glyph catalogue, not merely stored - a name
+-- |     the editor cannot draw is refused with a reason to display.
+-- | rekey(old_key: string, new_key: string) -> ok, reason
+-- |     Moves a whole row onto another key, which is how a row is
+-- |     identified on a keyboard that does not have the original.
+-- | reset(letter: string | nil)             -> ok
+-- |     One row - named by its KEY, despite the parameter - or the WHOLE
+-- |     map when given nothing.
+-- | each(fn: function(key, row))            -> nothing
+-- |     Every row in a FIXED order - the customiser's row order and the
+-- |     file's line order at once.
+-- |
+-- | PERSISTENCE
+-- | serialize() / deserialize(text: string, warn: function | nil)
+-- | dirty() / clear_dirty()
+-- |     One line per row that differs from the factory map. deserialize
+-- |     starts from clean defaults, so a row the file no longer
+-- |     mentions goes back to factory rather than keeping a stale value.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     the factory map, the live table and its order
+-- |
+-- | @date 2026-09-13 18:00
+-- | ===============================================================================================
+--]]
 
 --[[
 glyphmap.lua - what each LETTER KEY produces, and the one place that decides it.
@@ -103,7 +108,16 @@ local function key_label(name)
     return (name or "?"):gsub("^ImGuiKey_", "")
 end
 
---[[ The label a person reads for a key, for the customiser's own rows. @date 2026-09-08 08:45 ]]
+--[[ @brief The label a person reads for a key, for the customiser's own rows.
+-- |
+-- | STRIPS THE `ImGuiKey_` PREFIX and nothing else. Kept here rather than pulled from keymap, so
+-- | this file has no dependency on the shortcut registry; the two agree because both strip it.
+-- |
+-- | @param name  string | nil - an ImGuiKey name
+-- | @return string - "ImGuiKey_Q" -> "Q"; "?" for nil
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.key_label(name)
     return key_label(name)
 end
@@ -151,36 +165,70 @@ edit.
 @date 2026-09-08 08:45 ]]
 local dirty = false
 
---[[ Whether the letter map has changed since it was last written. Watched by main.lua so
-glyphmap.save is written when the customiser closes and not once per frame. @date 2026-09-12 03:35 ]]
+--[[ @brief Whether the map has changed since it was last written.
+-- |
+-- | Watched by main.lua, so glyphmap.save is written when the customiser closes and not once per
+-- | frame. Set by set, rekey and reset; NOT by deserialize, because loading is not an edit.
+-- |
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.dirty()   return dirty end
---[[ Declares the map written. Called by whoever did the writing; clearing it without writing loses
-the change silently. @date 2026-09-12 03:35 ]]
+--[[ @brief Declares the map written.
+-- |
+-- | Called by whoever did the writing - main.lua, after writing the file and after loading it.
+-- |
+-- | @note Clearing it without writing loses the change silently.
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.clear_dirty() dirty = false end
 
--- The letters, in a fixed order, with their live slots. Iteration order is the customiser's row
--- order and the file's line order, so both stay stable across runs.
---[[ Every letter with its live slots, in a FIXED order.
-
-Iteration order is the customiser's row order and the save file's line order at once, so both stay
-stable across runs and a diff of the file shows only what actually changed. @date 2026-09-12 03:35 ]]
+--[[ @brief Every row with its live slots, in a FIXED order.
+-- |
+-- | THE ORDER IS THE CUSTOMISER'S ROW ORDER AND THE SAVE FILE'S LINE ORDER at once, so both stay
+-- | stable across runs and a diff of the file shows only what actually changed. A moved row keeps
+-- | its place; a row created by deserialize for a new key is appended.
+-- |
+-- | @param fn  function(key: string, row: table) - called once per row. `row` is the LIVE table:
+-- |            writing it changes the map without marking it dirty; use set instead
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.each(fn)
     for _, key in ipairs(order) do
         fn(key, live[key])
     end
 end
 
---[[ One key's live slots, or nil for a key with no row. @date 2026-09-08 08:45 ]]
+--[[ @brief One key's live row, or nil for a key with no row.
+-- |
+-- | @param key  string - an ImGuiKey name
+-- | @return table | nil - the LIVE {plain, alt, alt_shift, from_letter}, not a copy: read it
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.slots(key)
     return live[key]
 end
 
---[[ Moves a whole row onto another key - which is how a row is identified on a keyboard this file
-knows nothing about: the person presses the key they mean.
-
-Refuses if that key already has a row, rather than merging two sets of glyphs into one and losing
-whichever lost. The caller shows the reason.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Moves a whole row onto another key.
+-- |
+-- | HOW A ROW IS IDENTIFIED on a keyboard this file knows nothing about: the person presses the key
+-- | they mean. The row keeps its place in the order and its `from_letter`, so reset can still send
+-- | it home.
+-- |
+-- | REFUSES IF THAT KEY ALREADY HAS A ROW, rather than merging two sets of glyphs into one and
+-- | losing whichever lost. The caller shows the reason.
+-- |
+-- | @param old_key  string - the key the row is on now
+-- | @param new_key  string - the key it moves to; the same key is a successful no-op
+-- | @return boolean, string | nil - true; or false and a reason ("no such row", "Q already has a
+-- |         row")
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.rekey(old_key, new_key)
     if not live[old_key] then
         return false, "no such row"
@@ -203,16 +251,22 @@ function glyphmap.rekey(old_key, new_key)
     return true
 end
 
---[[ THE LOOKUP the editors use: which glyph does this key produce with these modifiers, as a
-char.lua entry ready to insert, or nil to mean "not ours - handle it the ordinary way".
-
-`plain` returning nil is the normal case and is what keeps typing fast: the character queue
-handles the key exactly as it always did, and nothing in this file is consulted per keystroke.
-
-A name that no longer resolves returns nil rather than erroring. A saved map can outlive the glyph
-catalogue it was written against, and losing one binding is a far better outcome than an editor
-that cannot start.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Which glyph this key produces with these modifiers. THE LOOKUP the editors use.
+-- |
+-- | NIL MEANS "NOT OURS - HANDLE IT THE ORDINARY WAY". An unset `plain` is the normal case and is
+-- | what keeps typing fast: the character queue handles the key exactly as it always did.
+-- |
+-- | A NAME THAT NO LONGER RESOLVES RETURNS NIL rather than erroring. A saved map can outlive the
+-- | glyph catalogue it was written against, and losing one binding is a far better outcome than an
+-- | editor that cannot start.
+-- |
+-- | @param key    string - an ImGuiKey name
+-- | @param alt    boolean - Alt is held; without it, the `plain` slot is read and `shift` ignored
+-- | @param shift  boolean - Shift is held; with Alt, reads `alt_shift`
+-- | @return char entry | nil - ready to insert, via char.find_by_desc
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.entry(key, alt, shift)
     local slot = live[key]
     if not slot then
@@ -230,24 +284,42 @@ function glyphmap.entry(key, alt, shift)
     return char.find_by_desc(desc)
 end
 
--- What the customiser shows in a cell: the name, or "" when the slot is unset.
---[[ The LaTeX name in one slot, as text, or "" when the slot is empty.
-
-Empty string rather than nil because every caller is putting it in a text field, and `which` is the
-slot: "from_letter", "plain", "alt" or "alt_shift". @date 2026-09-12 03:35 ]]
+--[[ @brief What the customiser shows in one cell: the slot's value, or "" when it is empty.
+-- |
+-- | EMPTY STRING RATHER THAN NIL, because every caller is putting it in a text field.
+-- |
+-- | @param key    string - an ImGuiKey name; a key with no row gives ""
+-- | @param which  string - "plain", "alt" or "alt_shift" for a LaTeX name; "from_letter" for the
+-- |               letter the row's defaults came from. Not validated: any other name gives ""
+-- | @return string
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.name(key, which)
     local slot = live[key]
     return (slot and slot[which]) or ""
 end
 
---[[ Accepts a LaTeX name into one slot, or clears it when given an empty string. Returns true, or
-false plus a reason the customiser can display.
-
-VALIDATED AGAINST THE GLYPH CATALOGUE, not merely stored: a name the editor cannot draw would
-otherwise sit in the table looking correct and simply do nothing when pressed, which is the worst
-of both. char.find_by_desc() is the same lookup the `\name`-then-Space entry uses, so anything you
-can type by name is bindable, and nothing else is.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Puts a LaTeX name into one slot, or clears it when given an empty string.
+-- |
+-- | VALIDATED AGAINST THE GLYPH CATALOGUE, not merely stored: a name the editor cannot draw would
+-- | otherwise sit in the table looking correct and simply do nothing when pressed. It is the same
+-- | lookup the `\name`-then-Space entry uses, so anything typeable by name is bindable, and
+-- | nothing else is.
+-- |
+-- | @details Surrounding spaces are trimmed. A SINGLE CHARACTER means itself, looked up by its
+-- |          ASCII code and stored under the catalogue's name for it. Anything longer gets a
+-- |          leading backslash if it lacks one - no catalogue name lacks one, so "alpha" cannot
+-- |          be ambiguous.
+-- |
+-- | @param key    string - an ImGuiKey name
+-- | @param which  string - "plain", "alt" or "alt_shift"
+-- | @param name   string | nil - the name; nil or blank clears the slot
+-- | @return boolean, string | nil - true, marking the map dirty; or false and a reason the
+-- |         customiser can display ("no such key", "no such slot", "no glyph called \foo")
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.set(key, which, name)
     local slot = live[key]
     if not slot then
@@ -292,12 +364,22 @@ function glyphmap.set(key, which, name)
     return true
 end
 
--- Back to the factory tables, for one letter or (with no argument) all of them.
---[[ Puts one letter's row back to the factory map, or the WHOLE map when given no letter.
-
-The no-argument form is the customiser's "default all", which is why it is armed behind two clicks
-there - it is not undoable from inside the panel. Returns true, or false for a letter with no row.
-@date 2026-09-12 03:35 ]]
+--[[ @brief Puts one row back to the factory map - glyphs and home key - or the WHOLE map when given
+-- |        nothing.
+-- |
+-- | THE FACTORY IS char.lua, which is never mutated, so a reset is a copy from there. One row is
+-- | restored completely, including a move back to the key its letter defaults to, unless another
+-- | row occupies that key - see the comment inside.
+-- |
+-- | @param letter  string | nil - the row's KEY name ("ImGuiKey_Q"), despite the parameter's name;
+-- |                nil resets every row
+-- | @return boolean - true, marking the map dirty; false for a key with no row
+-- |
+-- | @note The no-argument form is the customiser's "default all", armed behind two clicks there
+-- |       because it is not undoable from inside the panel.
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.reset(letter)
     if not letter then
         install_defaults()
@@ -342,15 +424,20 @@ function glyphmap.reset(letter)
     return true
 end
 
---[[ One line per letter that differs from the factory setting, "letter<TAB>plain|alt|alt_shift".
-Only divergences, for the reason keymap.lua's own serialize gives: a file listing every letter
-would freeze today's defaults into it forever, so improving one later would never reach anyone who
-had opened the customiser once. ]]
---[[ "key<TAB>from_letter|plain|alt|alt_shift", one line per row that differs from the factory
-setting - including a row that has simply MOVED to another key, which is a divergence even when its
-glyphs are untouched. `from_letter` rides along so a moved row can still be reset to what it
-started as.
-@date 2026-09-08 08:45 ]]
+--[[ @brief The map as text: one line per row that differs from the factory setting.
+-- |
+-- | ONLY DIVERGENCES, for the reason keymap.lua's own serialize gives: a file listing every row
+-- | would freeze today's defaults into it forever, so improving one later would never reach anyone
+-- | who had opened the customiser once.
+-- |
+-- | A MOVED ROW IS A DIVERGENCE even when its glyphs are untouched, and `from_letter` rides along
+-- | so it can still be reset to what it started as.
+-- |
+-- | @return string - "key<TAB>from_letter|plain|alt|alt_shift" lines in row order, joined by
+-- |         newlines; empty when everything is at factory
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.serialize()
     local lines = {}
     for _, key in ipairs(order) do
@@ -370,13 +457,26 @@ function glyphmap.serialize()
     return table.concat(lines, "\n")
 end
 
---[[ Reads one back, starting from a clean set of defaults so a letter the file no longer mentions
-returns to factory rather than keeping whatever the previous load left behind.
-
-A name that no longer resolves is DROPPED and reported rather than kept: keeping it would leave a
-key that looks bound and does nothing. An unreadable line is skipped for the same reason a bad
-save never stops the app starting.
-@date 2026-09-08 08:45 ]]
+--[[ @brief Replaces the live map with what serialize wrote.
+-- |
+-- | STARTS FROM A CLEAN SET OF DEFAULTS, so a row the file no longer mentions returns to factory
+-- | rather than keeping whatever the previous load left behind.
+-- |
+-- | A NAME THAT NO LONGER RESOLVES IS DROPPED and reported rather than kept: keeping it would leave
+-- | a key that looks bound and does nothing. An unreadable line is skipped, for the same reason a
+-- | bad save never stops the app starting.
+-- |
+-- | @details A line naming a key with no row CREATES one - moving a row there is the point. It
+-- |          takes its original letter's place in the order when that letter's row is still at
+-- |          home, and is appended otherwise.
+-- |
+-- | @param text  string | nil - anything but a string leaves the factory map in place
+-- | @param warn  function(msg: string) | nil - told about each dropped name and unreadable line
+-- |
+-- | @note Does not touch the dirty flag; main.lua clears it after loading.
+-- |
+-- | @date 2026-09-13 18:00
+--]]
 function glyphmap.deserialize(text, warn)
     install_defaults()
     if type(text) ~= "string" then

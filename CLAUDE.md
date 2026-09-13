@@ -95,6 +95,75 @@ convention rather than something the tripwire enforces.)
   migrating a file. The alarm matters because the failure is silent and one-directional - a
   function added later simply does not appear, and the block still reads as complete.
 
+## Comment style
+
+Block comments are drawn with a `-- |` gutter and carry doxygen tags. Asked for 2026-09-13, author's
+own words: "The idea is to have the comments look a little better ... I don't really like the
+commetns we had so far", and later "those we have now kinda loose me visually".
+
+```lua
+--[[ @brief One line: what this lets the module do.
+-- |
+-- | Core, as plain paragraphs - the promise and the mechanism.
+-- |
+-- | @details What may change without the target losing its meaning.
+-- | @param name  type - what it expects
+-- | @return type - what it gives back
+-- | @throws what refuses or raises, and which of the two
+-- | @note what surprises a reader
+-- |
+-- | @date 2026-09-13 16:00
+--]]
+```
+
+- **The layout is the shell; what goes in each section is the comment skill's** (`writing-comments`):
+  brief, core, detail, params/returns, notes, date. The tags map one-to-one onto those sections;
+  core has no tag, since doxygen reads untagged text after the brief as the description.
+- **A header gets tags; a comment inside a function body gets the gutter only** - it explains a
+  line, and has no interface to tag. `@file` goes on a file's prose header.
+- **A brief-only comment keeps one line** when it fits in 100 columns:
+  `--[[ @brief Unrefs whatever is held. @date ... ]]`. Otherwise it takes the gutter form.
+- **A manifest's three rulers are exactly 100 columns** - the banner, the internal separator, and a
+  closing `=` rule as its LAST line, under the `@date` (author, 2026-09-13):
+
+  ```lua
+  --[[ ==================================== WHAT THIS FILE OFFERS ====================================
+  -- | fn(a: type)                             -> type
+  -- |     Brief.
+  -- |
+  -- | --- internal, not on the module table ---------------------------------------------------------
+  -- |     helper_a, helper_b
+  -- |
+  -- | @date 2026-09-13 17:40
+  -- | ===============================================================================================
+  --]]
+  ```
+- **The manifest block is guttered too.** `test_api_manifest.lua`'s `strip_gutter` removes `-- |`
+  plus one space before any column is read, so entries still start at column zero as far as the
+  test is concerned. Verified 2026-09-13 by breaking a parameter name on purpose: it still fails.
+- **Never write two closing square brackets inside a block comment's text** - not even in
+  backticks. The first pair ends the comment and the rest parses as code; the harness then reports
+  only "Failed to execute loaded script", with no line. Happened on the first edit in this style.
+- **Rollout scope: every manifest block, and the header of every function a manifest names**, in
+  `scripts/`. Author, 2026-09-13: "I only want to target the comments documenting those functions
+  in the manifest, the rest can stay as today". Internal helpers and comments inside function
+  bodies keep the old style. A new or rewritten comment anywhere is written in the new one.
+- **`test_api_manifest.lua` is the tracker.** It prints every targeted comment still in the old
+  style (`comment style pending: file: name`) and a total; a file in its `COMMENT_STYLE_DONE` list
+  FAILS instead. Adding a file there is the last step of converting it. `transforms_old` is frozen
+  and skipped. **Every migrated file is in the list as of 2026-09-13** - a new file joins it when it
+  gets a manifest. The check also enforces the 100-column ruler on every converted line.
+- **The tracker cannot see every header.** A function assigned to a forward-declared local
+  (`function innermost_unclosed_open(...)` in mformula_new) and the `shape.*` methods defined inside
+  `sealed.declare` have no definition line it matches; they were converted by hand. The manifest's
+  parameter check likewise skips a `local function` whose signature wraps onto a second line -
+  mformula_new's `open_bracket` advertised three parameters against a real nine for that reason.
+- **Converting a header is a REVISION under the skill** - facts extracted, re-sorted, checked
+  against the code, and anything dropped or corrected reported - not just a change of indentation.
+  Stale claims turn up often enough that this matters: the first four files had a manifest saying
+  test_shutdown saves the config (it does not), a header saying the keymap panel enumerates the help
+  chapters (only a test does), and a comment block sitting above the wrong function.
+
 ## LAWS FOR CLAUDE
 
 The heading itself is now a citation, not commentary — user's own words, verbatim, 2026-09-08:
@@ -190,6 +259,15 @@ A transformation is a file in `scripts/transforms/`. Added 2026-09-12.
 - **`transforms.lua` never writes a file.** `main.lua` owns the path and the I/O, the same way it
   does for the keymap - a module that writes files cannot be loaded by a test without a file
   appearing somewhere.
+- **Shared plugin helpers live in `scripts/transform_utils.lua`, NOT in `scripts/transforms/`** -
+  every file in that folder is registered as a plugin by the scan. It must not require
+  `transforms` either (a require cycle through the scan). It holds plain functions a plugin CHOOSES
+  to call: `peel_cells`, `through_cells`, `product` (flat, one leading sign) and `swap_in_parent`
+  (path rebuild, splicing a sum into a sum). A normalization is the transformation's choice, never a
+  global rule - author, 2026-09-13. A textual matcher DSL for this was designed and dropped the same
+  day; don't re-propose it. **No plugin uses it as of 2026-09-14**: distribute's rework onto it
+  (through CELLs, recursive, flat signed terms) was reverted to HEAD's code at the author's request,
+  and `test_distribute_nested.lua`, kept on disk, fails against that code.
 - **The test harness needs `scripts/` mirrored next to it.** `vc.path_list_dir` resolves against the
   executable, and `tests/harness/build/test_harness.exe` is not where the repo is; `run_tests.py`'s
   `sync_scripts()` copies `scripts/` there before every run. Without it the harness finds no plugins

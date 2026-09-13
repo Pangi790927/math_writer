@@ -1,90 +1,96 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
-THE FORMULA CONTAINER
-dress_spec(fields: table)               -> mexpru.u
-    A dress DESCRIPTION, sealed as a `u` because it carries the same
-    five fields a dress node's own `u` does. What redress takes when
-    there is no dress node yet.
-
-new_container(root: node, cursor_node: node, version: number) -> mexpru.container
-check_container(container: mexpru.container)            -> container
-    A formula: a root row, a cursor, a version. THE ONE CREATOR, and
-    the container is SEALED - `version` is bumped by every real tree
-    edit and by nothing else, which is what every cache here keys on.
-
-THE PER-NODE TABLE
-u(ref: node)                            -> mexpru.u | nil
-last_slot(node: node)                   -> node
-    The end of a row - where a caret lands after everything in it. An
-    empty row answers with itself, so a cursor is never set to nil.
-child_links(node: node)                 -> {node}
-    Every child hanging off a node, in drawing order - the ONE
-    definition of "what is below this", so a walk cannot fall behind
-    the `u` declaration.
-is_node(ref: any)                       -> boolean
-check_node(ref: node, what: string)     -> node
-check_u(u: mexpru.u)                    -> mexpru.u
-    An mexpr node is a C++ object - userdata - so this is STRUCTURAL,
-    not a metatable identity the way a sealed container's check is.
-    A node's own bookkeeping - kind, children, sz, bracket, the ast
-    tags. mexpr_t has a fixed C++ shape, so everything this layer
-    needs to remember lives here. A NEW FIELD GOES IN `u`.
-
-SIZE AND ZOOM
-MAX_SIZE_INDEX / DEFAULT_SIZE           constants
-set_zoom(z: number) / get_zoom()        -> nothing / z
-physical_sz(logical)                    -> index
-    LOGICAL sizes are relative and zoom never touches them; zoom
-    applies only where a logical level becomes a real char.lua index.
-    A fresh formula passes DEFAULT_SIZE, never a live font size.
-
-READING A NODE
-slot_atom(node: node) / undressed(node: node) -> node
-    Through a dress or a supsub to the thing itself - what almost
-    every question about a node has to go through first.
-bracket_delta(node: node)               -> -1 | 0 | 1
-bracket_count(children: {node}, from, to) / brackets_balanced(children: {node})
-peer_slot(children: {node}, node: node) / scan_bracket(children: {node}, idx,
-          direction) / transfer_bracket_peers(old_children, new_children)
-same(a: node, b: node) / index_of(children: {node}, child: node)
-
-THE RAW C++ CREATORS, WRAPPED
-mexpr_empty / mexpr_symbol / mexpr_frac / mexpr_supsub
-mexpr_bracket_left / mexpr_bracket_right / mexpr_unarexpr
-mexpr_binexpr / mexpr_merge_h / mexpr_merge_v / mexpr_accent
-mexpr_dress                             -> node
-    GENERATED, one per entry of WRAPPED, so there is no
-    `function mexpru.mexpr_empty(...)` line anywhere. Each takes the
-    same arguments as the `vc.mexpr_*` it wraps and adds one thing: a
-    fresh sealed `u` captured onto the node. Prefer the shaped
-    constructors below - horiz, supsub, frac and the rest - which set
-    `kind` and the rest of `u` as well; these are the floor they are
-    built on, and mformula_new reaches past them for empty, symbol and
-    frac only.
-
-BUILDING
-horiz(fs: fontset, children: {node}, sz: size) -> node
-supsub(fs: fontset, base: node, sup: node, sub: node, sz: size, sup_place: place, sub_place: place) -> node
-resupsub(fs: fontset, u: mexpru.u, base: node, sup: node, sub: node) -> node
-bigop(fs: fontset, base: node, sup: node, sub: node, sz: size) -> node
-vert(fs: fontset, slots: {node}, sz: size) -> node
-dress(fs: fontset, target: node, above: node, bellow: node, sz: size) -> node
-redress(fs: fontset, target: node, u: mexpru.u, sz: size) -> node
-accent(fs: fontset, recipe_fn: function, target: node, sz: size) -> node
-dots(fs: fontset, n: number, sz: size)  -> node
-frac(fs: fontset, num: node, den: node, sz: size) -> node
-PLACE_BESIDE / PLACE_DISPLAY            constants
-cut(node: node)                         -> nodes
-update_positions(node: node, pos: {x,y}) / propagate_rebuild(fs: fontset, old_node, new_node,
-                 known_parent)
-    Every constructor wraps the raw vc.mexpr_* creator identically:
-    call through, attach a fresh `u`, return it.
-
---- internal, not on the module table --------------------------------------------------------------
-    new_u()        the ONE creator for a node's `u` table, and where the seal is
-                   attached - every constructor goes through it
-    U_FIELDS, U_SHAPE, the creator wrappers, the size table and the bracket scanner
-@date 2026-09-12 04:00
-================================================================================================= ]]
+-- | THE FORMULA CONTAINER
+-- | dress_spec(fields: table)               -> mexpru.u
+-- |     A dress DESCRIPTION, sealed as a `u` because it carries the same
+-- |     five fields a dress node's own `u` does. What redress takes when
+-- |     there is no dress node yet.
+-- |
+-- | new_container(root: node, cursor_node: node | nil, version: number | nil) -> mexpru.container
+-- | check_container(container: mexpru.container)            -> container
+-- |     A formula: a root row, a cursor, a version. THE ONE CREATOR, and
+-- |     the container is SEALED - `version` is bumped by every real tree
+-- |     edit and by nothing else, which is what every cache here keys on.
+-- |
+-- | THE PER-NODE TABLE
+-- | u(ref: node)                            -> mexpru.u | nil
+-- | last_slot(node: node)                   -> node
+-- |     The end of a row - where a caret lands after everything in it. An
+-- |     empty row answers with itself, so a cursor is never set to nil.
+-- | child_links(node: node)                 -> {node}
+-- |     Every child hanging off a node, in drawing order - the ONE
+-- |     definition of "what is below this", so a walk cannot fall behind
+-- |     the `u` declaration.
+-- | is_node(ref: any)                       -> boolean
+-- | check_node(ref: node, what: string)     -> node
+-- | check_u(u: mexpru.u)                    -> mexpru.u
+-- |     An mexpr node is a C++ object - userdata - so this is STRUCTURAL,
+-- |     not a metatable identity the way a sealed container's check is.
+-- |     A node's own bookkeeping - kind, children, sz, bracket, the ast
+-- |     tags. mexpr_t has a fixed C++ shape, so everything this layer
+-- |     needs to remember lives here. A NEW FIELD GOES IN `u`.
+-- |
+-- | SIZE AND ZOOM
+-- | MAX_SIZE_INDEX / DEFAULT_SIZE           constants
+-- | set_zoom(z: number) / get_zoom()        -> nothing / z
+-- | physical_sz(logical: size)              -> index
+-- |     LOGICAL sizes are relative and zoom never touches them; zoom
+-- |     applies only where a logical level becomes a real char.lua index.
+-- |     A fresh formula passes DEFAULT_SIZE, never a live font size.
+-- |
+-- | READING A NODE
+-- | slot_atom(node: node) / undressed(node: node) -> node
+-- |     Through a dress or a supsub to the thing itself - what almost
+-- |     every question about a node has to go through first.
+-- | bracket_delta(node: node)               -> -1 | 0 | 1
+-- | bracket_count(children: {node}, from: integer, to: integer) -> count | nil
+-- | brackets_balanced(children: {node})     -> ok, count
+-- | peer_slot(children: {node}, node: node) -> index, is_base | nil
+-- | scan_bracket(children: {node}, idx: integer, direction: integer) -> index | nil
+-- | transfer_bracket_peers(old_children: {node}, new_children: {node}) -> nothing
+-- | same(a: node, b: node) / index_of(children: {node}, child: node)
+-- |
+-- | THE RAW C++ CREATORS, WRAPPED
+-- | mexpr_empty / mexpr_symbol / mexpr_frac / mexpr_supsub
+-- | mexpr_bracket_left / mexpr_bracket_right / mexpr_unarexpr
+-- | mexpr_binexpr / mexpr_merge_h / mexpr_merge_v / mexpr_accent
+-- | mexpr_dress                             -> node
+-- |     GENERATED, one per entry of WRAPPED, so there is no
+-- |     `function mexpru.mexpr_empty(...)` line anywhere. Each takes the
+-- |     same arguments as the `vc.mexpr_*` it wraps and adds one thing: a
+-- |     fresh sealed `u` captured onto the node. Prefer the shaped
+-- |     constructors below - horiz, supsub, frac and the rest - which set
+-- |     `kind` and the rest of `u` as well; these are the floor they are
+-- |     built on, and mformula_new reaches past them for empty, symbol and
+-- |     frac only.
+-- |
+-- | BUILDING
+-- | horiz(fs: fontset, children: {node}, sz: size) -> node
+-- | supsub(fs: fontset, base: node, sup: node, sub: node, sz: size, sup_place: place,
+-- |        sub_place: place) -> node
+-- | resupsub(fs: fontset, u: mexpru.u, base: node, sup: node, sub: node) -> node
+-- | bigop(fs: fontset, base: node, sup: node, sub: node, sz: size) -> node
+-- | vert(fs: fontset, slots: {node}, sz: size) -> node
+-- | dress(fs: fontset, target: node, above: node, bellow: node, sz: size) -> node
+-- | redress(fs: fontset, target: node, u: mexpru.u, sz: size) -> node
+-- | accent(fs: fontset, recipe_fn: function, target: node, sz: size) -> node
+-- | dots(fs: fontset, n: number, sz: size)  -> node
+-- | frac(fs: fontset, num: node, den: node, sz: size) -> node
+-- | PLACE_BESIDE / PLACE_DISPLAY            constants
+-- | cut(node: node)                         -> nothing
+-- | update_positions(node: node, pos: {x,y}) -> nothing
+-- | propagate_rebuild(fs: fontset, old_node: node, new_node: node, known_parent: node | nil)
+-- |       -> root
+-- |     Every constructor wraps the raw vc.mexpr_* creator identically:
+-- |     call through, attach a fresh `u`, return it.
+-- |
+-- | --- internal, not on the module table ---------------------------------------------------------
+-- |     new_u()        the ONE creator for a node's `u` table, and where the seal is
+-- |                    attached - every constructor goes through it
+-- |     U_FIELDS, U_SHAPE, the creator wrappers, the size table and the bracket scanner
+-- |
+-- | @date 2026-09-13 21:15
+-- | ===============================================================================================
+--]]
 
 --[[
 mexpru.lua - the Lua side of an mexpr node: the wrappers that give every node a table to hang
@@ -118,42 +124,51 @@ mexpru.DEFAULT_SIZE = 12
 
 local current_zoom = 0
 
--- Ctrl+MouseWheel zoom, one offset for the whole app rather than a parameter threaded through
--- draw/measure/input/hit_test everywhere. content.lua sets it before any of those run.
---[[ The zoom every PHYSICAL size is scaled by, and the reading of it.
-
-Core - ZOOM IS NOT A LOGICAL SIZE. A node's `u(_).sz` is relative and zoom never touches it: a
-superscript is its base plus SUB_SIZE_DELTA whatever the zoom is. Zoom applies only where a logical
-level is turned into a real char.lua index, which is why it lives here as one module-wide value
-rather than being threaded through every constructor.
-
-Consequence a caller must respect: a formula built while zoomed is built at the same LOGICAL sizes
-as one built at 1x, so mexpru.DEFAULT_SIZE - never content.lua's live font_size - is what a fresh
-formula passes. Passing the live size double-counts the zoom.
-@date 2026-09-12 04:00 ]]
+--[[ @brief Sets the zoom every PHYSICAL size is offset by - Ctrl+MouseWheel, for the whole app.
+-- |
+-- | ZOOM IS NOT A LOGICAL SIZE. A node's `u(_).sz` is relative and zoom never touches it: a
+-- | superscript is its base plus SUB_SIZE_DELTA whatever the zoom. Zoom applies only where a
+-- | logical level becomes a real char.lua index, which is why it is one module-wide value rather
+-- | than a parameter threaded through draw, measure, input and hit-test. content.lua sets it before
+-- | any of those run.
+-- |
+-- | @param z  number - an index offset; positive draws smaller, since the size table runs biggest
+-- |           first
+-- |
+-- | @note A fresh formula passes mexpru.DEFAULT_SIZE, never content.lua's live font_size: the live
+-- |       size already includes the zoom, and passing it counts the zoom twice.
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.set_zoom(z)
     current_zoom = z
 end
 
---[[ The zoom currently in force. Read by anything that has to turn a logical size into a physical
-one, and by content.lua to show it - see set_zoom above for why zoom lives here and not on a node.
-@date 2026-09-12 04:00 ]]
+--[[ @brief The zoom currently in force - see set_zoom for why it lives here and not on a node.
+-- |
+-- | @return number - the index offset last set; 0 at start
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.get_zoom()
     return current_zoom
 end
 
---[[ LOGICAL level (u(_).sz - relative, e.g. a sup is its base + SUB_SIZE_DELTA, never touched by
-zoom) -> the PHYSICAL char.lua index used to build or measure real glyph geometry.
-
-Why a mapping and not just mutating u(_).sz: applying a relative delta to an already-physical value
-drifts once any step clamps, so zooming out and back in stops being reversible. Re-deriving from the
-untouched logical value keeps it exact.
-@date 2026-09-08 08:55 ]]
+--[[ @brief A LOGICAL size level -> the PHYSICAL char.lua index that builds or measures real glyphs.
+-- |
+-- | A MAPPING, NOT A MUTATION of u(_).sz: applying a delta to an already-physical value drifts once
+-- | any step clamps, so zooming out and back in would stop being reversible. Re-deriving from the
+-- | untouched logical value keeps it exact.
+-- |
+-- | @param logical  size - u(_).sz, relative and never touched by zoom
+-- | @return integer - logical plus the zoom, clamped to 1 .. MAX_SIZE_INDEX
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.physical_sz(logical)
     return math.max(1, math.min(mexpru.MAX_SIZE_INDEX, logical + current_zoom))
 end
 
--- The per-node scratch table, without spelling out ref.u:push() every time.
 --[[ THE `u` TABLE'S DECLARED FIELDS - the single source for what a node may carry.
 
 WHY A DECLARATION AT ALL. `u` is written by five files (mexpru, mformula_new, mformula_latex,
@@ -226,17 +241,23 @@ Six containers in this project need the same seventeen lines; see that file for 
 the read and the write halves behave differently. @date 2026-09-12 05:45 ]]
 local U_SHAPE = sealed.declare("mexpru", "u", U_FIELDS)
 
---[[ A node's OWN table - the per-node bookkeeping this layer hangs on an mexpr_t.
-
-Core: `mexpr_t` is a C++ object with a fixed shape, so everything Lua needs to remember about a node
-and cannot add as a field lives in here instead: `kind`, `children`, `sz`, `bracket`, and the ast
-tags the parse writes. Reaching for it is how any code here asks what a node IS.
-
-Detail: this is where a new field goes. Adding one to the C++ side means changing the core for a
-concern that is the script layer's, which is why `u` exists at all.
-
-Params: `ref` is any live mexpr_t. Returns the table, created on first use.
-@date 2026-09-12 04:00 ]]
+--[[ @brief A node's OWN table - the per-node bookkeeping this layer hangs on an mexpr_t.
+-- |
+-- | `mexpr_t` IS A C++ OBJECT WITH A FIXED SHAPE, so everything Lua needs to remember about a node
+-- | lives in here instead: `kind`, `children`, `sz`, `bracket`, and the ast tags the parse writes.
+-- | A NEW FIELD GOES HERE - adding one to C++ would change the core for a script-layer concern.
+-- |
+-- | THE SAME TABLE COMES BACK FOR THE SAME NODE every time (lua_object_t::push), so a `u` is a real
+-- | identity key where a raw mexpr handle is not.
+-- |
+-- | @param ref  node - any live mexpr_t
+-- | @return mexpru.u | nil - nil for a node that never captured one (built by calling vc.mexpr_*
+-- |         directly, or a C++-built leaf); nothing is created here
+-- | @throws when the node carries a table that is not a sealed `u`: something bypassed new_u, and
+-- |         every field guarantee this file makes is void for it
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.u(ref)
     local u = ref.u:push()
     --[[ NIL IS AN ANSWER, not a fault: a lua_object_t that never captured anything pushes nil, and
@@ -285,21 +306,30 @@ local CONTAINER_FIELDS = {
 }
 local CONTAINER_SHAPE = sealed.declare("mexpru", "container", CONTAINER_FIELDS)
 
---[[ Is this an mexpr node?
-
-STRUCTURAL, not identity, and that is forced: an mexpr_t is a C++ object - `userdata` from Lua - so
-there is no metatable of ours to compare against the way a sealed container has one. What can be
-said is that it is userdata carrying the `u` field every node gets at construction, which is exactly
-what separates a node from a wref, a fontset or a number.
-
-Nil-tolerant, because "nothing is there" is a real answer at most call sites - a right-click on
-empty space resolves to no node at all.
-@date 2026-09-12 11:55 ]]
+--[[ @brief Is this an mexpr node?
+-- |
+-- | STRUCTURAL, NOT IDENTITY, and that is forced: an mexpr_t is `userdata`, with no metatable of
+-- | ours to compare against. What can be said is that it is userdata carrying the `u` field every
+-- | node has - which separates a node from a wref, a fontset or a number.
+-- |
+-- | @param ref  any - nil is fine, and answers false
+-- | @return boolean
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.is_node(ref)
     return type(ref) == "userdata" and ref.u ~= nil
 end
 
---[[ Asserts it, for a function that requires one. Returns `ref`. @date 2026-09-12 11:55 ]]
+--[[ @brief Asserts that `ref` is an mexpr node, for a function that requires one.
+-- |
+-- | @param ref   any
+-- | @param what  string | nil - the parameter's name, added to the message
+-- | @return node - `ref`
+-- | @throws naming the Lua type that arrived; level 3, so the position is the caller's
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.check_node(ref, what)
     if not mexpru.is_node(ref) then
         error(string.format("mexpru: expected an mexpr node%s, got %s",
@@ -308,28 +338,45 @@ function mexpru.check_node(ref, what)
     return ref
 end
 
---[[ Asserts that this is a node's `u` table, for a function elsewhere that takes one. Returns it.
-@date 2026-09-12 23:30 ]]
+--[[ @brief Asserts that `u` is a node's sealed `u` table, for a function elsewhere that takes one.
+-- |
+-- | @param u  any
+-- | @return mexpru.u - `u`
+-- | @throws naming the type that arrived
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.check_u(u)
     return U_SHAPE.check(u, "u")
 end
 
---[[ Asserts that this is a formula container, for the top of a function that takes one.
-
-Published because the container is declared HERE while almost every function taking one lives
-elsewhere - mformula_new, the editors, ast_gestures - and CONTAINER_SHAPE is local to this file.
-Returns `container`, so it can stand as the first line.
-@date 2026-09-12 11:40 ]]
+--[[ @brief Asserts that this is a formula container, for the top of a function that takes one.
+-- |
+-- | PUBLISHED because the container is declared HERE while almost every function taking one lives
+-- | elsewhere - mformula_new, the editors, ast_gestures - and CONTAINER_SHAPE is local to this
+-- | file.
+-- |
+-- | @param container  any
+-- | @return mexpru.container - `container`, so the call can stand as a function's first line
+-- | @throws naming the type that arrived
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.check_container(container)
     return CONTAINER_SHAPE.check(container, "container")
 end
 
---[[ A formula container. THE ONE CREATOR - six places used to build this table by hand.
-
-Params: `root` is the top-level horiz, `cursor_node` the node the caret sits after (wrapped as a
-weak ref here so no caller has to remember to), `version` defaults to 0 for a fresh formula and is
-carried over by clone.
-@date 2026-09-12 11:20 ]]
+--[[ @brief A formula container. THE ONE CREATOR - six places used to build this table by hand.
+-- |
+-- | @param root         node - the top-level horiz; not checked
+-- | @param cursor_node  node | nil - the node the caret sits after, wrapped here as a WEAK ref so
+-- |        no
+-- |                     caller has to remember to
+-- | @param version      integer | nil - 0 for a fresh formula; carried over by clone
+-- | @return mexpru.container - sealed; no selection, nothing pending, empty caches
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.new_container(root, cursor_node, version)
     return CONTAINER_SHAPE.wrap{
         root = root,
@@ -358,33 +405,37 @@ for _, group in ipairs({U_CHILD_LISTS, U_CHILD_NODES}) do
     end
 end
 
---[[ The LAST slot of a row - where a caret lands after everything in it.
-
-THE ONE DEFINITION of "the end of this formula", which was written out three times: in
-mformula_new.cursor_to_end, in mformula_latex.from_latex, and in ast_mexpr.container, each reaching
-into `u.children` and indexing it by hand. Three copies of one idea, and only one of them had the
-empty-row fallback.
-
-AN EMPTY ROW ANSWERS WITH ITSELF. A horiz always carries at least one empty atom in practice, so
-this is a fallback rather than a case - but `children[#children]` on an empty list is nil, and a
-cursor set to nil is a formula with no caret position at all. Answering the row means the caret
-lands "before everything", which is a real position in the same numbering.
-
-Takes any node; a node that is not a row has no children and answers with itself.
-@date 2026-09-12 15:00 ]]
+--[[ @brief The LAST slot of a row - where a caret lands after everything in it.
+-- |
+-- | THE ONE DEFINITION of "the end of this formula", which was written out three times - and only
+-- | one of the three had the empty-row fallback.
+-- |
+-- | AN EMPTY ROW ANSWERS WITH ITSELF, so a cursor is never set to nil: the caret lands "before
+-- | everything", a real position in the same numbering. A horiz always carries at least one empty
+-- | atom in practice, so this is a fallback rather than a case.
+-- |
+-- | @param node  node - any node; one that is not a row has no children and answers with itself
+-- | @return node
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.last_slot(node)
     local children = mexpru.u(node).children
     return (children and children[#children]) or node
 end
 
---[[ Every child node hanging off `node`, in drawing order.
-
-THE ONE DEFINITION OF "what is below this node". A caller walking a whole tree asks here rather than
-listing the fields itself, so the walk cannot fall behind the declaration.
-
-Returns a flat list; empty for a leaf. Nil links are skipped - most nodes have most of these unset,
-which is an ordinary state and the reason the fields are declared-but-nil rather than absent.
-@date 2026-09-12 13:30 ]]
+--[[ @brief Every child node hanging off `node`.
+-- |
+-- | THE ONE DEFINITION OF "what is below this node". A caller walking a whole tree asks here rather
+-- | than listing the fields itself, so the walk cannot fall behind the `u` declaration - a
+-- | load-time assertion ties the link lists to U_FIELDS.
+-- |
+-- | @param node  node - must carry a `u`
+-- | @return {node} - a fresh flat list: `children` and `slots` first, then base, sup, sub, target,
+-- |         num, den. Empty for a leaf; unset links are skipped
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.child_links(node)
     local out = {}
     local u = mexpru.u(node)
@@ -401,18 +452,21 @@ function mexpru.child_links(node)
     return out
 end
 
---[[ A DRESS DESCRIPTION, as a `u`. What redress is handed when there is no dress node yet.
-
-WHY IT IS A `u` AND NOT A TYPE OF ITS OWN. A dress description carries exactly the five fields a
-dress node's own `u` carries - above_kind, above_recipe, bellow_kind, bellow_recipe, dots - because
-it describes the same thing before there is a node to hang it on. Two call sites built it as a bare
-table and mformula_new's comment already said it was "shaped exactly like a dress node's own u
-table"; this makes that structural instead of a promise, which is what lets redress check its
-argument at all.
-
-Takes the fields, returns them sealed. An empty description is legitimate: it means "no decoration",
-and build_dress_spec answers it with the bare target.
-@date 2026-09-12 22:00 ]]
+--[[ @brief A DRESS DESCRIPTION, as a `u`. What redress is handed when there is no dress node yet.
+-- |
+-- | A `u` AND NOT A TYPE OF ITS OWN: it carries exactly the five fields a dress node's own `u` does
+-- | - above_kind, above_recipe, bellow_kind, bellow_recipe, dots - because it describes the same
+-- | thing before there is a node to hang it on. That is what lets redress check its argument.
+-- |
+-- | @param fields  table | nil - sealed in place, not copied; nil is an empty description, which
+-- |                means "no decoration"
+-- | @return mexpru.u
+-- |
+-- | @note The seal does NOT check the literal's keys, since they are all present when `wrap` runs:
+-- |       a misspelt `dot = 2` passes silently. `check_keys` would catch it.
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.dress_spec(fields)
     return U_SHAPE.wrap(fields or {})
 end
@@ -457,26 +511,26 @@ local function bracket_kind(node)
     return u and u.bracket
 end
 
---[[ THE atom carrying a row slot's bracket meaning: the node itself, or, when the slot is a supsub
-or a dress that is not a bracket in its own right, whatever it wraps.
-
-"(a)^{2}" is [ "(", a, supsub(base=")") ] - the closing half of that pair is a BASE, invisible to any
-walk that reads children directly. That one blind spot produced four separate live bugs (cascade
-delete taking the wrong partner, scan_bracket reporting an unrelated boundary, the wrap counter
-mis-balancing, the sprint skipping a bracket carrying an exponent), so every walk over a row goes
-through here. A dress needs the same look-through for the same reason, and recursively: a hatted,
-squared ")" still has to resolve.
-
-A BIGOP TOO, since 2026-09-10, and for exactly the same reason. A big operator carrying limits has
-the same base/sup/sub slots as a supsub and differs only in how it draws (mformula_new's own
-is_supsub note), so a bracket sitting in ITS base was invisible here in every one of those four
-ways: the counter read a row as balanced when it was not, and the pair could no longer be found to
-delete or resize. Reachable today - make_bigop has no bracket guard - and load-bearing for the
-integral, whose opening half is a bracket that must be able to take limits.
-
-NOT the same question as mformula_new.lua's is_wrapper_base, which asks about the cursor's own node
-rather than what a slot carries. They look alike; don't merge them.
-@date 2026-09-10 14:10 ]]
+--[[ @brief THE atom carrying a row slot's meaning: the node, or what a supsub or dress wraps.
+-- |
+-- | "(a)^{2}" IS [ "(", a, supsub(base=")") ] - the closing half is a BASE, invisible to any walk
+-- | that reads children directly. That blind spot produced four separate live bugs (cascade delete
+-- | taking the wrong partner, scan_bracket reporting an unrelated boundary, the wrap counter
+-- | mis-balancing, the sprint skipping a bracket), so every walk over a row goes through here.
+-- |
+-- | RECURSIVE, through supsubs and dresses alike - a hatted, squared ")" still resolves - and a big
+-- | operator is a supsub here, so a bracket in its base is found too. The integral depends on that.
+-- |
+-- | A BRACKET IS NEVER LOOKED THROUGH: a node that is itself a bracket answers as itself.
+-- |
+-- | @param node  node - must carry a `u`
+-- | @return node - the atom, possibly `node` itself
+-- |
+-- | @note NOT the same question as mformula_new's is_wrapper_base, which asks about the cursor's
+-- |       own node rather than what a slot carries. They look alike; don't merge them.
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.slot_atom(node)
     local u = mexpru.u(node)
     if not u.bracket and u.kind == "supsub" and u.base then
@@ -488,24 +542,24 @@ function mexpru.slot_atom(node)
     return node
 end
 
---[[ THE NODE A DRESS IS WRAPPING - "make the dress transparent".
-
-A decoration is not a thing in its own right; it is something done TO a thing, and anything asking
-what is really here should see through it. `\\vec{F_{n}}` is a dress around a supsub, and a reader
-that stops at the dress sees a decorated letter with no subscript - which is how the subscript in
-that spelling went missing for as long as it did (mexpr_ast's `unit`).
-
-STOPS AT WHATEVER THE DRESS WRAPS, unlike slot_atom next door, which keeps going through supsubs as
-well until it reaches the bare atom. The two answer different questions: slot_atom asks "which glyph
-is this, ultimately", this asks "what is this decoration applied to" - and for a supsub the answer
-has to still BE the supsub, or its limits are lost again.
-
-A BRACKET IS NEVER LOOKED THROUGH, same carve-out slot_atom makes: a bracket atom's own tagging is
-the thing callers are after, and unwrapping past it would hide it.
-
-Loops rather than unwrapping once: nothing forbids a rebuild nesting two dresses, and a single step
-would leave the inner one in the way.
-@date 2026-09-11 16:45 ]]
+--[[ @brief The node a dress is wrapping - "make the dress transparent".
+-- |
+-- | A DECORATION IS DONE TO A THING, and anything asking what is really here should see through it.
+-- | `\\vec{F_{n}}` is a dress around a supsub, and a reader stopping at the dress sees a letter
+-- | with no subscript - how that subscript went missing (mexpr_ast's `unit`).
+-- |
+-- | STOPS AT WHATEVER THE DRESSES WRAP, unlike slot_atom, which keeps going through supsubs to the
+-- | bare atom. slot_atom asks "which glyph is this, ultimately"; this asks "what is this decoration
+-- | applied to" - and for a supsub the answer must still BE the supsub, or its limits are lost.
+-- |
+-- | @details Loops, since nothing forbids a rebuild nesting two dresses. A bracket is never looked
+-- |          through, the same carve-out slot_atom makes.
+-- |
+-- | @param node  node | nil
+-- | @return node | nil - `node` itself when it is not a dress; nil for nil
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.undressed(node)
     local u = node and mexpru.u(node)
     while u and not u.bracket and u.kind == "dress" and u.target do
@@ -515,14 +569,17 @@ function mexpru.undressed(node)
     return node
 end
 
--- What one slot contributes to a running bracket count in reading order: +1 open, -1 close, else 0.
---[[ What this node does to bracket depth: +1 for an open, -1 for a close, 0 for anything else.
-
-THE ONE DEFINITION OF THAT QUESTION, so the several places that scan a row counting brackets - the
-pairing,
-        the cursor's forbidden positions, the parser's own term splitting - agree about what counts.
-Reads THROUGH slot_atom, so a bracket carrying an exponent still answers as a bracket.
-@date 2026-09-12 04:00 ]]
+--[[ @brief What one row slot does to bracket depth: +1 for an open, -1 for a close, 0 otherwise.
+-- |
+-- | THE ONE DEFINITION OF THAT QUESTION, so every scan counting brackets - the pairing, the
+-- | cursor's forbidden positions, the parser's term splitting - agrees about what counts. Reads
+-- | THROUGH slot_atom, so a bracket carrying an exponent still answers as a bracket.
+-- |
+-- | @param node  node - a row slot
+-- | @return integer - -1, 0 or 1. A pending bracket counts like a closed one
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.bracket_delta(node)
     local br = mexpru.u(mexpru.slot_atom(node)).bracket
     if not br then
@@ -531,14 +588,23 @@ function mexpru.bracket_delta(node)
     return br.is_open and 1 or -1
 end
 
---[[ THE counter rule: over children[from..to] in reading order, a bracket may close only where the
-count of still-open brackets is back to ZERO, and the count may never go below zero on the way.
-
-Returns the count at `to`, or nil the moment it would go negative - that step IS the close of the
-ENCLOSING pair, so `to` and beyond are out of bounds for anything opened inside it. Stated as a
-count rather than a walk looking for a specific atom because a count is checkable over any range
-without knowing which atom is whose partner.
-@date 2026-09-08 08:55 ]]
+--[[ @brief THE counter rule over children[from..to]: the open count, or nil if it goes negative.
+-- |
+-- | A BRACKET MAY CLOSE ONLY WHERE THE COUNT IS BACK TO ZERO, and the count may never go below
+-- | zero. A step that would take it negative IS the close of the ENCLOSING pair, so it and
+-- | everything beyond are out of bounds for anything opened inside.
+-- |
+-- | @details A count rather than a walk looking for a specific atom, because a count is checkable
+-- |          over any range without knowing which atom is whose partner. Stops early at a missing
+-- |          child.
+-- |
+-- | @param children  {node} - a row's children
+-- | @param from      integer - first index
+-- | @param to        integer - last index, inclusive
+-- | @return integer | nil - the count at `to`; nil the moment it would go negative
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.bracket_count(children, from, to)
     local count = 0
     for i = from, to do
@@ -555,10 +621,17 @@ function mexpru.bracket_count(children, from, to)
     return count
 end
 
---[[ The counter rule over a whole horiz. Returns (ok, count): ok is false once the count would go
-NEGATIVE - a close with nothing open, which no edit may ever produce. count > 0 with ok true is an
-ordinary mid-edit state (a pending bracket); count == 0 is balanced. Only ok == false is corruption.
-@date 2026-09-08 08:55 ]]
+--[[ @brief The counter rule over a whole row.
+-- |
+-- | ONLY ok == false IS CORRUPTION: a close with nothing open, which no edit may ever produce. A
+-- | positive count is an ordinary mid-edit state - a pending bracket.
+-- |
+-- | @param children  {node} - a row's children
+-- | @return boolean, integer - ok, and the count: when ok, 0 is balanced and more is pending; when
+-- |         not ok, the count where it would have gone negative
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.brackets_balanced(children)
     local count = 0
     for i = 1, #children do
@@ -571,16 +644,21 @@ function mexpru.brackets_balanced(children)
     return true, count
 end
 
---[[ Where `node`'s OWN peer sits in `children` - a direct .peer identity read, NOT a depth walk.
-Use this for a bracket's partner and scan_bracket() only for what encloses an ORDINARY position: a
-blind depth walk cannot see a peer parked in a supsub base, and rather than failing it returns the
-next unmatched bracket it meets, silently pairing two atoms that were never partners ("((A)^{N})"
-lost a bracket on backspace exactly this way).
-
-Returns (index, is_base) - is_base true when the peer is that slot's base rather than the slot
-itself, which is how a caller knows whether removal means splicing the row or rebuilding a supsub.
-nil when node isn't a bracket, is still pending, or its peer isn't in this list at all.
-@date 2026-09-08 08:55 ]]
+--[[ @brief Where a bracket's OWN peer sits in `children`: an identity read, NOT a depth walk.
+-- |
+-- | USE THIS FOR A BRACKET'S PARTNER, and scan_bracket only for what encloses an ORDINARY position.
+-- | A depth walk cannot see a peer parked in a supsub base and returns the next unmatched bracket
+-- | instead, silently pairing two atoms that were never partners - "((A)^{N})" lost a bracket on
+-- | backspace exactly this way.
+-- |
+-- | @param children  {node} - the row to look in
+-- | @param node      node - the bracket atom
+-- | @return integer, boolean | nil - the slot's index, and whether the peer is that slot's BASE
+-- |         (removal then means rebuilding a supsub, not splicing the row); nil when `node` is not
+-- |         a bracket, is still pending, or its peer is not in this row
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.peer_slot(children, node)
     local br = mexpru.u(node).bracket
     if not br or not br.peer then
@@ -595,23 +673,22 @@ function mexpru.peer_slot(children, node)
     return nil
 end
 
---[[ Walks `children` from idx+direction, matching nested brackets by depth, and returns the first
-bracket not already claimed by a nested pair passed on the way - nil if there is none.
-
-Used with idx naming an ORDINARY position and direction=-1 it finds the pair ENCLOSING it. A bracket
-atom's own match is never found this way (see peer_slot()); this is for the case with nothing to
-look up, an ordinary node having no .bracket of its own.
-
-Checks only is_open, never type. That used to be justified by mformula_new.lua's single-slot pending
-discipline, which no longer exists (2026-09-06 - a close now pairs with the innermost unclosed open
-and refuses on a type mismatch, so every closed pair is still type-matched, just for a different
-reason).
-
-Reads each slot through slot_atom(), like every other walk here: a ")" carrying an exponent is a
-supsub BASE ("(a)^2") and invisible to a walk reading children directly. This function was the last
-one still reading around it - fixed 2026-09-06; without it a resolved pair to the left went
-uncounted and the depth came out wrong.
-@date 2026-09-08 08:55 ]]
+--[[ @brief The first bracket from idx+direction not claimed by a nested pair passed on the way.
+-- |
+-- | FOR AN ORDINARY POSITION: with direction -1 it finds the pair ENCLOSING `idx`. A bracket atom's
+-- | own match is never found this way - see peer_slot.
+-- |
+-- | @details Checks only is_open, never the type: every closed pair is type-matched already, since
+-- |          a close pairs with the innermost unclosed open and refuses a mismatch. Reads each slot
+-- |          through slot_atom, so a ")" carrying an exponent is counted.
+-- |
+-- | @param children   {node} - the row
+-- | @param idx        integer - the position to start beside; not itself examined
+-- | @param direction  integer - -1 walks left, 1 walks right
+-- | @return integer | nil - the bracket's index; nil when none is unclaimed
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.scan_bracket(children, idx, direction)
     local depth = 0
     local i = idx + direction
@@ -635,24 +712,23 @@ function mexpru.scan_bracket(children, idx, direction)
     return nil
 end
 
---[[ Copies the open/close pairing of `old_children` onto `new_children`, slot by slot.
-
-For a rebuild that constructs brand-new bracket atoms - mformula_new.lua's rescale_node() on a zoom
-change - the peers cannot simply be carried across: they name u tables of the tree being discarded.
-resolve_bracket_pairs() below finds a pair's close by reading the open atom's own .peer, so without
-this every pair reads as still-pending and stays at the small plain glyph it was rebuilt as. That is
-the "brackets go small when I zoom" bug; re-pasting appeared to cure it only because
-paste rebuilds through try_close_bracket(), which sets peers the ordinary way.
-
-Transfers rather than re-derives, and that distinction is the whole design: pairing is NOT a function
-of position. "(_1 (_2 a )_1" - outer pair resolved, inner one still pending - is an ordinary mid-edit
-state (test_bracket_no_crossing.lua), and any depth-stack scan matches its "(_2" to ")_1", inventing
-a pair the user never closed. A rescale is a 1:1 structural mirror, so old slot i IS new slot i and
-the old links map over exactly.
-
-Reads each slot through slot_atom(), so a ")" sitting in a supsub's BASE ("(a)^{N}") is found at the
-position its compound occupies - same convention peer_slot()/bracket_delta() use.
-@date 2026-09-08 08:55 ]]
+--[[ @brief Copies the open/close pairing of `old_children` onto `new_children`, slot by slot.
+-- |
+-- | FOR A REBUILD THAT MAKES NEW BRACKET ATOMS - rescale_node on a zoom - whose peers cannot be
+-- | carried across, since they name `u` tables of the tree being discarded. Without this every pair
+-- | reads as pending and stays at the small plain glyph: the "brackets go small when I zoom" bug.
+-- |
+-- | TRANSFERS RATHER THAN RE-DERIVES, and that is the whole design: pairing is NOT a function of
+-- | position. "(_1 (_2 a )_1" with the inner one pending is an ordinary state, and any depth scan
+-- | would invent a pair nobody closed. A rescale is a 1:1 mirror, so old slot i IS new slot i.
+-- |
+-- | @param old_children  {node} - the row before the rebuild, peers intact
+-- | @param new_children  {node} - the same shape, rebuilt; its bracket atoms get their peers set
+-- |
+-- | @note A pair whose new atoms carry no `bracket` is skipped. Slots are read through slot_atom.
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.transfer_bracket_peers(old_children, new_children)
     for i = 1, #old_children do
         local old_atom = mexpru.slot_atom(old_children[i])
@@ -811,18 +887,20 @@ local function resolve_bracket_pairs(fs, children, lo, hi)
     end
 end
 
---[[ Caches u(node).pos into every node of the tree, walking it the way mexpr_draw does. mexpr_t
-stores tl/br relative to its OWN origin only, so this is where anything wanting a position reads it.
-
-RELATIVE to (0, 0), not screen coordinates: the cache survives the box being drawn anywhere else
-(scrolled, a box above it resized) - add wherever the root is drawn this frame. Only a TREE EDIT
-invalidates it; recompute by calling again.
-
-The `if u then` guard is for the raw subobjs a few vc.mexpr_* constructors build in C++ without
-going through this layer (mexpr_frac's divider line, a big operator's symbol): those never had
-a table captured, so mexpru.u() returns nil. They are always leaves, and nothing else in this file
-ever reaches one - this anchor walk is the only exception.
-@date 2026-09-08 08:55 ]]
+--[[ @brief Caches every node's position into its `u.pos`, walking the tree the way mexpr_draw does.
+-- |
+-- | mexpr_t STORES tl/br RELATIVE TO ITS OWN ORIGIN only, so this is where anything wanting a
+-- | position reads it. RELATIVE to the root, not screen space: the cache survives the box being
+-- | drawn anywhere else. Only a TREE EDIT invalidates it; recompute by calling again.
+-- |
+-- | @details Raw C++-built subobjs (a fraction's divider, a big operator's symbol) have no `u` and
+-- |          are skipped; they are always leaves.
+-- |
+-- | @param node  node - the root of the walk
+-- | @param pos   {x, y} | nil - `node`'s own position; nil means the origin
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.update_positions(node, pos)
     pos = pos or {x = 0, y = 0}
     local u = mexpru.u(node)
@@ -837,10 +915,23 @@ function mexpru.update_positions(node, pos)
     end
 end
 
---[[ A left-to-right sequence of atoms (mexpr_merge_h), remembering kind/children/sz so
-propagate_rebuild() can redo this exact construction later from a changed children list.
-`children` is kept BY REFERENCE - propagate_rebuild() splices it in place.
-@date 2026-09-08 08:55 ]]
+--[[ @brief A row: a left-to-right sequence of nodes, with its bracket pairs sized to their content.
+-- |
+-- | IT REMEMBERS kind, children and sz, so propagate_rebuild can redo this exact construction from
+-- | a changed children list. `children` is kept BY REFERENCE - propagate_rebuild splices it in
+-- | place.
+-- |
+-- | EVERY ENTANGLED BRACKET PAIR IS RESOLVED FIRST, innermost out: a pair's glyphs depend on what
+-- | is currently between them, and a grown pair's atoms are REPLACED in `children`.
+-- |
+-- | @param fs        fontset
+-- | @param children  {node} - modified in place when a pair grows
+-- | @param sz        size - logical
+-- | @return node - kind "horiz"
+-- | @throws when a closed pair's span is empty; mformula_new keeps it non-empty
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.horiz(fs, children, sz)
     resolve_bracket_pairs(fs, children)
     local ret = mexpru.mexpr_merge_h(fs, children)
@@ -850,34 +941,32 @@ function mexpru.horiz(fs, children, sz)
     return ret
 end
 
---[[ A big operator carrying its limits - a sum, an integral, or "lim" - stored with a supsub's
-OWN field names on purpose.
-
-It IS a supsub as far as anything but drawing is concerned: base is the operator, sup is what sits
-above it, sub what sits below. Naming them base/sup/sub rather than op/above/bellow is what lets
-is_supsub() cover both kinds in mformula_new, so navigation, the cascade and every other walk needs
-no bigop case at all - only the two places that REBUILD a node dispatch on kind to pick a builder.
-
-`metrics` is a char passed purely for its size (mexpr_supsub's own comment): it scales the gap
-between the operator and its limits, and its code is never read.
-@date 2026-09-08 08:55 ]]
 --[[ WHERE ONE SIDE IS DRAWN. Named here rather than registered as a C++ enum because the binding
 takes plain ints - the enum machinery in math_expr_composer.h feeds the YAML config, not Lua.
 @date 2026-09-10 16:20 ]]
 mexpru.PLACE_BESIDE = 0
 mexpru.PLACE_DISPLAY = 1
 
---[[ A base with a superscript and/or a subscript, each drawn beside it or centred over/under it.
-
-base required, sup/sub each a node or nil. Three NAMED slots rather than horiz's ordered list, so
-propagate_rebuild() finds which one changed by name.
-
-PLACEMENT IS PER SIDE, and both are remembered in `u` so a rebuild puts them back. This used to be
-two functions over two node kinds - `supsub` and `bigop` - which the C++ has now merged, because
-they always created the same node with the same three slots and differed only in where the sides
-were anchored. The Lua side kept the difference as a `kind`, and every walk that forgot to handle
-the second one lost a bracket or rebuilt an operator as the wrong thing.
-@date 2026-09-10 16:20 ]]
+--[[ @brief A base with a superscript and/or subscript, each beside it or centred over/under it.
+-- |
+-- | THREE NAMED SLOTS rather than horiz's ordered list, so propagate_rebuild finds which one
+-- | changed by name.
+-- |
+-- | PLACEMENT IS PER SIDE, and both are remembered in `u` so a rebuild puts them back. There used
+-- | to be two node kinds, supsub and bigop, and every walk that forgot the second lost a bracket or
+-- | rebuilt an operator as the wrong thing; a big operator is now a supsub with DISPLAY sides.
+-- |
+-- | @param fs         fontset
+-- | @param base       node - required
+-- | @param sup        node | nil
+-- | @param sub        node | nil
+-- | @param sz         size | nil - logical; also scales the gap to the sides. Not stored when nil
+-- | @param sup_place  place | nil - PLACE_BESIDE (the default) or PLACE_DISPLAY
+-- | @param sub_place  place | nil - likewise
+-- | @return node - kind "supsub"
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.supsub(fs, base, sup, sub, sz, sup_place, sub_place)
     sup_place = sup_place or mexpru.PLACE_BESIDE
     sub_place = sub_place or mexpru.PLACE_BESIDE
@@ -896,23 +985,41 @@ function mexpru.supsub(fs, base, sup, sub, sz, sup_place, sub_place)
     return ret
 end
 
---[[ Rebuilds `node` with new slots, keeping the placement and size it already had.
-
-THE single place a supsub is reconstructed from an existing one, for the same reason redress() is
-for a dress: the placement of each side is bookkeeping that lives only in `u`, so every rebuild that
-forgot to carry it would silently move a limit from under its operator to beside it. There were five
-such rebuilds when the two node kinds merged, each choosing a constructor by kind - this replaces
-that choice with the thing the kind used to stand for.
-@date 2026-09-10 16:20 ]]
+--[[ @brief Rebuilds a supsub with new slots, keeping the placement and size its `u` records.
+-- |
+-- | THE SINGLE PLACE A SUPSUB IS RECONSTRUCTED, for the reason redress is for a dress: placement
+-- | lives only in `u`, and a rebuild that forgot it would silently move a limit from under its
+-- | operator to beside it. Five rebuilds used to choose a constructor by kind instead.
+-- |
+-- | @param fs    fontset
+-- | @param u     mexpru.u - the old node's; its sz, sup_place and sub_place are reused. Not checked
+-- | @param base  node
+-- | @param sup   node | nil
+-- | @param sub   node | nil
+-- | @return node - a new supsub
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.resupsub(fs, u, base, sup, sub)
     return mexpru.supsub(fs, base, sup, sub, u.sz, u.sup_place, u.sub_place)
 end
 
---[[ A big operator with its limits: the same node, with both sides DISPLAY.
-
-Kept as a name of its own because that is what the callers mean, and because the size argument is
-required here where supsub's is optional - a display side needs a size to scale its gap from.
-@date 2026-09-10 16:20 ]]
+--[[ @brief A big operator with limits - a sum, an integral, "lim": a supsub, both sides DISPLAY.
+-- |
+-- | IT IS A SUPSUB for everything but drawing: base the operator, sup above, sub below. The same
+-- | field names are what let every walk need no bigop case; only a rebuild reads the placement.
+-- |
+-- | @param fs    fontset
+-- | @param base  node - the operator
+-- | @param sup   node | nil - the upper limit
+-- | @param sub   node | nil - the lower limit
+-- | @param sz    size - required in spirit, where supsub's is optional: a display side scales its
+-- |        gap
+-- |              from it
+-- | @return node - kind "supsub"
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.bigop(fs, base, sup, sub, sz)
     return mexpru.supsub(fs, base, sup, sub, sz,
             mexpru.PLACE_DISPLAY, mexpru.PLACE_DISPLAY)
@@ -933,10 +1040,19 @@ local function empty_cell_extent(fs, sz)
     return {x = H_sz.adv, y = g_sz.bl.y - G_sz.tr.y}
 end
 
---[[ N slots stacked vertically, each a horiz, no divider - mexpr_merge_v, the same primitive a
-frac stacks with minus the line. `slots` is kept by reference, as horiz's children are. Every slot
-is one uniform size; a stack doesn't shrink its rows the way an exponent does.
-@date 2026-09-08 08:55 ]]
+--[[ @brief N rows stacked vertically with no divider - a matrix, or a named operator's word.
+-- |
+-- | THE SAME PRIMITIVE A FRACTION STACKS WITH, minus the line. Every row is one uniform size: a
+-- | stack does not shrink its rows the way an exponent does. A cell never shrinks below an empty
+-- | slot's box, derived here from `sz`.
+-- |
+-- | @param fs     fontset
+-- | @param slots  {node} - each a horiz; kept BY REFERENCE, as horiz's children are
+-- | @param sz     size - logical
+-- | @return node - kind "vert"
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.vert(fs, slots, sz)
     local ret = mexpru.mexpr_merge_v(fs, slots, empty_cell_extent(fs, sz))
     mexpru.u(ret).kind = "vert"
@@ -945,17 +1061,25 @@ function mexpru.vert(fs, slots, sz)
     return ret
 end
 
---[[ Dresses `target` with an accent above and/or below - a hat, a bar, dots, a boot.
-
-A dressed node IS an atom: it takes the target's place in its row, it is never entered, and the
-decoration cannot be selected. That makes it the same shape as a supsub's base, which is exactly
-the shape this codebase has repeatedly got wrong - so slot_atom()/peer_slot() look THROUGH a dress
-to its target, and anything asking "what atom is in this slot" gets the target, not the wrapper.
-
-`above`/`bellow` are whatever the caller built: mexpru.accent() for a hat/tilde/bar, or
-mexpru.dots() for one to three dots. mexpr_dress itself knows nothing about which is which - it
-only places them (TEXbook Appendix G Rule 12; see the C++ for the placement rules).
-@date 2026-09-08 08:55 ]]
+--[[ @brief Dresses `target` with a decoration above and/or below - a hat, a bar, dots.
+-- |
+-- | A DRESSED NODE IS AN ATOM: it takes the target's place in its row, is never entered, and the
+-- | decoration cannot be selected. That is the shape of a supsub's base, which this codebase has
+-- | repeatedly got wrong - so slot_atom and peer_slot look THROUGH a dress to its target.
+-- |
+-- | @details mexpr_dress only PLACES the decorations (TEXbook Appendix G Rule 12). The clearance
+-- |          between target and decoration is the height of hline_basic, the pen width; it used to
+-- |          be a letter-tall glyph, which floated every accent a letter and a half up.
+-- |
+-- | @param fs      fontset
+-- | @param target  node
+-- | @param above   node | nil - built by accent() or dots()
+-- | @param bellow  node | nil - built by accent()
+-- | @param sz      size - logical
+-- | @return node - kind "dress"; the caller records above_kind and friends, as redress does
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.dress(fs, target, above, bellow, sz)
     --[[ mexpr_dress measures this char's HEIGHT and uses it as the clearance between the target's
     ink and the decoration - its own comment calls for "the pen width, which is font-derived and
@@ -973,17 +1097,34 @@ function mexpru.dress(fs, target, above, bellow, sz)
     return ret
 end
 
---[[ The accent glyph (or drawn shape) that fits `target`. Width comes from the target's own box,
-which is what Rule 12's successor search compares against.
-@date 2026-09-08 08:55 ]]
+--[[ @brief The accent glyph, or drawn shape, that fits `target`'s width.
+-- |
+-- | @param fs         fontset
+-- | @param recipe_fn  function(fontsz) - a char.lua accent, e.g. char.hat_accent
+-- | @param target     node - its box width picks the tier (Rule 12's successor search)
+-- | @param sz         size - logical
+-- | @return node - to pass to dress()
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.accent(fs, recipe_fn, target, sz)
     local bb = vc.mexpr_get_bb(target)
     return mexpru.mexpr_accent(fs, recipe_fn(mexpru.physical_sz(sz)), bb.br.x - bb.tl.x)
 end
 
---[[ n dots side by side, for the one/two/three-dot accents. Built by merging, not by a wider
-glyph: there is no ddot in these fonts (see char.lua's own accent block).
-@date 2026-09-08 08:55 ]]
+--[[ @brief n dots side by side, for the one-, two- and three-dot accents.
+-- |
+-- | Built by merging, since there is no ddot in these fonts.
+-- |
+-- | @param fs  fontset
+-- | @param n   integer - how many
+-- | @param sz  size - logical
+-- | @return node - a single dot glyph for n <= 1, else a merged row of n
+-- |
+-- | @note n = 0 still gives one dot; redress only calls this for n > 0.
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.dots(fs, n, sz)
     local one = char.dot_accent_char(mexpru.physical_sz(sz))
     if n <= 1 then
@@ -996,11 +1137,20 @@ function mexpru.dots(fs, n, sz)
     return mexpru.mexpr_merge_h(fs, parts)
 end
 
---[[ num/den are both REQUIRED (mexpr_frac throws without them, unlike supsub's optional sup/sub)
-and each is always a HORIZ, never a bare atom the way a base is. Both render at the fraction's OWN
-sz - typesetting doesn't shrink them the way an exponent shrinks - so unlike supsub a frac carries
-its own sz directly, and nothing reading it needs a base-fallback.
-@date 2026-09-08 08:55 ]]
+--[[ @brief A fraction: numerator over denominator, with a rule between.
+-- |
+-- | BOTH ROWS RENDER AT THE FRACTION'S OWN SIZE - typesetting does not shrink them the way an
+-- | exponent shrinks - so a frac carries its own sz directly, and nothing reading it needs a
+-- | base-fallback.
+-- |
+-- | @param fs   fontset
+-- | @param num  node - REQUIRED, always a horiz; mexpr_frac raises without it
+-- | @param den  node - REQUIRED, always a horiz
+-- | @param sz   size - logical; the rule is built at its physical size
+-- | @return node - kind "frac"
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.frac(fs, num, den, sz)
     -- sz is LOGICAL (u(ret).sz below) - the divider LINE's own real geometry (char.hline_basic)
     -- needs the current PHYSICAL size instead (mexpru.physical_sz()'s own comment).
@@ -1012,17 +1162,26 @@ function mexpru.frac(fs, num, den, sz)
     return ret
 end
 
---[[ Rebuilds a dress carrying `u`'s bookkeeping around a (possibly new, possibly resized) target.
-
-THE single place a dress is reconstructed, because there are two callers - propagate_rebuild() below
-when the target is edited, rescale_node() (mformula_new.lua) on a zoom - and they had drifted: only
-one of them checked u.dots, so editing the letter under a dot accent silently dropped the dots while
-zooming kept them. Order matters: a dotted dress has no above_recipe, so testing the recipe first
-finds nothing and produces a bare target.
-
-The decoration is rebuilt, never carried across, because the accent is chosen by the target's WIDTH
-(Rule 12's successor search) - a letter edited into a wider one needs a wider hat.
-@date 2026-09-08 08:55 ]]
+--[[ @brief Rebuilds a dress with `u`'s decoration around a possibly new, possibly resized target.
+-- |
+-- | THE SINGLE PLACE A DRESS IS RECONSTRUCTED. Its callers - propagate_rebuild when the target is
+-- | edited, rescale_node on a zoom - had drifted: only one checked `dots`, so editing the letter
+-- | under a dot accent silently dropped the dots.
+-- |
+-- | THE DECORATION IS REBUILT, never carried across, because an accent is chosen by the target's
+-- | WIDTH - a letter edited into a wider one needs a wider hat.
+-- |
+-- | @details Dots are tested before above_recipe: a dotted dress has no recipe. The new node's `u`
+-- |          gets the same five decoration fields.
+-- |
+-- | @param fs      fontset
+-- | @param target  node - not checked; the C++ side raises its own
+-- | @param u       mexpru.u - checked; a dress node's own, or a dress_spec
+-- | @param sz      size - logical
+-- | @return node - kind "dress"
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.redress(fs, target, u, sz)
     --[[ `u` is READ HERE - dots, above_recipe, bellow_recipe - so it is checked here. `target` is
     only forwarded into accent/dress and on into the C++ side, which raises its own when handed the
@@ -1046,14 +1205,20 @@ function mexpru.redress(fs, target, u, sz)
     return ret
 end
 
---[[ "these two handles name the same node" - one pointer comparison, via the __eq handler mexpr_t
-registers (math_expr_composer.h's mexpr_lua_eq). This used to compare tostring() output instead,
-because no handler was registered and `==` threw; peer-linking then got built on top of that
-workaround, which is the case CLAUDE.md's Law 1 is written from.
-
-The nil guard is explicit because an absent operand is a real case (sup/sub are legitimately nil)
-and "both absent" means the same absence - Lua would answer false rather than reach __eq.
-@date 2026-09-08 08:55 ]]
+--[[ @brief Do these two handles name the same node? One pointer comparison.
+-- |
+-- | THROUGH THE __eq HANDLER mexpr_t registers (math_expr_composer.h's mexpr_lua_eq). Two handles
+-- | onto one node are different Lua values, so `==` only works through it.
+-- |
+-- | @param a  node | nil
+-- | @param b  node | nil
+-- | @return boolean - true for two nils: an absent sup and an absent sup are the same absence
+-- |
+-- | @note This used to compare tostring() output, because no handler was registered; peer-linking
+-- |       got built on that workaround, which is the case CLAUDE.md's Law 1 is written from.
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 local function same(a, b)
     if a == nil or b == nil then
         return a == nil and b == nil
@@ -1062,7 +1227,14 @@ local function same(a, b)
 end
 mexpru.same = same
 
---[[ `child`'s own index within `children`, by identity (same() above). nil if not found. @date 2026-09-08 08:55 ]]
+--[[ @brief `child`'s index within `children`, by identity.
+-- |
+-- | @param children  {node}
+-- | @param child     node
+-- | @return integer | nil - the first match through same(); nil when not there
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 local function index_of(children, child)
     for i, c in ipairs(children) do
         if same(c, child) then
@@ -1073,24 +1245,30 @@ local function index_of(children, child)
 end
 mexpru.index_of = index_of
 
---[[ `old_node` was just rebuilt as `new_node` - same slot, new identity, since a composite can only
-be rebuilt from its remembered construction arguments, never mutated in place. Splices new_node into
-whichever slot of its parent old_node held (dispatched on u(parent).kind), rebuilds that parent, and
-recurses upward: "the node and all its parents redo the operation they did at creation". Returns the
-new root; the caller reassigns container.root to it.
-
-Cuts old_node loose at EVERY level, not only the root. That was reverted once as a crash, but the
-real cause was a bug in vc.force_release() (virt_composer.cpp) - fixed there, and test_lazy_supsub
-covers the multi-level chain that used to crash.
-
-`known_parent` is for a WRAP: new_node was built AROUND old_node (dressing an atom, giving one a
-sup/sub), so the constructor already reparented old_node to new_node and old_node:get_parent() no
-longer answers where it used to sit - it answers new_node, and rebuilding "its parent" then wraps
-the wrapper, forever. The caller must capture the parent BEFORE building new_node and pass it here.
-Two things change when it is given: the slot is found by index_of() rather than get_parent_idx()
-(which scans old_node's CURRENT parent, i.e. the wrong one), and old_node is NOT cut, because
-new_node owns it now - see mformula_new.lua's swap_atom()/make_supsub().
-@date 2026-09-08 08:55 ]]
+--[[ @brief Puts a rebuilt node where the old one was, rebuilding every ancestor up to the root.
+-- |
+-- | A COMPOSITE IS NEVER MUTATED IN PLACE, only rebuilt from its remembered construction arguments.
+-- | So new_node is spliced into whichever slot of the parent old_node held, that parent is rebuilt,
+-- | and so on upward: "the node and all its parents redo the operation they did at creation".
+-- |
+-- | OLD NODES ARE CUT LOOSE AT EVERY LEVEL, not only at the root. That was reverted once as a
+-- | crash; the real cause was a bug in vc.force_release(), since fixed.
+-- |
+-- | @details The parent's kind picks the rebuild: horiz, supsub, frac, vert or dress.
+-- |
+-- | @param fs            fontset
+-- | @param old_node      node - checked; the node being replaced
+-- | @param new_node      node - its replacement
+-- | @param known_parent  node | nil - for a WRAP, where new_node was built AROUND old_node: the
+-- |                      constructor already reparented old_node, so get_parent() would answer
+-- |                      new_node and the wrapper would be wrapped forever. Capture the parent
+-- |                      BEFORE building new_node. Given, the slot is found by identity, and
+-- |                      old_node is not cut, since new_node owns it
+-- | @return node - the new root; the caller reassigns container.root to it. Positions are updated
+-- | @throws when old_node is not in its parent's slots, or the parent's kind has no rebuild
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.propagate_rebuild(fs, old_node, new_node, known_parent)
     --[[ AN INTEGRITY CHECK ON `old_node`, which is the one argument nothing downstream would catch:
     it is walked upward here - `get_parent()`, then cut() - rather than handed to anything that
@@ -1170,23 +1348,23 @@ function mexpru.propagate_rebuild(fs, old_node, new_node, known_parent)
     return mexpru.propagate_rebuild(fs, parent, rebuilt)
 end
 
---[[ Makes a node the caller has ALREADY cut loose - spliced out of its old parent, with
-propagate_rebuild() done and container.root reassigned - let go right now.
-
-Needed because Lua's collector is TRACING, not refcounted: an unreferenced node only becomes
-eligible, and stays alive-but-orphaned until a trace reaches it (one survived two forced
-collectgarbage("collect") passes and died only at state teardown). Any WEAK ref still pointing at it
-- container.pending_bracket, say - reads back as alive that whole time, correctly but uselessly.
-That is what bit the bracket-pending path.
-
-One node is enough, no subtree walk: mexpr_t owns its children by shared_ptr and points at its
-parent raw, so cascading destruction handles everything beneath the moment the cut node's last
-reference goes - which it is, provided the caller kept no stray local (see mformula_new.lua's
-"don't touch this local again" discipline).
-
-vc.force_release() is the real primitive; it is global rather than a method because virt_composer's
-`:` dispatch never sees a bare lua_setfield onto the shared metatable.
-@date 2026-09-08 08:55 ]]
+--[[ @brief Releases a node the caller has ALREADY detached - now, rather than at the next trace.
+-- |
+-- | LUA'S COLLECTOR IS TRACING, NOT REFCOUNTED: an unreferenced node stays alive-but-orphaned until
+-- | a trace reaches it (one survived two forced collections). Any WEAK ref still pointing at it -
+-- | container.pending_bracket, say - reads back as alive that whole time. That bit the
+-- | bracket-pending path.
+-- |
+-- | ONE NODE IS ENOUGH: mexpr_t owns its children by shared_ptr, so everything beneath goes with it
+-- | - provided the caller kept no stray local.
+-- |
+-- | @param node  node - checked; already spliced out of its parent, with propagate_rebuild done and
+-- |              container.root reassigned
+-- |
+-- | @note Do not touch the node, or anything reached through it, afterwards.
+-- |
+-- | @date 2026-09-13 21:15
+--]]
 function mexpru.cut(node)
     --[[ An integrity check, for the same reason propagate_rebuild checks `old_node`:
     what is handed here is DETACHED, not read, so nothing downstream would notice it
