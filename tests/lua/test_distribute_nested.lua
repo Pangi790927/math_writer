@@ -113,8 +113,12 @@ function run_test()
     --[[ WHAT TRAVELS, nested: each leaf of the clicked sum lands once and is the node it was; the
     surrounding `a` is the original in the first term and a copy after. Same rule test_distribute
     pins for the flat case, now through a CELL. ]]
+    --[[ Guarded on three terms: this needs distribution RECURSIVE over the clicked sum's terms,
+    which HEAD's distribute is not (it writes `ab+a(c+d)`), and the checks below were written for
+    the recursive shape. Without the guard the block crashed (2026-09-15) once the write itself
+    started round-tripping under the sign-coefficient shape. ]]
     local result, _, root = distribute("a(b+(c+d))", 1)
-    if result then
+    if result and #result == 3 then
         local a, b = root[1], root[2][1]
         local c, d = root[2][2][1][1], root[2][2][1][2]
         check("three products", result.type == ast.ADD and #result == 3)

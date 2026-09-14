@@ -7,9 +7,12 @@
 -- |     the lookup, and it CHECKS what it found. A miss is nil; an entry
 -- |     that is not a node raises.
 -- | check_ns(ns: ast.ns)                    -> ns
--- | check_node(node: node, what: string)    -> node
+-- | check_node(node: node, what: string | nil) -> node
 -- |     Assert a namespace or a node, for a function in another file that
 -- |     takes one - the shapes are declared here and are local to here.
+-- | is_node(x: any)                         -> boolean
+-- |     The dispatch half of "value or node": a table carrying a `type`.
+-- |     check_node is the guarantee; this is only the question.
 -- | ns_insert_object(ns: ast.ns, id: id, obj: node) -> nothing
 -- | new(ns: ast.ns, type: ast type, id: id | nil)   -> node
 -- |     A namespace owns ids; every node is minted into one and answers to
@@ -17,7 +20,7 @@
 -- |     nodes may never share one.
 -- |
 -- | copy(ns: ast.ns, node: node, new_ns: ast.ns, keep_vars: boolean) -> node
--- | copy_fresh(ns: ast.ns, node: node)      -> node
+-- | copy_fresh(ns: ast.ns, node: node | value) -> node | value
 -- |     The same tree somewhere else, versus a second tree that looks the
 -- |     same. copy_fresh mints new ids in the SAME namespace - what a
 -- |     transformation needs when a subtree lands in two places.
@@ -40,6 +43,8 @@
 -- | new_implies(ns: ast.ns, expr1: node, expr2: node) -> node
 -- | new_iff(ns: ast.ns, expr1: node, expr2: node) -> node
 -- |     Each is two operands and nothing else. Both are CHECKED to be nodes.
+-- |     GENERATED, one per row of BINARY_TYPES in a loop - no definition line,
+-- |     no per-function header; the loop's one comment carries the family.
 -- |
 -- | SET RELATIONS
 -- | new_in(ns: ast.ns, expr1: node, expr2: node) -> node
@@ -49,6 +54,7 @@
 -- | new_supset(ns: ast.ns, expr1: node, expr2: node) -> node
 -- | new_supseteq(ns: ast.ns, expr1: node, expr2: node) -> node
 -- |     The same shape; membership and containment, both directions.
+-- |     GENERATED with the relations above, from the same BINARY_TYPES loop.
 -- |
 -- | ARITHMETIC
 -- | new_add(ns: ast.ns, ...: node)          -> node
@@ -57,7 +63,9 @@
 -- |     children, and multiplication is not assumed commutative. EVERY
 -- |     operand is checked, which is where a stray nil would otherwise go
 -- |     unnoticed - nothing downstream reads the arity back.
+-- |     GENERATED, one per row of a small loop (ADD/MUL/VEC).
 -- | new_div(ns: ast.ns, expr1: node, expr2: node)   -> node
+-- |     Binary; generated with the relations, from BINARY_TYPES.
 -- | new_exp(ns: ast.ns, base: node, exponent: node) -> node
 -- | new_int(ns: ast.ns, name: string, sup: node, sub: node, body: node) -> node
 -- | new_group_bigop(ns: ast.ns, node_type: ast type, vars: {name}, sups: {node}, subs: {node},
@@ -79,10 +87,11 @@
 -- | num_text(node: node)                    -> text
 -- | new_var(ns: ast.ns, name: string)       -> node   the declaration
 -- | new_vref(ns: ast.ns, ref: node | id)    -> node   a USE of one
--- | new_call(ns: ast.ns, fn: node | key, ...: node)  -> node
+-- | new_call(ns: ast.ns, fn: node | string, ...: node) -> node
 -- |     `fn` may be a STRING - a declaration's key, when it lives in
 -- |     another box's namespace. The arguments must be nodes.
 -- | new_vec(ns: ast.ns, ...: node)                  -> node
+-- |     Generated with new_add/new_mul.
 -- | new_cell(ns: ast.ns, expr: node)                -> node
 -- | new_mat(ns: ast.ns, rows: number, cols: number, ...: node) -> node
 -- | new_null(ns: ast.ns)                            -> node
@@ -104,30 +113,27 @@
 -- |     new()          THE ONE creator for a node - see it for the `node` shape
 -- |     new_bigop, and the type/symbol tables
 -- |
--- | @date 2026-09-13 21:30
+-- | @date 2026-09-14 11:00
 -- | ===============================================================================================
 --]]
 
 --[[
 ast.lua - THE MEANING TREE: what a formula IS, as opposed to how it is drawn or typed.
 
-Every mathematical element in the program has a node shape here, and this is the base that
-serialization, deserialization and the transforms are all written against. The editors do not build
-these yet - phase 1 keeps a formula as mexpr plus LaTeX - so this is the model phase 2 grows into
-(docs/phase2_design.md), and transforms.lua is the first thing written against it.
+Every mathematical element has a node shape here; serialization, deserialization and the transforms
+are all written against this base. The editors do not build these yet - phase 1 keeps a formula as
+mexpr plus LaTeX - so this is the model phase 2 grows into (docs/phase2_design.md), and
+transforms.lua is the first thing written against it.
 
-A node is a TUPLE: an operator, then its operands, each node carrying an id of its own so anything
-else can refer to it. The catalogue of tuple shapes is written out below.
+A node is a TUPLE: an operator, then its operands, each node carrying its own id so anything else
+can refer to it. The catalogue of tuple shapes is written out below.
 
-WHAT IS NOT HERE, since docs/phase2_design.md still describes it: an ast -> LaTeX writer sat at the
-bottom of this file until 2026-09-09. Nothing outside its own recursion had ever called it, and
-mexpr.lua - the only consumer of anything in this file besides main.lua's dead demo - was deleted
-the same day. The LaTeX the app really reads and writes is mformula_latex.lua's, and it works on
-the mexpr tree, not on these nodes.
+NOT HERE: an ast -> LaTeX writer sat at the bottom of this file until 2026-09-09, when it and
+mexpr.lua (its only consumer) were deleted as unreachable. The LaTeX the app really reads and
+writes is mformula_latex.lua's, and it works on the mexpr tree, not on these nodes.
 
-@date 2026-09-09 21:20
+@date 2026-09-14
 ]]
---[[ OBS: function names can't have spaces ]]
 
 -- tuples:
 -- _ID:(...)                    -- tuple with it's id, each tupple will have such an ID 
@@ -216,22 +222,9 @@ local ast = {
     shape (new_bigop_group below), not the single-var shape INT still uses. ]]
     UNION = 28,
     INTERSECT = 29,
-    --[[ NOTHING IN THIS SLOT, on purpose. An indefinite integral has no bounds, and `INT` keeps its
-    fixed four-slot shape (var, from, to, body) rather than growing a count the way the group
-    operators did - so "no bound" needs a node to BE.
-
-    Leaving the slot nil instead is what this replaced, and it was silently wrong: Lua's `#` stops
-    at the first hole, so `#node` answered 1 for `\int x dx` and every generic walk over a node's
-    children - the namespace copy, to_string, to_string_lines - skipped the body entirely. Binding
-    still worked, because catch_free reaches slot 4 by index rather than by walking, which is
-    exactly why it went unnoticed. Found 2026-09-11 by the check that pairs two integrals crossways.
-
-    A LEAF WITH NO OPERANDS, so it serializes as `(null:id)` and reads back like any other node.
-    Spelled out rather than given a punctuation symbol like the rest: it appeared as `(~:5)` for one
-    reading and drew "what is a tilda?" immediately, which is a fair question about a mark nothing
-    else in the format uses. Named by the author, 2026-09-11: "plz name them (NULL), like this",
-    then "null in paranthesis, like printf on a null string" - which is where the lower case comes
-    from, and the tuple's own brackets supply the parentheses.
+    --[[ NOTHING IN THIS SLOT, on purpose: an indefinite integral has no bound, and a nil there
+    would stop Lua's `#` at the hole - every generic walk over a node's children silently skipped
+    the body. A leaf with no operands, serializing as `(null:id)` and reading back like any node.
     @date 2026-09-11 07:00 ]]
     NULL = 30,
     --[[ `x \\to 0`, the relation a limit's subscript is written with. A RELATION rather than
@@ -260,25 +253,16 @@ local ast = {
     LIMINF = 38,
     SUP = 39,
     INF = 40,
-    --[[ LOGICAL IMPLICATION AND EQUIVALENCE - `a \\Rightarrow b`, `a \\Leftrightarrow b`. Binary and
-    plain, the same shape as IN and the inequalities, which is all they need to be: nothing here
-    evaluates them, and a connective that joins two statements is structurally a relation.
-
-    NOT the same thing as TENDS, which shares an arrow-ish glyph family: `\\rightarrow` is a limit's
-    "tends to" and `\\Rightarrow` is "implies". Different glyphs (the catalog has both, ncod 138 and
-    146), different nodes, and the digraphs that produce them differ too - `-` then `>` gives the
-    first, `=` then `>` the second. @date 2026-09-11 16:00 ]]
+    --[[ LOGICAL IMPLICATION AND EQUIVALENCE - binary relations, but binding LOOSER than every one
+    of them, which is why mexpr_ast keeps them out of its RELATIONS table. Not TENDS: a different
+    glyph ("tends to" vs "implies"), a different node. @date 2026-09-11 16:00 ]]
     IMPLIES = 41,
     IFF = 42,
 }
 
---[[ A fresh NAMESPACE: the id -> node table every ast node in one tree is registered in, plus the
-next id to hand out. Ids are what a reference names, so a node only means anything inside the
-namespace it was made in. @date 2026-09-08 09:10 ]]
---[[ THE `ns` CONTAINER's declared fields. Sealed through sealed.lua like every other container
-here, on the author's instruction 2026-09-12 - the earlier reasoning for leaving it open ("only
-ast.new and ns_insert_object touch it") was the same argument that would have left every one of the
-others open, and it is not the rule. Two fields, and nothing may add a third.
+--[[ THE `ns` CONTAINER's declared fields - the id -> node storage plus the next id to hand out.
+Sealed like every other container; ids are what a reference names, so a node only means anything
+inside the namespace it was made in. The field strings below are the one list.
 @date 2026-09-12 08:00 ]]
 local NS_FIELDS = {
     by_id   = "{id -> node}: the STORAGE. Written by ns_insert_object; read through "
@@ -289,21 +273,10 @@ local NS_FIELDS = {
 }
 local NS_SHAPE = sealed.declare("ast", "ns", NS_FIELDS)
 
---[[ THE `node` CONTAINER's declared fields - an ast node's whole NAMED surface, which is two
-entries.
-
-ARRAY MODE, and that is the shape of the thing: a node's children are POSITIONAL and unbounded -
-the operands of an ADD, the base and exponent of an EXP - and a leaf's array part holds its value
-instead (NUM is {m, n, sign}, VAR is {name}, VREF is {referenced id}). There is nothing there to
-declare, so integer keys pass untouched and only the string ones are policed.
-
-WHAT THIS CATCHES: `node.typ`, `node.parent`, `node.value` - names that read as if a node had them.
-It does NOT catch a wrong child count or a child of the wrong type; `type` decides what the array
-part means, and only the constructors below set both together.
-
-`parent` and `loc` are NOT declared, deliberately: transforms_old.lua hangs them on nodes, and that
-file is frozen and required by nothing. If it is ever revived they belong here, with the rest of
-that design.
+--[[ THE `node` CONTAINER's declared fields, in ARRAY MODE: children are positional and unbounded
+(and a leaf's array part holds its value), so integer keys pass untouched and only the two string
+keys are policed. Catches `node.typ`/`node.parent`/`node.value`; does not check child count or
+type - `type` decides what the array part means, and only the constructors set both together.
 @date 2026-09-12 08:30 ]]
 local NODE_FIELDS = {
     type = "one of the ast.* constants; ast.type_name() reads it back",
@@ -402,6 +375,20 @@ end
 --]]
 function ast.check_node(node, what)
     return NODE_SHAPE.check(node, what or "node")
+end
+
+--[[ @brief Is this an ast node - a table carrying a `type`?
+-- |
+-- | THE DISPATCH HALF of "value or node", the question every recursive walk over a node's array
+-- | part asks. ast.check_node is the guarantee; this is only the test.
+-- |
+-- | @param x  any
+-- | @return boolean
+-- |
+-- | @date 2026-09-14
+--]]
+function ast.is_node(x)
+    return type(x) == "table" and x.type ~= nil
 end
 
 --[[ @brief A node of `type`, registered in `ns`. THE ONE CREATOR of the `node` container.
@@ -552,7 +539,7 @@ function ast.parent_map(root)
     local function walk(node)
         for i = 1, #node do
             local child = node[i]
-            if type(child) == "table" and child.type then
+            if ast.is_node(child) then
                 parents[child.id] = node
                 walk(child)
             end
@@ -584,422 +571,84 @@ function ast.ns_import_ast(dst_ns, src_ns, node)
     error("ast.ns_import_ast is not implemented - see its comment", 2)
 end
 
---[[ @brief `expr1 = expr2`.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an EQ node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_eq(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.EQ)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
+--[[ Every BINARY constructor in one loop - two checked operands in the written order, and nothing
+differs between them but the type. Generated the same way the group bigop family further down is:
+no `function ast.new_eq(...)` line exists, so there is no per-function header; each is still an
+entry in the manifest above. `pairs` order is irrelevant here - no two rows touch the same key.
 
--- Inequality operators
---[[ @brief `expr1 < expr2`.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an INEQ_LESS node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_ineq_less(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.INEQ_LESS)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 <= expr2`.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an INEQ_LEQ node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_ineq_leq(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.INEQ_LEQ)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 != expr2`.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an INEQ_NEQ node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_ineq_neq(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.INEQ_NEQ)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 > expr2`.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an INEQ_GREATER node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_ineq_greater(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.INEQ_GREATER)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 >= expr2`.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an INEQ_GEQ node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_ineq_geq(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.INEQ_GEQ)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \to expr2` - expr1 tends to expr2.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an TENDS node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_tends(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.TENDS)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \Rightarrow expr2` - expr1 implies expr2.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an IMPLIES node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_implies(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.IMPLIES)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \Leftrightarrow expr2` - each holds exactly when the other does.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an IFF node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_iff(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.IFF)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \in expr2` - expr1 is a member of expr2.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an IN node, operands in the written order
--- |
--- | @note Membership and inclusion are general relations with EQ's shape, not bigop-only: a bigop's
--- |       sub/sup constraints are built through these same constructors (docs/phase2_design.md,
--- |       "Bigop scoping").
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_in(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.IN)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \ni expr2` - expr1 has expr2 as a member.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an NI node, operands in the written order
--- |
--- | @note The mirror of new_in, and a type of its own: operands stay in the WRITTEN
--- |       order and are never swapped, the way `<` and `>` are two types.
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_ni(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.NI)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \subset expr2`, strict.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an SUBSET node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_subset(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.SUBSET)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \subseteq expr2`.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an SUBSETEQ node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_subseteq(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.SUBSETEQ)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \supset expr2`, strict.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an SUPSET node, operands in the written order
--- |
--- | @note The mirror of new_subset, kept as its own type for the reason new_ni is.
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_supset(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.SUPSET)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ @brief `expr1 \supseteq expr2`.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an SUPSETEQ node, operands in the written order
--- |
--- | @note The mirror of new_subseteq, kept as its own type for the reason new_ni is.
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_supseteq(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.SUPSETEQ)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
+The value beside each name is what the node reads as; documentation only.
+@date 2026-09-14 ]]
+local BINARY_TYPES = {
+    EQ           = "a = b",
+    INEQ_LESS    = "a < b",
+    INEQ_LEQ     = "a <= b",
+    INEQ_NEQ     = "a != b",
+    INEQ_GREATER = "a > b",
+    INEQ_GEQ     = "a >= b",
+    TENDS        = "a \\to b",
+    IMPLIES      = "a \\Rightarrow b",
+    IFF          = "a \\Leftrightarrow b",
+    IN           = "a \\in b",
+    NI           = "a \\ni b",
+    SUBSET       = "a \\subset b",
+    SUBSETEQ     = "a \\subseteq b",
+    SUPSET       = "a \\supset b",
+    SUPSETEQ     = "a \\supseteq b",
+    DIV          = "a / b",
+}
+for name in pairs(BINARY_TYPES) do
+    local node_type = ast[name]
+    ast["new_" .. name:lower()] = function(ns, expr1, expr2)
+        NS_SHAPE.check(ns)
+        NODE_SHAPE.check(expr1, "expr1")
+        NODE_SHAPE.check(expr2, "expr2")
+        local ret = ast.new(ns, node_type)
+        ret[1] = expr1
+        ret[2] = expr2
+        return ret
+    end
 end
 
 -- Arithmetic operators
---[[ @brief A sum of any number of terms, in the order given.
--- |
--- | N-ARY, not a tree of binary adds: `a+b+c` is ONE node with three children, which is what lets a
--- | gesture on any `+` name the whole sum. A subtraction is a term whose sign is a factor: `a-b` is
--- | ADD(a, MUL(NUM(-1), b)).
--- |
--- | @param ns   ast.ns - checked
--- | @param ...  node - every term checked, since a variadic constructor is where a stray nil slips
--- |        in
--- | @return node - an ADD node
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_add(ns, ...)
-    NS_SHAPE.check(ns)
-    --[[ EVERY operand, not just the first: a variadic constructor is where a stray nil or a raw
-    number slips in unnoticed, because nothing downstream reads the arity back. ]]
-    for i = 1, select("#", ...) do
-        NODE_SHAPE.check((select(i, ...)), "operand " .. i)
+--[[ The N-ARY constructors of one shape - every operand checked, order kept - generated like the
+binary family above. `a+b+c` is ONE node with three children (a gesture on any `+` names the whole
+sum), and multiplication is not assumed commutative, so order is kept there too. `new_call` and
+`new_mat` stay hand-written: each takes leading non-node arguments of its own.
+@date 2026-09-14 ]]
+for _, name in ipairs{"ADD", "MUL", "VEC"} do
+    local node_type = ast[name]
+    ast["new_" .. name:lower()] = function(ns, ...)
+        NS_SHAPE.check(ns)
+        --[[ EVERY operand, not just the first: a variadic constructor is where a stray nil or a raw
+        number slips in unnoticed, because nothing downstream reads the arity back. ]]
+        for i = 1, select("#", ...) do
+            NODE_SHAPE.check((select(i, ...)), "operand " .. i)
+        end
+        local ret = ast.new(ns, node_type)
+        for i, expr in ipairs({...}) do
+            ret[i] = expr
+        end
+        return ret
     end
-    local ret = ast.new(ns, ast.ADD)
-    for i, expr in ipairs({...}) do
-        ret[i] = expr
-    end
-    return ret
 end
 
---[[ @brief A product of any number of factors, in the order given.
--- |
--- | N-ARY for the reason new_add is, and ORDER IS KEPT: multiplication is not assumed commutative -
--- | vectors have products, and a cross product does not commute.
--- |
--- | @param ns   ast.ns - checked
--- | @param ...  node - every factor checked
--- | @return node - a MUL node
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_mul(ns, ...)
-    NS_SHAPE.check(ns)
-    --[[ EVERY operand, not just the first: a variadic constructor is where a stray nil or a raw
-    number slips in unnoticed, because nothing downstream reads the arity back. ]]
-    for i = 1, select("#", ...) do
-        NODE_SHAPE.check((select(i, ...)), "operand " .. i)
-    end
-    local ret = ast.new(ns, ast.MUL)
-    for i, expr in ipairs({...}) do
-        ret[i] = expr
-    end
-    return ret
-end
+--[[ Only the integral still has the OLD bigop shape, (var, sup, sub, body); the rest moved to the
+GROUP shape (new_bigop_group) - N variables and a constraint list per side, because a single `var`
+was not general enough for `i<n`, `i \in S`, or more than one variable. INT keeps this shape: its
+variable comes from the trailing `dx`, so its limits were never constraints to generalize.
 
---[[ @brief `expr1 / expr2`, as a node - the fraction bar, not a computed value.
--- |
--- | @param ns     ast.ns - checked
--- | @param expr1  node - checked; the left operand
--- | @param expr2  node - checked; the right operand
--- | @return node - an DIV node, operands in the written order
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_div(ns, expr1, expr2)
-    NS_SHAPE.check(ns)
-    NODE_SHAPE.check(expr1, "expr1")
-    NODE_SHAPE.check(expr2, "expr2")
-    local ret = ast.new(ns, ast.DIV)
-    ret[1] = expr1
-    ret[2] = expr2
-    return ret
-end
-
---[[ A BIG OPERATOR - a sum, a product, a union, an intersection, or an integral. All five declare a
-name; only the integral still does it as (op, var, from, to, body) - the other four moved to the
-GROUP shape below (new_bigop_group), N variables and a constraint list per side.
-
-THESE ARE THE FIRST NODES THAT DECLARE A NAME. Every other node in this file consumes references;
-a big operator makes one. `var` is an ast.new_var that belongs to this node, and the body refers to
-it through an ordinary ast.new_vref, exactly as it would to any other variable - so nothing walking
-the body needs to know it is inside a binder to read it correctly.
-
-WHAT THAT BUYS is scope without a second mechanism. Author, 2026-09-10: "int declares a variable
-name, it offers the insides a new reference, itself, the idea is that we will have our free
-variables that buble up outside of the root, while some vars get catched by bigops". So a name in
-the body resolves to the innermost binder that declares it, and a name no binder claims keeps
-travelling outward past the root, where it is a free variable of the whole formula. Collecting the
-free variables of an expression is then one walk that subtracts each binder's `var` from what its
-body returned.
-
-ONLY THE INTEGRAL STILL HAS THIS SHAPE. Author, 2026-09-10, originally on all three: "int declares a
-variable name, it offers the insides a new reference, itself, the idea is that we will have our free
-variables that buble up outside of the root, while some vars get catched by bigops". SUM/PROD moved
-to `new_bigop_group` below the same day ("Bigop scoping", docs/phase2_design.md) - a single `var`
-turned out to be one relation (`=`) on one side and a bare bound on the other, not general enough for
-`i<n`, `i \in S`, or more than one variable. INT keeps this shape: its variable is written as `dx`
-after the body rather than under the sign, so nothing about its sub/sup was ever a constraint to
-generalize in the first place.
+BIG OPERATORS ARE THE FIRST NODES THAT DECLARE A NAME: `var` is an ast.new_var owned by this node,
+and the body refers to it through an ordinary new_vref - so scope needs no second mechanism. A name
+resolves to the innermost binder that declares it; a name no binder claims travels outward past the
+root as a free variable.
 @date 2026-09-10 07:05 ]]
 local OLD_SHAPE_BIGOPS = {[ast.INT] = true}
 
---[[ The GROUP shape's own types - SUM/PROD/UNION/INTERSECT, added alongside "Bigop scoping". Kept
-separate from OLD_SHAPE_BIGOPS because the slot layout differs: slot 1 there is THE var; here it is
-a COUNT, and the vars are a run of slots starting at 4. ]]
---[[ EVERY GROUP-SHAPED BIG OPERATOR, and the only place one is named.
-
-Type name -> the symbol it serializes as. Adding an operator is one row here: this table generates
-its membership in GROUP_BIGOPS (so catch_free scopes it), its entry in type_to_symbol and hence in
-symbol_to_type (so it round-trips), and its `ast.new_<name>` constructor. Nothing else is
-per-operator, because nothing else about them differs - they share the shape, the counts, the
-constraint lists and the spawning.
-
-Author, 2026-09-11: "also there is a lot of code in common in between those, make sure to keep it in
-common". Before this the four originals each had a hand-written constructor, a hand-written entry in
-each of the two symbol tables and a hand-written entry here - four places to keep in step per
-operator, and nine operators would have been thirty-six chances to miss one.
-
-WORD SYMBOLS for the named ones (`lim`, `argmax`) rather than single letters. The single letters are
-nearly used up, and a serialization is read by people; `(argmax, 1, 0, 1, ...)` needs no key. The
-tuple reader takes any symbol with no comma in it, so length costs nothing.
+--[[ EVERY GROUP-SHAPED BIG OPERATOR, and the only place one is named: type name -> the symbol it
+serializes as. One row here generates the operator's membership in GROUP_BIGOPS (so catch_free
+scopes it), its type_to_symbol entry and hence its round-trip, and its `ast.new_<name>`
+constructor - nothing else is per-operator, because nothing else about them differs. Word symbols
+for the named ones; the tuple reader takes any symbol with no comma in it, so length costs nothing.
 @date 2026-09-11 10:20 ]]
 local GROUP_BIGOP_SYMBOL = {
     SUM = "S", PROD = "P", UNION = "U", INTERSECT = "X",
@@ -1013,26 +662,14 @@ for name in pairs(GROUP_BIGOP_SYMBOL) do
     GROUP_BIGOPS[ast[name]] = true
 end
 
---[[ Rebinds every free reference to `name` inside `sub` so it points at `var` instead.
-
-THIS IS THE CATCH, and it is the whole of the binding. A body is built with no knowledge of what
-encloses it, so a mention of `x` in it is an ordinary reference to whatever `x` the builder had.
-Wrapping that body in an operator that declares `x` is what makes those mentions MEAN the operator's
-variable - so the constructor walks the body once and repoints them.
-
-FREE means not already claimed by a nearer binder. A nested operator declaring the same name
-shadows this one, so its body is skipped - but not its BOUNDS, which are written outside its own
-scope: in `\sum_{i=1}^{n}` the `1` and the `n` are not in `i`'s scope, and a `\sum_{x=1}^{x}`
-inside an integral over `x` binds its body and nothing else. A GROUP bigop shadowing on one of
-several variables still shadows the whole group for that name - its subs, sups AND body are all one
-scope with each other, unlike the old shape's bounds-outside-body split.
-
-Only VREFs move. The VAR they used to point at is left alone in the namespace, because something
-outside the body may still be referring to it - `x + \int_0^1 x dx` has two mentions of `x` that
-mean different things, and only the inner one is caught.
+--[[ Rebinds every FREE reference to `name` inside `sub` so it points at `var` - the whole of the
+binding. Free means not already claimed by a nearer binder: a nested operator declaring the same
+name shadows this one, so its body is skipped while its bounds (written outside its own scope) are
+still ours. Only VREFs move; the VAR they pointed at stays, since something outside the body may
+still be referring to it.
 @date 2026-09-10 07:40 ]]
 local function catch_free(ns, sub, name, var)
-    if type(sub) ~= "table" or not sub.type then
+    if not ast.is_node(sub) then
         return
     end
     if sub.type == ast.VREF then
@@ -1074,41 +711,11 @@ local function catch_free(ns, sub, name, var)
     end
 end
 
---[[ WHY SUP COMES BEFORE SUB, in every big operator.
-
-It reads UPSIDE DOWN otherwise. The sup is drawn ABOVE the operator and the sub BELOW it, so a
-listing that puts the sub first inverts what is on screen - and the two debug views print the tuple
-in order, so both were inverted. Reported 2026-09-11: "put sub under sup in f5, that is really
-strange, the same in f4", then "like, flip the serialization maybe?".
-
-FLIPPED IN THE NODE, not in the viewers. F5 prints exactly what ast.to_string writes and is
-documented as the ground truth F4 is read FROM, so reordering only the display would have made it
-disagree with the serialization it exists to show. This supersedes the original wording for INT -
-"(var declaration, start_value, end_value, bound-expression)", 2026-09-10 - which fixed the four
-slots and their meanings, not their order; the meanings are unchanged.
-
-WHAT THIS BREAKS: an AST written as text before 2026-09-11 reads back with its two bounds swapped.
-There is no version marker in the format to detect that, and nothing in the app stores AST text
-today - the document is saved as LaTeX and the tree is rebuilt on load - so the exposure is limited
-to a tree somebody serialized by hand.
-@date 2026-09-11 09:40 ]]
-
---[[ A big operator over `name`, whose variable it DECLARES and whose body it then binds. INT's own
-shape, (var, sup, sub, body) - the upper bound first, for the reason just above.
-
-    ast.new_int(ns, "x", one, zero, body)      -- body's free `x` now means this integral's `x`
-
-THE NAME COMES IN, NOT THE VARIABLE. Author, 2026-09-10: "bigop ops need to create a var, probably
-reuse new_var, the idea is that in this way we will achieve our binding". So the operator owns the
-variable it binds, and there is no way to build one whose slot 1 belongs to somebody else.
-
-THE BODY IS BUILT FIRST, WHICH THE INTEGRAL REQUIRES. `\int_0^1 x dx` names its variable AFTER the
-body - the `dx` at the end is where `x` is declared - so anything that needed the variable before
-the body could not read an integral at all. Catching afterwards asks the caller for nothing: build
-the body with `x` free, then say who binds it.
+--[[ A big operator over `name` in INT's own shape, (var, sup, sub, body) - SUP FIRST, in every big
+operator, because it is drawn above and a listing that puts the sub first inverts what is on
+screen. Absent bounds are filled with a NULL here rather than left to the caller, so no INT can
+exist with a hole in it. No checks: ast.new_int is the only route in, and it checks.
 @date 2026-09-10 07:40 ]]
---[[ No checks here either - see new_bigop_group below. ast.new_int is the only route in, and it
-checks. ]]
 local function new_bigop(ns, node_type, name, sup, sub, body)
     local ret = ast.new(ns, node_type)
     ret[1] = ast.new_var(ns, name)
@@ -1158,30 +765,12 @@ function ast.new_int(ns, name, sup, sub, body)
     return new_bigop(ns, ast.INT, name, sup, sub, body)
 end
 
---[[ SUM/PROD/UNION/INTERSECT - the GROUP shape, "Bigop scoping" (docs/phase2_design.md).
-
-    (op, n_vars, n_sup, n_sub, var1..varN, sup1..supM, sub1..subK, body)
-
-Unlike `new_bigop` above, this one binds N names at once. `vars` is a list of NAME STRINGS (the
-operator makes its own `ast.new_var` for each, same "the name comes in, not the variable" rule);
-`sups`/`subs` are lists of ALREADY-BUILT constraint nodes - ordinary relation trees (`=`, `<`, `in`,
-`subeq`, or anything a general expression parser produced), built and handed in by the caller the
-same way `body` already is, because building them means parsing row units and this file does not
-parse rows.
-
-SUP BEFORE SUB here too, counts included - see new_bigop above for why. Note that the SUB is still
-the side that spawns the variables (`\sum_{i=1}^{n}`): which side declares has nothing to do with
-which side is written first, and moving the order did not move that.
-
-CATCHING RUNS OVER EVERY TREE, FOR EVERY NAME - each sub constraint, each sup constraint, and the
-body - because a sup or a later sub may reference an earlier sub's own variable
-(`\sum_{i=0,j=i+1}`) exactly as the body may. Order between different names does not matter; each
-name's catch is an independent walk of the same fixed set of trees.
+--[[ The GROUP shape: binds N names at once - `vars` is a list of NAME strings (the operator makes
+its own VAR for each), `sups`/`subs` are already-built constraint nodes, and catching runs over
+every tree for every name, since a later constraint may use an earlier one's variable
+(`\sum_{i=0,j=i+1}`). No checks here: both routes in (ast.new_group_bigop, the generated family
+below) check first.
 @date 2026-09-10 ]]
---[[ NO CHECKS HERE. Argument checking belongs to the API functions that reach this, not to the
-local they funnel through - author, 2026-09-12: "do preamble checks, but only in the api calls, not
-in locals". Both routes in check first: ast.new_group_bigop, and the generated ast.new_sum /
-new_prod / new_lim family below. ]]
 local function new_bigop_group(ns, node_type, vars, sups, subs, body)
     local ret = ast.new(ns, node_type)
     ret[1] = #vars
@@ -1259,13 +848,8 @@ function ast.new_group_bigop(ns, node_type, vars, sups, subs, body)
 end
 
 --[[ ast.new_sum, ast.new_prod, ast.new_lim, ast.new_argmax ... - one per row of
-GROUP_BIGOP_SYMBOL, all identical but for the type they pass. Generated rather than typed out
-because "identical but for one constant" is what a loop is for, and because a hand-written set is
-where the tenth operator gets forgotten.
-
-`pairs` ORDER IS IRRELEVANT HERE, unlike the read_constraints walk that was bitten by it: this only
-populates a table, and no two rows touch the same key. Said explicitly because a `pairs` over
-string keys in this project has meant a real bug before. ]]
+GROUP_BIGOP_SYMBOL, all identical but for the type they pass. `pairs` order is irrelevant here,
+unlike the read_constraints walk that was bitten by it: no two rows touch the same key. ]]
 for name in pairs(GROUP_BIGOP_SYMBOL) do
     local node_type = ast[name]
     ast["new_" .. name:lower()] = function(ns, vars, sups, subs, body)
@@ -1371,21 +955,15 @@ function ast.new_num(ns, m, n, sign)
     assert(type(n) == "number" and n == math.floor(n), "n must be an integer")
     assert(sign == 1 or sign == -1, "sign must be 1 or -1")
     
-    -- Ensure m and n are positive, with sign capturing the overall sign
-    if m < 0 and n < 0 then
-        -- Both negative: flip both to positive (signs cancel out)
-        m = -m
-        n = -n
-    elseif m < 0 then
-        -- Only m is negative: flip m to positive and flip sign
-        m = -m
-        sign = -sign
-    elseif n < 0 then
-        -- Only n is negative: flip n to positive and flip sign
-        n = -n
-        sign = -sign
+    -- Two independent flips: a negative m or n is moved into `sign`, so m and n come out
+    -- non-negative - and both negative flips the sign twice, i.e. not at all.
+    if m < 0 then
+        m, sign = -m, -sign
     end
-    
+    if n < 0 then
+        n, sign = -n, -sign
+    end
+
     local ret = ast.new(ns, ast.NUM)
     ret[1] = m
     ret[2] = n
@@ -1453,28 +1031,6 @@ function ast.new_var(ns, name)
     assert(type(name) == "string", "a variable's name must be a string")
     local ret = ast.new(ns, ast.VAR)
     ret[1] = name
-    return ret
-end
-
---[[ @brief A vector of the given components, in order: (V, a1, a2, ...).
--- |
--- | @param ns   ast.ns - checked
--- | @param ...  node - every component checked
--- | @return node - a VEC node
--- |
--- | @date 2026-09-13 21:30
---]]
-function ast.new_vec(ns, ...)
-    NS_SHAPE.check(ns)
-    --[[ EVERY operand, not just the first: a variadic constructor is where a stray nil or a raw
-    number slips in unnoticed, because nothing downstream reads the arity back. ]]
-    for i = 1, select("#", ...) do
-        NODE_SHAPE.check((select(i, ...)), "operand " .. i)
-    end
-    local ret = ast.new(ns, ast.VEC)
-    for i, expr in ipairs({...}) do
-        ret[i] = expr
-    end
     return ret
 end
 
@@ -1698,7 +1254,7 @@ function ast.to_string_lines(ns, node, depth, out)
     out = out or {}
     depth = depth or 0
 
-    if type(node) ~= "table" or not node.type then
+    if not ast.is_node(node) then
         local text = tostring(node)
         out[#out + 1] = {depth = depth, text = text, parts = {{text = text}}}
         return out
@@ -1800,7 +1356,7 @@ function ast.shape(ns, node)
     if type(node) == "table" then
         NODE_SHAPE.check(node, "node")
     end
-    if type(node) ~= "table" or not node.type then
+    if not ast.is_node(node) then
         return tostring(node)
     end
     if node.type == ast.VREF then
@@ -1842,15 +1398,6 @@ local symbol_to_type = {}
 for node_type, symbol in pairs(type_to_symbol) do
     assert(symbol_to_type[symbol] == nil, "two node types share the symbol " .. tostring(symbol))
     symbol_to_type[symbol] = node_type
-end
-
--- Helper: parse a token that's either a number or a string
-local function parse_atom(s)
-    local num = tonumber(s)
-    if num then
-        return num
-    end
-    return s
 end
 
 -- Helper: split tuple arguments respecting nested parentheses
@@ -1914,8 +1461,8 @@ function ast.from_string(ns, s)
         return s
     end
     
-    -- Parse tuple: (type, arg1, arg2, ...:id)
-    assert(s:sub(1, 1) == "(", "Expected '(' at start of tuple: " .. s)
+    -- Parse tuple: (type, arg1, arg2, ...:id). The leading "(" is guaranteed by the bare-string
+    -- return above; only the trailing ")" still needs asserting.
     assert(s:sub(-1) == ")", "Expected ')' at end of tuple: " .. s)
     
     -- Extract content between parentheses

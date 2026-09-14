@@ -127,6 +127,50 @@ local function product_of(ns, factors)
     return ast.new_mul(ns, table.unpack(kept))
 end
 
+--[[ @brief A distributed term: `coeff` spliced onto the front of `term`, in the shape the parse
+-- |        would have produced.
+-- |
+-- | The coefficient folds into a leading numeral (`2(a-b)` gives `-2c`, never a product of two
+-- | numbers) and otherwise becomes the term's first factor - never a nested MUL, which the writer
+-- | cannot express: signs are written as operators, so a coefficient nested one level down would
+-- | read back as a term of its own.
+-- |
+-- | @param ns     ast.ns - where replacement numbers are minted
+-- | @param coeff  node | nil - the sum-term's leading NUM, or nil when it had none
+-- | @param term   node - the distributed term before its coefficient is attached
+-- | @param first  boolean - this is the sum's first term
+-- | @return node - a positive unit coefficient on the FIRST term is dropped: a plain term is what
+-- |         an unsigned term of a sum is, and it round-trips as one
+-- |
+-- | @date 2026-09-15
+--]]
+local function term_with_coeff(ns, coeff, term, first)
+    if not coeff then
+        return term
+    end
+    if first and coeff[1] == 1 and coeff[3] == 1 then
+        return term
+    end
+    if term.type == ast.NUM then
+        return ast.new_num(ns, coeff[1] * term[1], coeff[2] * term[2], coeff[3] * term[3])
+    end
+    local args
+    if term.type == ast.MUL and term[1].type == ast.NUM then
+        local folded = ast.new_num(ns, coeff[1] * term[1][1], coeff[2] * term[1][2],
+                coeff[3] * term[1][3])
+        args = {folded}
+        for k = 2, #term do
+            args[#args + 1] = term[k]
+        end
+    else
+        args = {coeff}
+        for k = 1, #term do
+            args[#args + 1] = term[k]
+        end
+    end
+    return ast.new_mul(ns, table.unpack(args))
+end
+
 --[[ @brief Rebuilds the path from `root` down to `old`, with `new` in its place.
 -- |
 -- | SHARES EVERY UNTOUCHED SUBTREE - the same node objects, with their own ids - and makes a new
@@ -162,54 +206,38 @@ local function replace_in(ns, root, parents, old, new)
     return new
 end
 
---[[ @brief The ADD a negative term's NUM belongs to, or nil.
+--[[ @brief The ADD the click landed inside, and that ADD's parent.
 -- |
--- | `a-b` is ADD(a, MUL(NUM(1,1,-1), b)), so the minus glyph's node sits one or two levels under
--- | the sum it is a term of - one when the term was a bare number, two when the sign became a
--- | factor. This climbs exactly that far and no further.
--- |
--- | @param num      node - the NUM carrying the sign
--- | @param parents  table - child id -> parent node
--- | @return node | nil - the ADD, or nil when the NUM is not a term's sign
--- |
--- | @date 2026-09-13 16:00
---]]
-local function sum_of_sign(num, parents)
-    local up = parents[num.id]
-    if up and up.type == ast.MUL and up[1] == num then
-        up = parents[up.id]
-    end
-    if up and up.type == ast.ADD then
-        return up
-    end
-    return nil
-end
-
---[[ @brief The ADD a click NAMES, and that ADD's parent.
--- |
--- | THE GLYPH MUST BE THE OPERATOR - a `+`, or the `-` that carries a term's sign. The answer is
--- | the node the parse TAGGED to the glyph under the pointer, and nothing above it. A letter is one
--- | operand of one term; reading it as "the sum around it" makes the gesture ambiguous exactly
--- | where sums nest, and there is no way to say which sum was meant once aim stops mattering.
+-- | A click resolves to a node - a number, a reference, a term's coefficient - and this walks the
+-- | ast from there: up through the product that node's term lives in, however deeply it nests, to
+-- | the sum directly above. The mexpr never carries structure (DESIGN.md, "Glyphs draw,
+-- | transforms walk"); which sum a click belongs to is this layer's walk, not a tag's job.
 -- |
 -- | @param node     node - what the click resolved to
 -- | @param parents  table - child id -> parent node
 -- | @return node, node | nil - the ADD and its parent (nil parent when the ADD is the root);
--- |         nil when the click did not land on a sum's own operator
+-- |         nil when no sum is directly above the click
 -- |
--- | @note It used to climb from wherever it landed to the nearest sum above, so clicking a TERM
--- |       offered the transformation too. That was invented rather than asked for, and wrong:
--- |       reported 2026-09-11, "Something is wrong I can wright click the d in a(b+d) and apply
--- |       distribute".
+-- | @note Clicking any term of the sum reaches it - `d` in `a(b+d)` and `b` alike. What does not
+-- |       is anything outside the sum: `a` itself climbs to the MUL above, not the ADD inside it,
+-- |       and a sum inside a term of another sum is found only from inside that term.
 -- |
--- | @date 2026-09-13 16:00
+-- | @note The restriction to operator glyphs here - climbing forbidden, offers only from a `+` or
+-- |       a sign - was the 2026-09-11 fix for a right-click that broke, and it cut this walk out
+-- |       of the design instead of finding the fault. Reversed 2026-09-15; see DESIGN.md.
+-- |
+-- | @date 2026-09-15
 --]]
 local function add_at(node, parents)
     local add
     if node.type == ast.ADD then
         add = node
-    elseif node.type == ast.NUM then
-        add = sum_of_sign(node, parents)
+    else
+        local up = parents[node.id]
+        while up and up.type == ast.MUL do
+            up = parents[up.id]
+        end
+        add = (up and up.type == ast.ADD) and up or nil
     end
     if not add then
         return nil
@@ -224,15 +252,15 @@ end
 -- | every condition this one checks before offering is a condition apply refuses on, so an option
 -- | that appears can always be run and one that never appears can never be reached by accident.
 -- |
--- | WHICH GLYPH COUNTS. The pointer must be on the sum's own OPERATOR: a `+`, or the `-` that
--- | carries a term's sign. Those are the glyphs the parse tagged to the ADD (mexpr_ast's
--- | `tag_ast`), and `add_at` above resolves exactly them and nothing above them. Aim is the whole
--- | gesture - a letter is one operand of one term, and reading it as "the sum around it" makes the
--- | offer ambiguous wherever sums nest.
+-- | WHERE THE CLICK LANDS. Anywhere inside a term of the sum: `add_at` above walks the ast from
+-- | the node the click resolved to, over the product that term lives in, to the sum directly
+-- | above - the mexpr carries no structure, so the walk is this layer's (DESIGN.md, "Glyphs draw,
+-- | transforms walk"). A click outside the sum, on `a` in `a(b+c)`, climbs past it and offers
+-- | nothing.
 -- |
 -- | AND A PRODUCT TO DISTRIBUTE INTO. The sum's own parent must be a MUL, because distribution
 -- | needs something to multiply through. `a+b` standing alone offers nothing however precisely it
--- | is clicked; `a(b+c)` offers it on the `+`, and `a(b-c)` on the `-`.
+-- | is clicked; `a(b+c)` offers it from any term of the sum.
 -- |
 -- | @details Reads the tree and nothing else - no cursor is moved, no node is created, nothing is
 -- |          cached. Asking costs a parent_map walk that transforms.lua has usually already paid
@@ -343,11 +371,30 @@ local function apply(ctx)
 
     local terms = {}
     for t = 1, #add do
+        --[[ The sum's term split into its coefficient and the rest: the term carries its sign as
+        -- | a leading NUM (the parse's shape), and the coefficient must reach the FRONT of the
+        -- | distributed term, which is what term_with_coeff is for. A bare number term is its own
+        -- | coefficient. ]]
+        local t_node = add[t]
+        local coeff, rest = nil, {}
+        if t_node.type == ast.NUM then
+            coeff = t_node
+        elseif t_node.type == ast.MUL and t_node[1].type == ast.NUM then
+            coeff = t_node[1]
+            for k = 2, #t_node do
+                rest[#rest + 1] = t_node[k]
+            end
+        else
+            rest[1] = t_node
+        end
+
         local factors = {}
         for i = 1, #mul do
             if i == at then
                 -- Used once, so it travels as itself - see the header.
-                factors[#factors + 1] = add[t]
+                for _, f in ipairs(rest) do
+                    factors[#factors + 1] = f
+                end
             else
                 --[[ The first term keeps the original factor nodes; the rest take copies. See
                 -- | the header on why the asymmetry is the point rather than an oversight.
@@ -355,7 +402,7 @@ local function apply(ctx)
                 factors[#factors + 1] = (t == 1) and mul[i] or ast.copy_fresh(ns, mul[i])
             end
         end
-        terms[#terms + 1] = product_of(ns, factors)
+        terms[#terms + 1] = term_with_coeff(ns, coeff, product_of(ns, factors), t == 1)
     end
 
     local expanded = ast.new_add(ns, table.unpack(terms))

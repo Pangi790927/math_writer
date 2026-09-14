@@ -78,7 +78,12 @@ formula 65
 53
 a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
 271
-3formula 39
+3formula 66
+3
+53
+a(ab+ab+ac+ad)a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
+342
+27formula 39
 3
 27
 a(ab+a(b+c+d))(a+b+cab+cad)2
@@ -103,7 +108,12 @@ formula 80
 67
 a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
 282
-10formula 84
+10formula 80
+3
+67
+a(ab+a(b+c+d))a+a(ab+ab+ac+ad)b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
+332
+28formula 84
 3
 71
 a(ab+a(b+c+d))a+aabb+aabb+aacb+aadb+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2

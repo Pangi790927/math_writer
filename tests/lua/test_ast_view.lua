@@ -207,26 +207,32 @@ function run_test()
         add, it doesn't need a cell".
 
         Both halves of the rule are asserted, because either alone would let the other rot. ]]
+        --[[ Shapes updated 2026-09-15: every term of a sum after the first carries its sign as a
+        leading coefficient, so a signed `b` prints as MUL / NUM 1 / REF "b". ]]
         v = view(fs, "f((a+b)c)", {f})
         check("brackets required by precedence leave no CELL",
-                v == [[0:CALL "f(),(1)" / 1:MUL / 2:ADD / 3:REF "a" / 3:REF "b" / 2:REF "c"]], v)
+                v == [[0:CALL "f(),(1)" / 1:MUL / 2:ADD / 3:REF "a" / 3:MUL / 4:NUM 1]]
+                        .. [[ / 4:REF "b" / 2:REF "c"]], v)
 
         v = view(fs, "f((a+b)+c)", {f})
         check("redundant brackets are kept as a CELL",
-                v == [[0:CALL "f(),(1)" / 1:ADD / 2:CELL / 3:ADD / 4:REF "a" / 4:REF "b" / 2:REF "c"]],
+                v == [[0:CALL "f(),(1)" / 1:ADD / 2:CELL / 3:ADD / 4:REF "a" / 4:MUL]]
+                        .. [[ / 5:NUM 1 / 5:REF "b" / 2:MUL / 3:NUM 1 / 3:REF "c"]],
                 v)
 
         --[[ A GROUP AROUND A LEAF IS NOT GROUPING, and promotes. The 2026-09-06 note calls this
         "lossy in the letter, not in the spirit" - there is nothing inside to arrange, so the
         parentheses carry no arrangement to preserve. ]]
         v = view(fs, "f((a)+b)", {f})
-        check("brackets around a leaf promote", v == [[0:CALL "f(),(1)" / 1:ADD / 2:REF "a" / 2:REF "b"]], v)
+        check("brackets around a leaf promote",
+                v == [[0:CALL "f(),(1)" / 1:ADD / 2:REF "a" / 2:MUL / 3:NUM 1 / 3:REF "b"]], v)
 
         --[[ A POWER REQUIRES THEM, whatever is inside: `(a+b)^2` and `a+b^2` are different, so the
         brackets are load-bearing and never become a CELL. ]]
         v = view(fs, "f((a+b)^{2})", {f})
         check("a power keeps its brackets in the shape",
-                v == [[0:CALL "f(),(1)" / 1:POW / 2:ADD / 3:REF "a" / 3:REF "b" / 2:NUM 2]], v)
+                v == [[0:CALL "f(),(1)" / 1:POW / 2:ADD / 3:REF "a" / 3:MUL]]
+                        .. [[ / 4:NUM 1 / 4:REF "b" / 2:NUM 2]], v)
 
         --[[ A DECORATED DIGIT ENDS THE NUMERAL. `2^{n}3` is a product of a power and a 3; reading
         it as the numeral 23 with a power would be a tree for a formula nobody wrote. ]]

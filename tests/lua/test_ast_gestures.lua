@@ -84,9 +84,12 @@ function run_test()
 
         local plus = glyph(c, "+")
         check("setup: the + is findable", plus ~= nil)
+        --[[ A `+` names the coefficient NUM it gave its term - the same rule the minus always
+        followed - never the ADD: no glyph names structure (DESIGN.md, "Glyphs draw, transforms
+        walk"), and the sum is found from the number by walking, which is what offers do. ]]
         local at = ast_gestures.node_at(ns, plus)
-        check("a click on + lands on the ADD", at ~= nil and at.type == ast.ADD,
-                at and at.type)
+        check("a click on + lands on the term's coefficient",
+                at ~= nil and at.type == ast.NUM and at[1] == 1, at and at.type)
 
         --[[ A GLYPH MAY BELONG TO NOTHING, and that is a real answer rather than a lookup failure.
         The parentheses here were implied by precedence, so no CELL was built and the brackets name
@@ -109,24 +112,18 @@ function run_test()
         check("...with the ADD as its parameter",
                 target ~= nil and target.type == ast.ADD, target and target.type)
 
-        --[[ AIM MATTERS - AND THIS CHECK USED TO ASSERT THE OPPOSITE.
+        --[[ THE WALK FINDS THE SUM, NOT THE TAG - reversed 2026-09-15.
 
-        It read "clicking a term offers it too", because options() climbed from whatever was clicked
-        to the nearest sum above it. That climb was never asked for; it was invented here on the
-        reasoning that a forgiving gesture is a kinder one, and it was reported as a bug the first
-        time it was used in anger, 2026-09-11: "Something is wrong I can wright click the d in a(b+d)
-        and apply distribute".
-
-        Why the old assumption fell: a term is one operand of one sum, but "the sum above" is not
-        unique once sums nest - `a(b+c(d+e))` has two, and a click on `d` had to pick one silently.
-        Aim is the only thing that can say which was meant, so the gesture reads the glyph the parse
-        tagged and nothing above it.
-
-        Kept as the inverse rather than deleted: the climb is easy to reintroduce by accident the
-        next time "the click landed near a sum" feels like it should be enough. ]]
+        This check used to assert the opposite - "clicking a term offers nothing" - and told the
+        story of the 2026-09-11 report ("I can wright click the d in a(b+d) and apply distribute")
+        as the reason the climb was wrong. That was a misdiagnosis: the report was real but its
+        cause was never found, and the fix of the day cut the climb - the design - instead of the
+        fault. See DESIGN.md, "Glyphs draw, transforms walk": a click resolves to the node it hit,
+        and the transform layer walks the ast from there to the sum. The fault itself is still
+        unfound; if a term click ever misbehaves again, that is it coming back. ]]
         local from_b = ast_gestures.options(fs, c, {}, glyph(c, "b"))
-        check("clicking a TERM offers nothing - the operator is what names the sum",
-                #from_b == 0, ids(from_b))
+        check("clicking a term of the sum offers it too - the walk finds the sum",
+                ids(from_b) == "distribute", ids(from_b))
     end
 
     -- ------------------------------------------------------------------ and what is not

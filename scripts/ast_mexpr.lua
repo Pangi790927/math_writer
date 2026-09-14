@@ -1,13 +1,13 @@
 --[[ ==================================== WHAT THIS FILE OFFERS ====================================
 -- | origins(root: mexpr node)               -> {ast id -> mexpr node}
 -- | var_origins(ns: ast.ns, origins: {ast id -> mexpr node}) -> {VAR id -> mexpr node}
--- |     Where each ast node's ink IS, read off the tags the parse left.
+-- |     origins answers, for the nodes the parse stamped, where their ink is;
 -- |     var_origins answers the looser question - any drawing of a use of
 -- |     this variable - which is what lets a duplicated factor be copied
 -- |     from a reference the source only wrote once.
 -- |
 -- | build(fontset: fontset, source_root: mexpr node | nil, ns: ast.ns, node: node, sz: size)
--- |       -> mexpr row | nil, reason
+-- |       -> mexpr node | nil, reason
 -- | container(fontset: fontset, source_root: mexpr node | nil, ns: ast.ns, node: node, sz: size)
 -- |       -> mexpru.container | nil, reason
 -- |     An ast tree written back out as glyphs, copying what was drawn for
@@ -26,41 +26,40 @@
 -- | --- internal, not on the module table ---------------------------------------------------------
 -- |     new_write_ctx() THE ONE creator for the `ctx_write` every emit_* is handed
 -- |     PREC/ATOM_PREC, glyph, glyph_desc, append, bracketed, emit_ref,
--- |     emit_digits, emit_num, emit_factors, negative_term, emit_sum,
--- |     emit_power
+-- |     emit_digits, emit_num, emit_factors, emit_sum, emit_power
 -- |
--- | @date 2026-09-14 10:00
+-- | @date 2026-09-14 11:00
 -- | ===============================================================================================
 --]]
 
 --[[
 ast_mexpr.lua - the way BACK: an ast tree, written out as the mexpr tree that draws it.
 
-THE DIRECTION mexpr_ast.lua does not go. That one reads glyphs and produces meaning; this one takes
-meaning and produces glyphs, which is what a transformation needs the moment it has a result to show.
-The mexpr is the artifact and the ast is scratch (docs/phase2_design.md), so nothing is finished
-until it comes back through here.
+THE DIRECTION mexpr_ast.lua does not go: that one reads glyphs and produces meaning, this one takes
+meaning and produces glyphs - what a transformation needs the moment it has a result to show. The
+mexpr is the artifact and the ast is scratch (docs/phase2_design.md), so nothing is finished until
+it comes back through here.
 
-TWO MECHANISMS, AND WHICH ONE APPLIES IS THE WHOLE DESIGN:
+TWO MECHANISMS, and which one applies is the whole design:
 
-  - COPY, for anything with an IDENTITY. A variable's name is an assembled string - base text, dress
-    suffix, primes, subscript - which is an identity key and not a drawing. Re-rendering glyphs from
-    it is the mistake the definition row already made once, drawing the arrow beside the `F` instead
-    of over it. So a reference is written by copying the glyphs it was read from, which also carries
-    the accent, the size and the spacing for free. mexpr_ast records where that is (`u.ast_draws`).
+  - COPY, for anything with an IDENTITY. A variable's name is an assembled string (base text,
+    dress suffix, primes, subscript) - an identity key, not a drawing - and re-rendering glyphs
+    from it is a mistake this project already made once. A reference is written by copying the
+    glyphs it was read from, which carries the accent, the size and the spacing for free;
+    mexpr_ast records where they are (`u.ast_draws`).
   - BUILD, for STRUCTURE. Operators, brackets and digits have no identity to preserve - one `+` is
-    every `+` - so they are constructed from mexpru's plain constructors, the same ones typing uses.
+    every `+` - so they come from mexpru's plain constructors, the same ones typing uses.
 
-WHAT IS NOT HERE YET, deliberately: fractions, calls, big operators, integrals, relations, and the
-CELL - the user's own redundant brackets - which is refused like the rest. This file covers what
-`distribute` can produce - sums, products, whole numbers, references and powers - and refuses, by
-name, anything else. A refusal is a correct answer; a wrong drawing is not.
+NOT HERE YET, deliberately: fractions, calls, big operators, integrals, relations, and the CELL -
+refused by name, like anything else this file cannot draw. What it covers is what `distribute` can
+produce: sums, products, whole numbers, references and powers. A refusal is a correct answer; a
+wrong drawing is not.
 
-THE SELF-CHECK IS PART OF THE CONTRACT. verify() reparses what was built and compares shapes with
-what it was asked to build. We own both directions, it costs one parse, and it catches the one class
-of bug that matters here - a missing bracket, a dropped sign - as a mismatch rather than as a formula
-that says something else. Every test in this area hangs off it.
-@date 2026-09-12 02:00
+THE SELF-CHECK IS PART OF THE CONTRACT: verify() reparses what was built and compares shapes with
+what it was asked to build. It costs one parse and catches the class of bug that matters here - a
+missing bracket, a dropped sign - as a mismatch rather than a formula that says something else
+while looking reasonable. Every test in this area hangs off it.
+@date 2026-09-14
 ]]
 
 local vc = require("virt_composer")
@@ -71,16 +70,11 @@ local ast = require("ast")
 
 local ast_mexpr = {}
 
---[[ Binding strength, and the only thing that decides where a bracket goes.
-
-THE INVERSE OF THE PARSER'S CASCADE (build_sum -> build_product -> read_factor), which is why the
-numbers are in that order and not in some table of their own invention: a child that binds LOOSER
-than the place it is being written into must be bracketed, or reading it back finds a different
-tree. `a*(b+c)` needs them; `a+(b*c)` does not.
-
-ATOM is what a power's base must be: `a^{2}` puts the exponent on ONE slot, so a base that is a run
-of several has to become one by being bracketed - and then the exponent rides on the closing
-bracket, which is how this editor has always drawn it.
+--[[ Binding strength, and the only thing that decides where a bracket goes: THE INVERSE OF THE
+PARSER'S CASCADE, so a child that binds LOOSER than the place it is written into must be bracketed
+(`a*(b+c)` needs them, `a+(b*c)` does not) or reading it back finds a different tree. ATOM is what
+a power's base must be - a run of several slots becomes one by being bracketed, and the exponent
+rides on the closing bracket, which is how this editor has always drawn it.
 @date 2026-09-12 02:00 ]]
 local PREC = {
     [ast.ADD] = 1,
@@ -94,49 +88,34 @@ local function prec_of(node)
 end
 
 --[[ THE `ctx_write` CONTAINER - what every emit_* below is handed, and THE ONE CREATOR for it.
-
-NAMED `ctx_write`, NOT `ctx`. Three different containers in this project were called `ctx`: a
-plugin's (transforms.ctx, which keeps the bare name because it is the one that crosses files), the
-PARSER's in mexpr_ast, and this one. `ctx.ns` meant three different things depending on which file
-you were reading - the same collision four containers called `state` had, and fixed the same way.
-
-Its fields:
-    fs           the fontset every glyph is built at
-    sz           the LOGICAL size the output is written at
-    origins      ast id -> the mexpr node that DRAWS it, from ast_mexpr.origins
-    var_origins  VAR id -> a node drawing SOME reference to that variable
-
-NOT SEALED, unlike the containers that cross files: this is built here, read only by the emit_*
-locals below, and dropped when the write finishes. If it ever leaves this file it should be sealed,
-the same way mexpr_ast's `unit` carries that note.
+Named `ctx_write`, not `ctx`, because three containers in this project were called `ctx` and
+`ctx.ns` meant a different thing in each. NOT SEALED: built here, read only by the emit_* locals,
+dropped when the write finishes - if it ever leaves this file it should be sealed.
 @date 2026-09-12 14:30 ]]
 local function new_write_ctx(fontset, sz, origins, var_origins)
     return {fs = fontset, sz = sz, origins = origins, var_origins = var_origins}
 end
 
---[[ One glyph, built the way every other glyph in this editor is: logical size on `u`, physical size
-in the geometry (mexpru.rescale's own rule). @date 2026-09-12 02:00 ]]
-local function glyph(ctx_write, ascii)
-    local entry = char.find_by_ascii(ascii)
+--[[ One glyph, built the way every other glyph in this editor is: logical size on `u`, physical
+size in the geometry (mexpru.rescale's own rule). Takes the catalog ENTRY, so the two lookups below
+are one line each. @date 2026-09-14 ]]
+local function glyph_of(ctx_write, entry)
     if not entry then
         return nil
     end
-    local g = mexpru.mexpr_symbol(ctx_write.fs, {size = mexpru.physical_sz(ctx_write.sz), code = entry.ncod},
-            true)
+    local g = mexpru.mexpr_symbol(ctx_write.fs,
+            {size = mexpru.physical_sz(ctx_write.sz), code = entry.ncod}, true)
     mexpru.u(g).sz = ctx_write.sz
     return g
 end
 
+local function glyph(ctx_write, ascii)
+    return glyph_of(ctx_write, char.find_by_ascii(ascii))
+end
+
 --[[ The same, for a glyph that has no ascii key of its own - the centred dot. @date 2026-09-12 ]]
 local function glyph_desc(ctx_write, desc)
-    local entry = char.find_by_desc(desc)
-    if not entry then
-        return nil
-    end
-    local g = mexpru.mexpr_symbol(ctx_write.fs, {size = mexpru.physical_sz(ctx_write.sz), code = entry.ncod},
-            true)
-    mexpru.u(g).sz = ctx_write.sz
-    return g
+    return glyph_of(ctx_write, char.find_by_desc(desc))
 end
 
 local function append(run, more)
@@ -146,16 +125,11 @@ local function append(run, more)
     return run
 end
 
---[[ `run`, wrapped in a round bracket pair that knows it is a pair.
-
-PLAIN GLYPHS PLUS A PEER LINK, and nothing else: the SIZE of a bracket is not decided here. Both
-halves go in as ordinary "(" and ")" with `u.bracket` set, and mexpru.horiz - which every run passes
-through - runs resolve_bracket_pairs, which is what re-tiers a pair to fit what ended up between
-them. Building tall glyphs here would be a second implementation of that rule, and one that could
-not see the content it had to fit.
-
-THE PEER IS A `u` TABLE, never a node: that is the established identity key, it survives the rebuild
-that resolve_bracket_pairs performs, and it holds nothing weakly-referenced.
+--[[ `run`, wrapped in a round bracket pair that knows it is a pair. PLAIN GLYPHS PLUS A PEER LINK,
+and nothing else - the SIZE of a bracket is not decided here: mexpru.horiz runs
+resolve_bracket_pairs, which re-tiers a pair to fit what ended up between them, and building tall
+glyphs here would be a second implementation of a rule that could not see its content. The peer is
+a `u` TABLE, never a node - the established identity key, and it survives the rebuild.
 @date 2026-09-12 02:00 ]]
 local function bracketed(ctx_write, run)
     local open, close = glyph(ctx_write, "("), glyph(ctx_write, ")")
@@ -186,15 +160,9 @@ end
 function ast_mexpr.origins(root)
     mexpru.check_node(root, "root")
     local out = {}
-    --[[ THE EDGES COME FROM mexpru.child_links, not from a list written out here. They were written
-    out here - children, slots, base, sup, sub, target, num, den - which made this a second
-    declaration of the node shape, free to fall behind mexpru's own. A node-valued field added there
-    and forgotten here would leave this map incomplete, and an incomplete map is not loud: the
-    writer would re-render the glyphs it could not find rather than copying them, and the only
-    symptom would be a decoration or a spacing quietly lost.
-
-    `u()` always returns a table, so the old `if not u then return end` could never fire. A nil
-    CHILD is different and still guarded - most nodes have most links unset. ]]
+    -- THE EDGES COME FROM mexpru.child_links, never from a list written out here: a hand list is a
+    -- second declaration of the node shape, free to fall behind, and an incomplete map is not loud.
+    -- A nil CHILD is still guarded - most nodes have most links unset.
     local function walk(node)
         if not node then
             return
@@ -240,7 +208,8 @@ function ast_mexpr.var_origins(ns, origins)
     so the writer would have gone on to re-render every name instead of copying it, and the only
     symptom would be decorations lost. A namespace is required here; say so. ]]
     ast.check_ns(ns)
-    assert(type(origins) == "table", "var_origins needs an origins map, as ast_mexpr.origins builds")
+    assert(type(origins) == "table",
+            "var_origins needs an origins map, as ast_mexpr.origins builds")
 
     local out = {}
     for id, mexpr_node in pairs(origins) do
@@ -254,9 +223,8 @@ function ast_mexpr.var_origins(ns, origins)
     return out
 end
 
---[[ The glyphs for a reference: a copy of what it was written as. nil plus a reason when there is
-nothing to copy - a name this parse never saw drawn, which today means a declared name (whose spans
-are not recorded yet). Refusing is the point: there is no way to draw a name from its string.
+--[[ The glyphs for a reference: a copy of what it was written as. Refusing is the point - there is
+no way to draw a name from its string, and a name this parse never saw drawn gets nil plus why.
 @date 2026-09-12 02:00 ]]
 local function emit_ref(ctx_write, node)
     local src = ctx_write.origins[node.id] or ctx_write.var_origins[node[1]]
@@ -266,12 +234,9 @@ local function emit_ref(ctx_write, node)
     return {mformula_new.clone_node(ctx_write.fs, src)}
 end
 
---[[ A whole number, as its digits. Numbers are the one leaf with no identity to preserve: a `3` is
-every `3`, so it is built rather than copied and nothing is lost.
-
-REFUSES A FRACTION (n ~= 1) and INFINITY (n == 0), which are real numbers this file cannot draw yet -
-a fraction needs mexpru.mexpr_frac and a stage this is not at. `sign` is handled here only for a
-number standing alone; inside a sum the sign IS the operator and emit_sum strips it first.
+--[[ A whole number, as its digits - the one leaf with no identity to preserve: a `3` is every `3`,
+so it is built rather than copied and nothing is lost. `sign` is handled by emit_num for a number
+standing alone; inside a sum the sign IS the operator and emit_sum strips it first.
 @date 2026-09-12 02:00 ]]
 local function emit_digits(ctx_write, m)
     local run = {}
@@ -296,13 +261,9 @@ end
 
 local emit    -- forward: the four below are mutually recursive with it
 
---[[ The factors of a product from index `from`, juxtaposed.
-
-WHEN A DOT IS NEEDED. Juxtaposition is multiplication here, so `ab` needs nothing between it - but
-`2 3` written as `23` is the number twenty-three, and `a 2` risks reading as one name once names may
-be several glyphs long. The rule is therefore CONSERVATIVE: a dot before any numeric factor that is
-not the first. It never changes the meaning, and re-parsing proves it - which is what verify() is
-for.
+--[[ The factors of a product from index `from`, juxtaposed. WHEN A DOT IS NEEDED: `ab` needs
+nothing between it, but `2 3` written as `23` is the number twenty-three - so a dot goes before any
+numeric factor that is not the first. It never changes the meaning, and verify() proves it.
 @date 2026-09-12 02:00 ]]
 local function emit_factors(ctx_write, node, from)
     local run = {}
@@ -322,76 +283,68 @@ local function emit_factors(ctx_write, node, from)
     return run
 end
 
---[[ Is this term of a sum a NEGATIVE one, and what are its factors without the sign?
+--[[ A sum, with its terms' coefficients written as the operators they are.
 
-WHY IT HAS TO BE ASKED. The parser puts a term's sign on its leading NUM - `a-b` is
-ADD(a, MUL(NUM(-1), b)) - so a writer that simply put `+` between the terms would produce
-`a + -1 \cdot b`. It reads back as the same tree, which is exactly why only a rule, not the
-self-check, can catch it.
+Each term after the first carries its leading coefficient - the NUM a sign glyph tagged at the
+parse; the first carries one only when it was itself signed. A UNIT coefficient is the sign and
+contributes no digits (`-1 \cdot b` is spelled `-b`); any other keeps them (`-2b` needs its 2); a
+bare number is its own coefficient and always writes its digits (`a + 1` is not `a +`). Writing
+signs as operators rather than factors is the parse's own rule, so a writer that got it wrong
+reads back as the SAME tree - verify() cannot catch this class, only this rule can.
 
-Returns (negative, node, from): `from` is where emit_factors should start, which skips a bare -1
-because `-1 \cdot b` is spelled `-b`, and keeps the digits of anything else because `-2b` needs its
-2. A negative NUM standing alone as a term is the third case and needs no product at all.
-@date 2026-09-12 02:00 ]]
-local function negative_term(child)
-    if child.type == ast.NUM then
-        return (child[3] or 1) < 0
-    end
-    if child.type == ast.MUL and child[1] and child[1].type == ast.NUM then
-        return (child[1][3] or 1) < 0
-    end
-    return false
-end
-
---[[ A sum, with its signs written as the operators they are. @date 2026-09-12 02:00 ]]
+REFUSES a fractional or infinite coefficient: only whole numbers can be written back so far.
+@date 2026-09-15 ]]
 local function emit_sum(ctx_write, node)
-    local run, err = emit(ctx_write, node[1], PREC[ast.ADD])
-    if not run then
-        return nil, err
-    end
-    for i = 2, #node do
+    local run = {}
+    for i = 1, #node do
         local child = node[i]
-        local negative = negative_term(child)
-        run[#run + 1] = glyph(ctx_write, negative and "-" or "+")
+        --[[ The term's leading coefficient, if it has one. `from` says where the remaining
+        factors start: 2 inside a product, 0 when the bare number is the whole term, nil when
+        the term carries no coefficient at all. ]]
+        local coeff, from = nil, nil
+        if child.type == ast.NUM then
+            coeff, from = child, 0
+        elseif child.type == ast.MUL and #child > 1 and child[1].type == ast.NUM then
+            coeff, from = child[1], 2
+        end
+        if coeff and coeff[2] ~= 1 then
+            return nil, "only whole numbers can be written back so far"
+        end
 
-        local part
-        if not negative then
-            part, err = emit(ctx_write, child, PREC[ast.ADD])
-        elseif child.type == ast.NUM then
-            -- The sign became the operator, so the number itself is written unsigned.
-            if child[2] ~= 1 then
-                return nil, "only whole numbers can be written back so far"
-            end
-            part = emit_digits(ctx_write, child[1])
-        else
-            local coefficient = child[1]
-            if coefficient[2] ~= 1 then
-                return nil, "only whole numbers can be written back so far"
-            end
-            --[[ `-1 \cdot b` is spelled `-b`: a unit coefficient is the sign and nothing else, so
-            it contributes no digits. Any other coefficient keeps its own. ]]
-            part = (coefficient[1] == 1) and {} or emit_digits(ctx_write, coefficient[1])
+        local negative = coeff and ((coeff[3] or 1) < 0)
+        --[[ The operator glyph: every term after the first gets one. The first gets one only
+        when its coefficient is negative, or a unit `+1` it cannot be written without - a plain
+        `x` there would read back unsigned. ]]
+        if i > 1 or negative or (coeff and from == 2 and coeff[1] == 1) then
+            run[#run + 1] = glyph(ctx_write, negative and "-" or "+")
+        end
+
+        local part = {}
+        if coeff and (from == 0 or coeff[1] ~= 1) then
+            part = emit_digits(ctx_write, coeff[1])
+        end
+        local err
+        if from == 2 then
             local tail
             tail, err = emit_factors(ctx_write, child, 2)
-            part = tail and append(part, tail) or nil
-        end
-        if not part then
-            return nil, err
+            if not tail then
+                return nil, err
+            end
+            append(part, tail)
+        elseif not coeff then
+            part, err = emit(ctx_write, child, PREC[ast.ADD])
+            if not part then
+                return nil, err
+            end
         end
         append(run, part)
     end
     return run
 end
 
---[[ A power: the exponent rides on the base's LAST slot.
-
-THAT LAST SLOT IS THE CLOSING BRACKET when the base needed one, and that is not a trick - it is how
-this editor draws and parses `(a+b)^{2}`, established long before there was an ast to write back.
-So bracketing happens first, through the ordinary precedence path, and whatever the base run ends
-with becomes the supsub's base.
-
-THE EXPONENT IS A ROW OF ITS OWN, one size step smaller - the same step typing produces
-(mformula_new.SUB_SIZE_DELTA), so a built power and a typed one are the same tree.
+--[[ A power: the exponent rides on the base's LAST slot - which is the CLOSING BRACKET when the
+base needed one, exactly how this editor draws and parses `(a+b)^{2}`. The exponent is a row of its
+own, one size step smaller (SUB_SIZE_DELTA), so a built power and a typed one are the same tree.
 @date 2026-09-12 02:00 ]]
 local function emit_power(ctx_write, node)
     local base, err = emit(ctx_write, node[1], ATOM_PREC)
@@ -400,22 +353,21 @@ local function emit_power(ctx_write, node)
     end
     local sup_sz = math.min(ctx_write.sz + mformula_new.SUB_SIZE_DELTA, mexpru.MAX_SIZE_INDEX)
     local inner
-    inner, err = emit({fs = ctx_write.fs, sz = sup_sz, origins = ctx_write.origins,
-            var_origins = ctx_write.var_origins}, node[2], 1)
+    inner, err = emit(new_write_ctx(ctx_write.fs, sup_sz, ctx_write.origins,
+            ctx_write.var_origins), node[2], 1)
     if not inner then
         return nil, err
     end
     local carrier = base[#base]
-    base[#base] = mexpru.supsub(ctx_write.fs, carrier, mexpru.horiz(ctx_write.fs, inner, sup_sz), nil,
+    base[#base] = mexpru.supsub(ctx_write.fs, carrier,
+            mexpru.horiz(ctx_write.fs, inner, sup_sz), nil,
             mexpru.u(carrier).sz or ctx_write.sz, mexpru.PLACE_BESIDE, mexpru.PLACE_BESIDE)
     return base
 end
 
---[[ One ast node as a RUN of row slots - a list, not a node, because that is what a sum or a product
-is in this model: several slots of one row, with no node of their own.
-
-`min_prec` is what the surrounding context requires; a node binding looser than that is bracketed
-here, in one place, rather than at each site that could need it.
+--[[ One ast node as a RUN of row slots - a list, not a node, because that is what a sum or a
+product is in this model. `min_prec` is what the surrounding context requires; a node binding
+looser than that is bracketed here, in ONE place, rather than at each site that could need it.
 @date 2026-09-12 02:00 ]]
 emit = function(ctx_write, node, min_prec)
     if type(node) ~= "table" or not node.type then
@@ -428,7 +380,20 @@ emit = function(ctx_write, node, min_prec)
     elseif node.type == ast.NUM then
         run, err = emit_num(ctx_write, node)
     elseif node.type == ast.MUL then
-        run, err = emit_factors(ctx_write, node, 1)
+        local c = node[1]
+        if #node > 1 and c.type == ast.NUM and c[2] == 1 and c[1] == 1 then
+            -- A lone unit coefficient is written as the sign it is: `-x`, not `-1 \cdot x`. The
+            -- sign must be written at all - a plain `x` would read back without the coefficient.
+            local signed = {glyph(ctx_write, ((c[3] or 1) < 0) and "-" or "+")}
+            local tail
+            tail, err = emit_factors(ctx_write, node, 2)
+            if not tail then
+                return nil, err
+            end
+            run = append(signed, tail)
+        else
+            run, err = emit_factors(ctx_write, node, 1)
+        end
     elseif node.type == ast.ADD then
         run, err = emit_sum(ctx_write, node)
     elseif node.type == ast.EXP then

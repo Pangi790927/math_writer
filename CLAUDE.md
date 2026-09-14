@@ -39,6 +39,29 @@ this file is about how to work in it. These rules are specific to this repo and 
   `add`/`commit`/`push`/`stash`/`checkout`/`reset --hard` or anything else that touches history or
   the index.
 
+## Writing style
+
+How Claude writes in this repo — in comments, manifests, and prose. The manifest rules below are
+one application of this, not its only home. Collected 2026-09-15 from the author's corrections
+through 2026-09-13 to 2026-09-15; he likes the result ("I really like how you write now"), so a
+session writes this way from the start. Much of `scripts/` still carries the older style and
+changes to this one over time.
+
+- Calm, plain prose. All-caps is for locked citations only (Law 4 — and those live in CLAUDE.md);
+  code comments never carry it, and cite the author in ordinary prose — "the author, 2026-09-10:
+  ...". Ruled 2026-09-14: "it doesn't apply here, it should only apply in the CLAUDE.md file,
+  those are the only ones I wanted to keep verbatim". (Emphasis-caps still standing in older
+  sections of this file are legacy, not a style to copy.)
+- A description is a proposition, with a subject and a predicate — never a noun fragment — and it
+  stands on its own, naming what the thing itself takes and does rather than leaning on the entry
+  above or the file's internal vocabulary.
+- When rewriting a description, re-derive it from the code: the old wording is a claim to verify,
+  not a source of truth. Current code behavior is not a design ruling — DESIGN.md records only
+  designs the author has stated.
+- A comment block stays attached to every function, public or internal; rewrite it tighter when
+  touched, but the shape stays.
+- 100 columns, everywhere — code and comments alike.
+
 ## The API manifest
 
 Every `scripts/*.lua` **starts** with a **manifest block** - a comment headed `WHAT THIS FILE
@@ -69,6 +92,17 @@ convention rather than something the tripwire enforces.)
   one thing a caller gets wrong otherwise. Detail, reasoning and history stay on the function's own
   comment, which is where they already are. A manifest that restates the file is a second copy of
   it, and the copy is what rots.
+- **A brief is a PROPOSITION, not a fragment** - author, 2026-09-14: "how about having propositions,
+  with subjects and predicates in descriptions?". Complete sentences: "Reads a row as meaning - ...",
+  "A decl is one declaration as the document hands it over" - never a noun phrase standing alone
+  ("A row read as meaning", "The same parse as indented lines"). Type glosses after a name
+  ("-> {...} sorted") are annotations, not descriptions, and stay as they are.
+- **A brief STANDS ON ITS OWN, and is re-derived from the code, not reworded from the old one** -
+  author, 2026-09-14, on two briefs that survived a rewrite as polished nonsense ("the ast node it
+  names" - mexpr nodes name nothing; "renders the same parse" - the same as what?). Each brief names
+  what the function itself takes and does; "the same X as the entry above" is an anaphora that says
+  nothing to a reader who starts there. When rewriting a brief, the old wording is a claim to verify,
+  not a source of truth.
 - **The manifest is small BECAUSE the function's own header is full.** Author's own words, verbatim,
   2026-09-12: "manifest small, the functions that where named will now have large descriptions where
   you find them". A manifest entry is a pointer, and it is only worth having if scrolling down to
@@ -129,7 +163,7 @@ commetns we had so far", and later "those we have now kinda loose me visually".
   ```lua
   --[[ ==================================== WHAT THIS FILE OFFERS ====================================
   -- | fn(a: type)                             -> type
-  -- |     Brief.
+  -- |     Reads a and answers b.
   -- |
   -- | --- internal, not on the module table ---------------------------------------------------------
   -- |     helper_a, helper_b
@@ -147,7 +181,16 @@ commetns we had so far", and later "those we have now kinda loose me visually".
 - **Rollout scope: every manifest block, and the header of every function a manifest names**, in
   `scripts/`. Author, 2026-09-13: "I only want to target the comments documenting those functions
   in the manifest, the rest can stay as today". Internal helpers and comments inside function
-  bodies keep the old style. A new or rewritten comment anywhere is written in the new one.
+  bodies were never obligated to convert; when touched, they are rewritten in plain calm prose
+  (see Writing style). A new or rewritten comment anywhere is written in the new one.
+- **Internal walls may be CONDENSED, not deleted** - author, 2026-09-14: "I want you to keep the
+  comments around the functions, but if you can write them better, you can do that, the shape needs
+  to stay". A comment block stays attached to every function (internal ones included); a wall is
+  rewritten down to its rule and why. Applied that day across ast.lua / mexpr_ast.lua /
+  ast_mexpr.lua.
+- **All-caps citations are a CLAUDE.md convention only** — the scope is Law 4's, the prose rule is
+  Writing style's. In `scripts/*.lua` comments, cite the author in ordinary prose and write
+  plainly; mexpr_ast.lua's file header (rewritten 2026-09-14) is the model.
 - **`test_api_manifest.lua` is the tracker.** It prints every targeted comment still in the old
   style (`comment style pending: file: name`) and a total; a file in its `COMMENT_STYLE_DONE` list
   FAILS instead. Adding a file there is the last step of converting it. `transforms_old` is frozen
@@ -169,13 +212,13 @@ commetns we had so far", and later "those we have now kinda loose me visually".
 The heading itself is now a citation, not commentary — user's own words, verbatim, 2026-09-08:
 "LAWS FOR CLAUDE will be a citation now, you keep removing it, so I will make it a citation so that
 you will stop and keep it." All caps, exactly as given — his own words, verbatim, same message:
-"all caps, all citations are all caps." Per the amendment to Law 3 below, that fixes this exact
+"all caps, all citations are all caps." Per Law 4 below, that fixes this exact
 wording and case; don't reword or re-case it to "Three Laws", "Laws of Claude", "Laws for Claude",
 or anything else in a future edit.
 
 The laws Pangi set for how Claude works, meant to spread and apply the same way in every repo of
 his — numbered, not capped at any count, so a new one can be added later without renumbering the
-header. See the amendment to Law 3 for how a citation may travel vs. how commentary may.
+header. See Law 4 for how a citation may travel vs. how commentary may.
 
 1. **Ask for what you don't have.** When a lower layer (C++/`virt_composer` here) doesn't expose a
    capability the current layer needs, ask before working around it — don't silently invent a
@@ -222,21 +265,29 @@ header. See the amendment to Law 3 for how a citation may travel vs. how comment
    all, also verbatim: "this will be the laws for claude, ok? and they would spread through my pc
    and grow, this is the 3rd rule of claude."
 
-   **Amendment — verbatim citation is verbatim; commentary is not.** User's own words, verbatim,
-   2026-09-06: "THE ORIGINAL STATEMENT MUST MATCH EXACTLY WHEN COPIED - THIS IS ALSO AN RIGINAL
-   CITATION - BUT COMMENTS MAY VARY, INTERPRETATIONS..." When a law spreads into another repo's
-   CLAUDE.md, the quoted original statements travel character for character — no tidying, no fixing
-   typos, no paraphrase standing in for the quote (including this amendment's own "AN RIGINAL",
-   reproduced intact, deliberately). What surrounds a citation — summary, example, scope, file
-   pointer — is commentary, and may be rewritten per repo to fit what that repo does. Inside the
-   quote marks, nothing moves; outside them, everything may.
+   How a law's citations travel when it spreads is Law 4, just below.
+
+4. **Verbatim citation is verbatim; commentary is not.** A METALAW OF THE LAWS SET — the author,
+   2026-09-15: "law 4 is a metalaw of the laws set". A law about the laws themselves, not about
+   behavior in a repo: it governs the citations regarding the laws inside the laws — the quoted
+   original statements a law's text carries, wherever the laws live, which is the insides of
+   CLAUDE.md files, this one included. It reaches nowhere else; code comments in a repo never
+   carry locked citations, and cite the author in ordinary prose (ruled 2026-09-14; see "Writing
+   style").
+
+   User's own words, verbatim, 2026-09-06: "THE ORIGINAL STATEMENT MUST MATCH EXACTLY WHEN COPIED -
+   THIS IS ALSO AN RIGINAL CITATION - BUT COMMENTS MAY VARY, INTERPRETATIONS..." The quoted
+   original statements travel character for character — no tidying, no fixing typos, no paraphrase
+   standing in for the quote (including this law's own "AN RIGINAL", reproduced intact,
+   deliberately). What surrounds a citation — summary, example, scope, file pointer — is
+   commentary, and may be rewritten per repo to fit what that repo does. Inside the quote marks,
+   nothing moves; outside them, everything may.
 
    Which quotes count as a citation, resolved 2026-09-08: only the ones in ALL CAPS. User's own
    words, verbatim: "all caps, all citations are all caps." A quote given in lowercase or mixed
-   case elsewhere in this file (the git-authorship line and the old "laws for claude" aside in
-   Law 3, the scope note in Law 2) is commentary-grade, not locked — reword or drop it freely if a
-   repo needs to. User's own words, verbatim, on this exact point: "if a git is by me... — no, all
-   caps are the citations that you are not to move, change whatever, the rest I don't care about."
+   case is commentary-grade, not locked — reword or drop it freely if a repo needs to. User's own
+   words, verbatim, on this exact point: "if a git is by me... — no, all caps are the citations
+   that you are not to move, change whatever, the rest I don't care about."
 
 ## Transform plugins
 
@@ -529,7 +580,8 @@ registration needed.
 C++ core (`char_draw_composer.h` = fonts/glyphs, `math_expr_composer.h` = expression layout) is
 exposed to Lua via `virt_composer`. The actual math model lives in Lua: `ast.lua` (the AST),
 `char.lua` (glyph catalog), `transforms.lua` (algebraic term-dragging, WIP). Full detail and
-data-flow diagram in `README.md`.
+data-flow diagram in `README.md`. Dated design decisions - the drawing/structure layering among
+them - live in `DESIGN.md`; read the relevant entry before reversing one.
 
 ## Where the project is
 

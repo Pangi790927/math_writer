@@ -72,8 +72,12 @@ function run_test()
 
     local add = find(root, ast.ADD)
     check("setup: it has a sum", add ~= nil)
-    local a_node, b_node, c_node = root[1], add and add[1], add and add[2]
-    check("setup: the shape is MUL(a, ADD(b, c))",
+    --[[ The sum's second term carries its sign as a leading coefficient (the parse's shape since
+    2026-09-15): ADD(b, MUL(NUM(1), c)), so the term's own factor is one level down. ]]
+    local a_node = root[1]
+    local b_node = add and add[1]
+    local c_node = add and add[2] and add[2][2]
+    check("setup: the shape is MUL(a, ADD(b, MUL(NUM(1), c)))",
             root.type == ast.MUL and a_node ~= nil and b_node ~= nil and c_node ~= nil,
             ast.type_name(root.type))
     if not (add and a_node and b_node and c_node) then
@@ -105,9 +109,10 @@ function run_test()
 
     -- ------------------------------------------------------------------ what travelled
     --[[ Each term of the ORIGINAL sum lands in exactly one output term, so each is the very node it
-    always was. This is the check the defect above would fail. ]]
+    always was. This is the check the defect above would fail. The second output term leads with
+    its coefficient (the parse's shape), so its factors sit one further along. ]]
     check("the first term's own factor travelled", rawequal(result[1][2], b_node))
-    check("the second term's own factor travelled too", rawequal(result[2][2], c_node))
+    check("the second term's own factor travelled too", rawequal(result[2][3], c_node))
 
     -- ------------------------------------------------------------------ and what was copied
     check("the first output term keeps the original surrounding factor",
@@ -116,16 +121,16 @@ function run_test()
     an id names one place. It must still be the same VARIABLE, or the algebra is wrong rather than
     the bookkeeping. ]]
     check("the second term's surrounding factor is a fresh node",
-            not rawequal(result[2][1], a_node))
+            not rawequal(result[2][2], a_node))
     check("...still naming the same variable",
-            result[2][1].type == ast.VREF and result[2][1][1] == a_node[1],
-            tostring(result[2][1][1]) .. " vs " .. tostring(a_node[1]))
+            result[2][2].type == ast.VREF and result[2][2][1] == a_node[1],
+            tostring(result[2][2][1]) .. " vs " .. tostring(a_node[1]))
 
     -- ------------------------------------------------------------------ the source is untouched
     --[[ A transformation makes a new cell and leaves the old one alone (docs/phase2_design.md): the
     old mexpr is still on screen and its tree must keep describing it. ]]
     check("the source sum still holds its own terms",
-            rawequal(add[1], b_node) and rawequal(add[2], c_node))
+            rawequal(add[1], b_node) and rawequal(add[2][2], c_node))
     check("the source product still holds the sum", rawequal(root[2], add))
 
     -- ------------------------------------------------------------------ one namespace

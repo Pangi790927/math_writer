@@ -79,7 +79,7 @@ function run_test()
         local v = view(fs, "\\sum_{i=j}(i+j)")
         check("two names from one constraint spawn in written order",
                 v == [[0:SUM 2 var/0 sup/1 sub / 1:VAR i / 1:VAR j / 1:EQ / 2:REF "i" / 2:REF "j"]]
-                        .. [[ / 1:CELL / 2:ADD / 3:REF "i" / 3:REF "j"]], v)
+                        .. [[ / 1:CELL / 2:ADD / 3:REF "i" / 3:MUL / 4:NUM 1 / 4:REF "j"]], v)
 
         --[[ The mirror image, to catch a walk that happens to be stable but sorted: if `j,i` came
         back as `i,j` here, the order is not the row's. ]]
