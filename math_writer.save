@@ -61,7 +61,13 @@ a(ab+a(b+c+d))(a+b+cab+cad)2
 a(ab+ab+ac+ad)(a+b+cab+cad)2
 442
 401
-1formula 97
+1formula 40
+4
+27
+a(ab+ab+ac+ad)(a+b+cab+cad)2
+470
+0
+formula 97
 4
 84
 F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}1

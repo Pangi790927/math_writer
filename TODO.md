@@ -262,6 +262,48 @@ The AST side of several of these is a different question and belongs to phase 2.
 
 ---
 
+## 8. Transformations queue
+
+Ruled 2026-09-15, in build order. Everything here assembles the parts distribute already named
+(`through_cells`, `split_term`, `term_with_coeff`, `splice_up`), per DESIGN.md's combine-parts
+rule; a genuinely new mechanism is a smell, not a requirement.
+
+- **Cancel** — two terms with identical `ast.shape` and opposite signs cancel (`a + b - b`). The
+  sign-led flat terms and the id-free shape comparator make this nearly free; highest payoff per
+  line written.
+- **Expand definition** — click a resolved call, replace it with the body, arguments substituted.
+  The trie, `resolve_use` and `match_use` are built and idle; this is the first transformation
+  that touches real mathematics and the reason the name-identity system exists.
+- **Factor** — the dual of distribute (`ab + ac + ad -> a(b+c+d)`): `split_term` every term,
+  intersect factor sets by shape, rebuild. Same sign button; it offers both when both apply.
+- **Move across `=`** — the equation gesture everyone has in muscle memory
+  (`a + b = c -> a = c - b`): strip with `split_term`, attach flipped with `term_with_coeff`.
+- **Fraction transforms**, once the writer handles DIV: common-denominator addition, cancel in
+  fraction (`ab/ac -> b/c`), multiply through by a denominator.
+- **Swap/commute as an explicit step** — real, not a normalization, precisely because
+  multiplication is not assumed commutative; a cross-product swap is a derivation step.
+
+---
+
+## 9. Drag in and out of parentheses
+
+Idea 2026-09-15: dragging a term or factor into and out of a bracket group as the interaction for
+factoring/distributing — **part-started already** in `transforms_old.lua` (the frozen WIP), which
+began exactly this shape of move before it was parked. Reviving means reading that file first and
+deciding what survives the sign-coefficient rework, since its term model predates it.
+
+---
+
+## 10. Types in the ast
+
+Wanted 2026-09-15: think through how TYPES fit the ast — what a type is as a node or an
+annotation, where a declaration's type lives, and what checks become possible once expressions
+carry them. Nothing decided yet, including whether a type is a node kind, a field on existing
+kinds, or a separate judgement beside the tree; the derivation/trust machinery is the framework
+it must fit.
+
+---
+
 ## Deliberately not doing
 
 From the same review, so none of it gets re-proposed:

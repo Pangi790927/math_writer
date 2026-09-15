@@ -306,10 +306,16 @@ function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_
 
     local m = mformula.measure(state_formula.formula, fontset, sz, width_limit)
     local baseline = pos.y + pad - m.top
-    vc.ImGui_AddRectFilled({x = pos.x - pad, y = baseline + m.top - pad},
-            {x = pos.x + math.max(m.width, 6) + pad, y = baseline + m.bottom + pad},
-            SLOT_BG_COLOR, 3)
-    if show_cursor then
+    --[[ A LOCKED CELL DROPS ITS BACKGROUND (the author, 2026-09-15): only the contour remains, so
+    locked cells read at a glance across the page - a filled field is a mathbox being worked in, a
+    bare outline is a frozen step of a derivation. The contour stays up whenever locked, not just
+    on the active box, because being a cell is a standing fact rather than focus. ]]
+    if not state_formula.locked then
+        vc.ImGui_AddRectFilled({x = pos.x - pad, y = baseline + m.top - pad},
+                {x = pos.x + math.max(m.width, 6) + pad, y = baseline + m.bottom + pad},
+                SLOT_BG_COLOR, 3)
+    end
+    if show_cursor or state_formula.locked then
         vc.ImGui_AddRect({x = pos.x - pad, y = baseline + m.top - pad},
                 {x = pos.x + math.max(m.width, 6) + pad, y = baseline + m.bottom + pad},
                 SLOT_EDGE_COLOR, 3, 1)
