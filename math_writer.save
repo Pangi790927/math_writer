@@ -43,153 +43,62 @@ a_{n}8
 n\in \N 3
 \R text 102
 $$F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}$$$$a_{1}=-1+1$$text 67
-$$\sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}$$$$a(ab+a(b+c))$$formula 94
-3
-84
-F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}1
-70
-formula 35
-3
-25
-F_{1,'acdefg',m,m}(1,2,3)1
-60
-formula 30
-3
-20
-a:\N \rightarrow \R 1
-10
-formula 31
-3
-20
-a:\N \rightarrow \R 1
-21
-1formula 32
-3
-20
-a:\N \rightarrow \R 2
-221
-2formula 39
-3
+$$\sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}$$$$a(ab+a(b+c))$$formula 42
+4
 29
 a(ab+a(b+c+d))\ (a+b+ca(b+d))1
 30
-formula 65
-3
-53
-a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
-271
-3formula 66
-3
-53
-a(ab+ab+ac+ad)a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
-342
-27formula 39
-3
+1
+1formula 42
+4
 27
 a(ab+a(b+c+d))(a+b+cab+cad)2
-261
-3formula 65
-3
-53
-a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
-251
-3formula 65
-3
-53
-a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
-211
-3formula 40
-3
+401
+31
+1formula 43
+4
+27
+a(ab+ab+ac+ad)(a+b+cab+cad)2
+442
+401
+1formula 97
+4
+84
+F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}1
+70
+1
+1formula 32
+4
+20
+a:\N \rightarrow \R 1
+10
+0
+formula 43
+4
 29
 a(ab+a(b+c+d))\ (a+b+ca(b+d))2
 100
-formula 80
-3
-67
-a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-282
-10formula 80
-3
-67
-a(ab+a(b+c+d))a+a(ab+ab+ac+ad)b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-332
-28formula 84
-3
-71
-a(ab+a(b+c+d))a+aabb+aabb+aacb+aadb+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-292
-28formula 84
-3
-71
-a(ab+a(b+c+d))a+aabb+aabb+aacb+aadb+a(ab+ab+ac+ad)cab+a(ab+a(b+c+d))cad2
-302
-29formula 94
-3
-81
-a(ab+a(b+c+d))a+aabb+aabb+aacb+aadb+aabcab+aabcab+aaccab+aadcab+a(ab+a(b+c+d))cad2
-312
-30formula 40
-3
-27
-a(ab+a(b+c+d))(a+b+cab+cad)2
-232
-10formula 80
-3
-67
-a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-242
-23formula 84
-3
-71
-aaba+aaba+aaca+aada+aabb+aa(b+c+d)b+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-152
-14formula 88
-3
-75
-aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+a(ab+a(b+c+d))cab+a(ab+a(b+c+d))cad2
-162
-15formula 90
-3
-77
-aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+aabcab+aa(b+c+d)cab+a(ab+a(b+c+d))cad2
-172
-16formula 98
-3
-85
-aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+aabcab+aabcab+aaccab+aadcab+a(ab+a(b+c+d))cad2
-182
-17formula 98
-3
-85
-aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+aabcab+aabcab+aaccab+aadcab+a(ab+ab+ac+ad)cad2
-192
-18formula 108
-3
-95
-aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+aabcab+aabcab+aaccab+aadcab+aabcad+aabcad+aaccad+aadcad2
-202
-19formula 57
-3
+1
+1formula 60
+4
 47
 \sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}1
 40
-text 33
-$$a(ab+a(b+c+d))\ (a+b+ca(b+d))$$formula 15
-3
+1
+1text 33
+$$a(ab+a(b+c+d))\ (a+b+ca(b+d))$$formula 18
+4
 6
 a(b+d)1
 50
-formula 16
-3
+1
+1formula 19
+4
 5
 ab+ad2
-321
-5formula 15
-3
-5
-ab+ad1
-91
-5definition 16
+461
+51
+1definition 16
 2
 1
 x9
@@ -198,12 +107,13 @@ x9
 11
 \vec{F}_{k}8
 k\in \N 7
-\R ^{3}formula 55
-3
+\R ^{3}formula 58
+4
 45
 \vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}1
 80
-definition 10
+1
+1definition 10
 2
 1
 a3

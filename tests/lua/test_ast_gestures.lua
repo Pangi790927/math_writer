@@ -112,18 +112,19 @@ function run_test()
         check("...with the ADD as its parameter",
                 target ~= nil and target.type == ast.ADD, target and target.type)
 
-        --[[ THE WALK FINDS THE SUM, NOT THE TAG - reversed 2026-09-15.
+        --[[ THE SIGN IS THE BUTTON - the third and settled position, 2026-09-15.
 
-        This check used to assert the opposite - "clicking a term offers nothing" - and told the
-        story of the 2026-09-11 report ("I can wright click the d in a(b+d) and apply distribute")
-        as the reason the climb was wrong. That was a misdiagnosis: the report was real but its
-        cause was never found, and the fix of the day cut the climb - the design - instead of the
-        fault. See DESIGN.md, "Glyphs draw, transforms walk": a click resolves to the node it hit,
-        and the transform layer walks the ast from there to the sum. The fault itself is still
-        unfound; if a term click ever misbehaves again, that is it coming back. ]]
+        The history, so nobody relitigates it blind: originally the offer climbed from any term,
+        which misfired in use (2026-09-11, "I can wright click the d in a(b+d) and apply
+        distribute"); the fix of the day cut the climb by tagging `+` straight to the ADD - wrong
+        in principle, a glyph names nothing structural; the tag was put right (`+` names its
+        term's coefficient) and the climb restored; and finally the author narrowed the aim
+        itself: a `+` or a `-` is visually the button, and only signs offer. The walk still lives
+        in distribute's add_at - from the sign's coefficient, to the sum, to the product above -
+        it just no longer starts from a term. See DESIGN.md, "Glyphs draw, transforms walk". ]]
         local from_b = ast_gestures.options(fs, c, {}, glyph(c, "b"))
-        check("clicking a term of the sum offers it too - the walk finds the sum",
-                ids(from_b) == "distribute", ids(from_b))
+        check("clicking a term offers nothing - only signs are buttons",
+                #from_b == 0, ids(from_b))
     end
 
     -- ------------------------------------------------------------------ and what is not

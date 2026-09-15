@@ -1,24 +1,25 @@
 --[[
-test_distribute_nested.lua - distribute through brackets and into nested sums, and what it builds.
+test_distribute_nested.lua - distribute through brackets and nested sums, and what it builds.
 
-THE ASSUMPTIONS, as agreed with the author 2026-09-13:
+THE ASSUMPTIONS, re-ruled by the author 2026-09-15 (first agreed 2026-09-13; the middle state -
+full recursion, `a(b+(c+d))` becoming `ab+ac+ad` in one click - is deliberately gone):
 
-  - DISTRIBUTION PASSES THROUGH CELLS. A CELL is the user's own redundant bracket pair; `a((b+c))`
-    is still a sum inside a product, and is offered and applied as one.
-  - IT IS RECURSIVE over the clicked sum's own terms: `a(b+(c+d))` is `ab+ac+ad`, not a product
-    still holding the bracketed `(c+d)`.
+  - A SIGN IS THE BUTTON. Only a `+` or a `-` offers; the click resolves to the sign's
+    coefficient, and the transform walks to its sum and to the product above, through any CELLs.
+  - DISTRIBUTION PASSES THROUGH CELLS. A CELL is the user's own redundant bracket pair;
+    `a((b+c))` is still a sum inside a product, and is offered and applied as one.
+  - IT IS LOCAL. One click flattens one sum; a bracketed sum inside a term stays for the next
+    click - "the user may do that repeatedly himself".
+  - THE RESULT SPLICES UPWARD when the distributed product was a whole term of a sum: the terms
+    join that sum with their signs applied, because an ADD cannot be a term of an ADD. Nothing
+    new is distributed by the splice.
   - ONLY THE CLICKED SUM OPENS. `(a+b)(c+d)` on one `+` leaves the other sum a sum.
-  - THE RESULT IS FLAT AND SIGN-LED the way the parser builds the same text, which is a choice of
-    THIS transformation (transform_utils.product / swap_in_parent), not a global normalization.
+  - SIGNS FOLD ONLY WITH SIGNS, auto-reduced for now; magnitudes never merge.
 
-WHY ROUND TRIPS: a result that the parser would never build - a product inside a product, a -1 in
-the middle of a term - draws fine and still fails ast_mexpr.verify. Before this, `a(b-c)` produced
-exactly that and wrote `ab+a-1c`. So every case is written back and reparsed.
-
-NOT ASSERTED, deliberately: the inner `+` of `a(b+(c+d))` offers nothing, because the bracketed sum
-is a TERM of a sum rather than a factor of a product. Whether it should climb to the enclosing
-product is an open question for the author, and a test would be taking a side.
-@date 2026-09-13 19:55
+WHY ROUND TRIPS: a result that the parser would never build - a product inside a product, a
+nested sum a writer would have to bracket - draws fine and still fails ast_mexpr.verify. Every
+case is written back and reparsed.
+@date 2026-09-15
 ]]
 
 package.path = package.path .. ";./scripts/?.lua"
@@ -70,7 +71,13 @@ function run_test()
         if not add then
             return nil, "no sum #" .. which
         end
-        local option = transforms.offers(ns, root, add)[1]
+        --[[ The click target is the sum's own button - the sign before its second term, which
+        the parse stamps as that term's leading coefficient. Only signs offer. ]]
+        local button = add[2] and add[2][1]
+        if not (button and button.type == ast.NUM) then
+            return nil, "no sign on sum #" .. which
+        end
+        local option = transforms.offers(ns, root, button)[1]
         if not option then
             return nil, "no offer"
         end
@@ -91,14 +98,14 @@ function run_test()
     end
 
     local CASES = {
-        {"a(b+(c+d))", 1, "ab+ac+ad"},
-        {"a((b+c))", 1, "ab+ac"},
+        {"a(b+(c+d))", 1, "ab+a(c+d)"},  -- local: the bracketed sum waits for the next click
+        {"a((b+c))", 1, "ab+ac"},        -- through the CELL
         {"a(b-c)", 1, "ab-ac"},
         {"a(b+cd)", 1, "ab+acd"},
-        {"a(b-(c+d))", 1, "ab-ac-ad"},
-        {"a(b-(c+d))", 2, "a(b-c-d)"},
+        {"a(b-(c+d))", 1, "ab-a(c+d)"},  -- local
+        {"a(b-(c+d))", 2, "a(b-c-d)"},   -- the splice: the terms join the outer sum
         {"(a+b)(c+d)", 2, "(a+b)c+(a+b)d"},
-        {"x+a(b+c)", 2, "x+ab+ac"},
+        {"x+a(b+c)", 2, "x+ab+ac"},      -- the splice
     }
     for _, case in ipairs(CASES) do
         local src, which, want = case[1], case[2], case[3]
@@ -113,20 +120,19 @@ function run_test()
     --[[ WHAT TRAVELS, nested: each leaf of the clicked sum lands once and is the node it was; the
     surrounding `a` is the original in the first term and a copy after. Same rule test_distribute
     pins for the flat case, now through a CELL. ]]
-    --[[ Guarded on three terms: this needs distribution RECURSIVE over the clicked sum's terms,
-    which HEAD's distribute is not (it writes `ab+a(c+d)`), and the checks below were written for
-    the recursive shape. Without the guard the block crashed (2026-09-15) once the write itself
-    started round-tripping under the sign-coefficient shape. ]]
+    --[[ WHAT TRAVELS, local edition: the clicked sum's own factors land once each and are the
+    nodes they always were; the bracketed inner sum travels whole, because the local click did
+    not open it. The surrounding `a` is the original in the first term and a copy in the second. ]]
     local result, _, root = distribute("a(b+(c+d))", 1)
-    if result and #result == 3 then
+    if result then
         local a, b = root[1], root[2][1]
-        local c, d = root[2][2][1][1], root[2][2][1][2]
-        check("three products", result.type == ast.ADD and #result == 3)
-        check("b, c and d travelled", rawequal(result[1][2], b) and rawequal(result[2][2], c)
-                and rawequal(result[3][2], d))
-        check("the first `a` is the original, the others are copies",
-                rawequal(result[1][1], a) and not rawequal(result[2][1], a)
-                and not rawequal(result[3][1], a))
+        local inner = root[2][2][2]
+        check("two terms - the bracketed sum was not opened",
+                result.type == ast.ADD and #result == 2, #result)
+        check("b and the bracketed sum travelled", rawequal(result[1][2], b)
+                and rawequal(result[2][3], inner))
+        check("the first `a` is the original, the second a copy",
+                rawequal(result[1][1], a) and not rawequal(result[2][2], a))
     end
 
     --[[ A term's sign LEADS its product: `a(b-c)` is MUL(-1, a, c), the shape `-ac` parses to. ]]

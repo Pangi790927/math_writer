@@ -2319,18 +2319,23 @@ function build_product(ctx_parse, units, sign, sign_unit)
     end
 
     if sign then
+        --[[ The sign is its own leading coefficient - a NUM(1) or NUM(-1) factor, never merged
+        into another numeral (the author, 2026-09-15: magnitudes never multiply). `+2x` is
+        MUL(NUM(1), NUM(2), x) and `-2x` is MUL(NUM(-1), NUM(2), x); written back, the unit
+        coefficient becomes the sign glyph and the digits follow, which reparses to exactly these
+        shapes. The sign glyph tags the coefficient, which is also what makes a sign clickable as
+        a button and a digit not: the coefficient leads the product, a value numeral sits one
+        factor in.
+
+        SIGN-NUMBERS JOIN THE ACCUMULATION (the author, 2026-09-15): a leading numeral whose
+        magnitude is exactly 1 - the unit, or infinity, which is +1 or -1 over 0 - carries
+        nothing but a sign, so the term's sign folds onto it instead of growing a factor: `-inf`
+        is NUM(1, 0, -1), and `-(-inf)` never exists. ]]
         local f = factors[1]
-        if f.type == ast.NUM then
-            -- The sign folds into a leading numeral: negation flips it, a `+` leaves an already
-            -- positive one as itself. The glyph tags the number either way.
-            if sign < 0 then
-                factors[1] = ast.new_num(ctx_parse.ns, f[1], f[2], -f[3])
-            end
+        if f.type == ast.NUM and f[1] == 1 and (f[2] == 1 or f[2] == 0) then
+            factors[1] = ast.new_num(ctx_parse.ns, 1, f[2], sign * (f[3] or 1))
             tag_ast(sign_unit, factors[1])
         else
-            --[[ The sign becomes the leading coefficient, so the product it makes is what decides
-            whether the other factors' brackets were required: `-(a+b)` is MUL(NUM(-1), ADD(...))
-            and those brackets are load-bearing, exactly as in `c(a+b)`. Hence the shift below. ]]
             table.insert(factors, 1,
                     tag_ast(sign_unit, ast.new_num(ctx_parse.ns, 1, 1, sign)))
             table.insert(bracketed, 1, false)

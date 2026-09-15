@@ -170,6 +170,8 @@ function run_test()
         something the parser had not understood. So the case moved from "addition fails" to
         "addition builds ADD, and the things that still have no parser still fail". ]]
         local v = view(fs, "a_{n+1}", {a})
+        --[[ The `+1` term folds to a bare NUM(1): the unit is a sign-number, so the sign joins
+        it rather than growing a MUL(1, 1). ]]
         check("addition in an argument builds ADD",
                 v == [[0:CALL "a,sub,(1),end" / 1:ADD / 2:REF "n" / 2:NUM 1]], v)
 
@@ -180,17 +182,17 @@ function run_test()
         check("two letters side by side are a product",
                 v == [[0:CALL "f(),(1)" / 1:MUL / 2:REF "b" / 2:REF "b"]], v)
 
-        --[[ THE SIGN IS A PROPERTY OF THE PRODUCT. Author, 2026-09-10: "so -x transforms into
-        (MUL, NUM(-1), REF(x))... +/- is a property of the next NUM or NUM in MUL" - so a negative
-        term folds into a leading numeral when there is one, and grows a NUM(-1) factor when there
-        is not. Two spellings of one rule, which is why both are here. ]]
+        --[[ THE SIGN IS ALWAYS ITS OWN COEFFICIENT - a NUM(-1) or NUM(1) factor leading the term,
+        never merged into another numeral (the author, 2026-09-15: signs fold nowhere; magnitudes
+        never multiply). The 2026-09-10 note about a negative term folding into a leading numeral
+        was reversed: `-2x` keeps the -1 and the 2 as separate factors. ]]
         v = view(fs, "f(-x)", {f})
         check("a negated variable is MUL(-1, x)",
                 v == [[0:CALL "f(),(1)" / 1:MUL / 2:NUM -1 / 2:REF "x"]], v)
 
         v = view(fs, "f(-2x)", {f})
-        check("a negated product folds the sign into its numeral",
-                v == [[0:CALL "f(),(1)" / 1:MUL / 2:NUM -2 / 2:REF "x"]], v)
+        check("a negated product carries its sign as its own coefficient",
+                v == [[0:CALL "f(),(1)" / 1:MUL / 2:NUM -1 / 2:NUM 2 / 2:REF "x"]], v)
 
         --[[ THIS TEST ASSERTED A BUG AS A FEATURE for one day, which is the failure mode
         CLAUDE.md names as the reason tests are tripwires and not proof. It claimed every bracket

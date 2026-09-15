@@ -18,6 +18,12 @@
 -- |
 -- | DERIVATION
 -- | derive_identity(state_doc: content.state_doc, i: number) -> index | nil
+-- |     Refuses an unlocked source, and the child is born locked.
+-- | unlock_mid_chain(state_doc: content.state_doc, i: number) -> index
+-- |     Opens a locked, PARENTED box the author's way: a trusted copy
+-- |     takes its place in the chain first, then the original drops its
+-- |     links and goes free below the copy. Answers the original's new
+-- |     index.
 -- | prune_descendants(state_doc: content.state_doc, id: id) -> removed
 -- |     A derived box and everything derived from it, however deep - the
 -- |     whole subtree, not one level.
@@ -87,6 +93,7 @@ local ast_gestures = require("ast_gestures")
 it is a formula again - the mexpr is the artifact and the ast is scratch. ]]
 local ast_mexpr = require("ast_mexpr")
 local mformula_latex = require("mformula_latex")
+local mformula = require("mformula_new")
 local ast = require("ast")
 local keymap = require("keymap")
 local panel_help = require("panel_help")
@@ -125,6 +132,9 @@ local MIN_FONT_SIZE, MAX_FONT_SIZE = 1, mexpru.MAX_SIZE_INDEX -- char.lua's own 
 local CLOSE_SIZE  = 16   -- close ("x") button, sits just above each box's top-right corner
 local WIREFRAME_SIZE = 16 -- wireframe-toggle button, sits just left of the close button
 local GRAPH_SIZE = 16    -- graph-toggle button, sits just left of the wireframe button
+local LOCK_SIZE = 16     -- lock button (formula boxes only), leftmost in that row
+local LOCK_FRAME_COLOR = 0xff888888 -- the button's border, the same gray as the siblings
+local LOCK_RED = 0xff6666ff -- the padlock glyph inside it, both states (0xAABBGGRR: alpha,B,G,R)
 local RAIL_CLICK_RADIUS = 16 -- how close to the rail line counts as "clicking the rail"
 
 --[[ The three box kinds, chosen from the radial menu (RADIAL_* below) when a box is made and never
@@ -491,25 +501,72 @@ end
 -- | and the only one that needs no machinery - input and output are the same expression, so the
 -- | LaTeX is copied and the parent recorded, with no mexpr -> ast -> mexpr round trip.
 -- |
+-- | THE SOURCE MUST BE LOCKED and the child is BORN LOCKED (the author, 2026-09-15): this is a
+-- | derivation like any transform's, and a derivation from an unlocked box would propagate trust
+-- | the source does not have - reported live as "ctrl+d, a transform, allowed me to apply it on
+-- | an unlocked formula, trust propagation would break". The check lives HERE rather than at the
+-- | keybinding, so every caller inherits it; the same rule gates the transform menu.
+-- |
 -- | THE NEW BOX GOES DIRECTLY BELOW its source, which is where a derivation reads.
 -- |
 -- | @param state_doc  content.state_doc - checked
 -- | @param i          integer - the source box
--- | @return integer | nil - the new box's index; nil when the box at `i` is not a formula box with
--- |         content to derive from
+-- | @return integer | nil - the new box's index; nil when the box at `i` is not a LOCKED formula
+-- |         box with content to derive from
 -- |
--- | @date 2026-09-13 20:30
+-- | @date 2026-09-15 14:00
 --]]
 function content.derive_identity(state_doc, i)
     STATE_SHAPE.check(state_doc)
     local src = state_doc.boxes[i]
-    if not (src and src.fml and src.fml.latex and src.fml.latex ~= "") then
+    if not (src and src.fml and src.fml.locked and src.fml.latex and src.fml.latex ~= "") then
         return nil
     end
     content.insert_box(state_doc, i + 1, KIND_FORMULA)
     local made = state_doc.boxes[i + 1]
     made.fml.latex = src.fml.latex
     made.fml.parent = src.fml.id
+    made.fml.locked = true
+    return i + 1
+end
+
+--[[ @brief Opens a MID-CHAIN lock the author's way: the derivation keeps the step, the box goes
+-- |        free.
+-- |
+-- | THE SEQUENCE, ruled live 2026-09-15: a trusted copy of the box takes its place in the chain
+-- | - ctrl+d's shape, but its parent looks UPWARD, to the original's own parent, so the copy
+-- | holds the original's chain position - and only then does the original open: parent dropped,
+-- | descendants dropped, lock open, sitting directly below the copy it left behind, which is
+-- | where the writing continues - "to be closer with what you left behind in the derivation".
+-- |
+-- | WHY: "on a leaf you probably want to keep it" - the common unlock lands on a leaf whose
+-- | formula the derivation should not lose. A MID-CHAIN box (children of its own) is the same
+-- | dance: its children followed from its OLD content, which the copy now holds in the chain, so
+-- | they go with the original. A root has no chain position to keep and unlocks by the plain
+-- | toggle instead (the lock button's other branch).
+-- |
+-- | @param state_doc  content.state_doc - checked
+-- | @param i          integer - a locked, parented formula box; anything else is left alone
+-- | @return integer - the original box's index after the copy took its place (i + 1), or i when
+-- |         nothing applied
+-- |
+-- | @date 2026-09-15 14:30
+--]]
+function content.unlock_mid_chain(state_doc, i)
+    STATE_SHAPE.check(state_doc)
+    local fml = state_doc.boxes[i] and state_doc.boxes[i].fml
+    if not (fml and fml.locked and fml.parent) then
+        return i
+    end
+    -- The copy takes the original's own index; the original shifts one down, below it.
+    content.insert_box(state_doc, i, KIND_FORMULA)
+    local keep = state_doc.boxes[i].fml
+    keep.latex = fml.latex
+    keep.parent = fml.parent     -- upward: the copy holds the original's chain position
+    keep.locked = true
+    fml.parent = nil             -- the original is nobody's consequence now
+    fml.locked = nil
+    content.prune_descendants(state_doc, fml.id)
     return i + 1
 end
 
@@ -1159,6 +1216,57 @@ local function formula_under(state_doc, pos)
     return nil
 end
 
+--[[ The clipboard's content as LaTeX, or nil if there is nothing usable in it.
+
+The app's own interchange format is "$$...$$" - what mformula's copy produces - so that wrapper is
+stripped when present. Bare LaTeX is accepted too: pasting from elsewhere should work, and the
+worst case is a formula that does not parse, which the paste's own verification refuses visibly
+rather than silently. ]]
+local function clipboard_latex()
+    local text = vc.ImGui_GetClipboardText()
+    if not text or text == "" then
+        return nil
+    end
+    local inner = text:match("^%s*%$%$(.*)%$%$%s*$")
+    return inner or text
+end
+
+--[[ A verified paste into the formula cell at `i` - the only kind there is.
+
+WHERE A PASTE IS ENABLED (the author, 2026-09-15): into an EMPTY box, where content is arriving,
+or into a LOCKED one - a paste that parses keeps the cell's TREE trusted, so the lock stays closed
+through it. A filled unlocked box refuses the paste outright; that is a mid-edit mathbox.
+
+THE PASTE DROPS ALL CHAINS (the author, 2026-09-15): the parent link breaks and the children go,
+exactly as an unlock drops them. The from-to convention demands a PROVEN derivation, and a pasted
+formula is not one - "a just copied in function is not a derivation". Trusted and proving are
+different claims: the parse check lets the box keep its lock, and precisely nothing lets it keep
+a lineage its new content did not earn. Whoever wants the old shape kept copies it out first.
+
+Returns true when the swap happened; the caller prunes what followed from the box's old content.
+@date 2026-09-15 13:45 ]]
+local function paste_into_formula(state_doc, fontset, i)
+    local box = state_doc.boxes[i]
+    local latex = clipboard_latex()
+    if not latex then
+        return false
+    end
+    local built = mformula.from_latex(fontset, mexpru.DEFAULT_SIZE, latex)
+    if not built then
+        return false
+    end
+    local decls = content.declarations_before(state_doc, i)
+    if not mexpr_ast.build(fontset, built, decls.order) then
+        input_recorder.log_event("paste: refused - does not parse into an ast")
+        return false
+    end
+
+    box.fml.latex = latex
+    box.fml.formula = built
+    box.fml.parent = nil
+    return true
+end
+
 --[[ Opens the gesture menu at the pointer. Empty, when nothing applies there.
 
 NOTHING IS MUTATED on the way: the node is resolved with editor_common.formula_node_at, the half of
@@ -1182,6 +1290,15 @@ local function open_transform_menu(state_doc, fontset)
         -- Names the RULE, not just the miss: a formula inside a text row is under the pointer and
         -- still refused, so "no formula here" would read as a bug from where the user is sitting.
         input_recorder.log_event("gesture: not over a formula cell")
+        return
+    end
+
+    --[[ ONLY A LOCKED BOX TRANSFORMS (the author, 2026-09-15): an unlocked formula box is a
+    mathbox, mid-edit, and its tree is nobody's to act on. A formula's validity is verified at
+    exactly two moments - the paste that fills it and the lock that freezes it - and only the
+    second is a promise that transformations may run. ]]
+    if not state_doc.boxes[target.index].fml.locked then
+        input_recorder.log_event("gesture: the formula box is not locked")
         return
     end
 
@@ -1271,6 +1388,11 @@ local function commit_transform(state_doc, fontset, menu, option)
     A source without an id would make an orphan, which is a root - something derived from nothing. ]]
     local source = state_doc.boxes[menu.index]
     box.fml.parent = source and source.fml and source.fml.id
+    --[[ THE CHILD SPAWNS LOCKED (the author, 2026-09-15): it is a step in a derivation, not a
+    draft - the lock is a trust bit, and the box is born trusted. Opening its lock later is the
+    user's business and prunes what follows from it (the lock button's own rule); whoever wants
+    to keep the chain copies first (ctrl+d) and unlocks the copy. ]]
+    box.fml.locked = true
     state_doc.active_index = index
     return true
 end
@@ -1645,6 +1767,29 @@ function content.handle_input(state_doc, fontset, pos)
                 content.remove_box(state_doc, i)
                 return
             end
+            --[[ THE LOCK IS A TRUST BIT, the author's mutex (2026-09-15). CLOSED means trusted,
+            and CLOSING CHECKS that trust first: the formula must parse into an ast
+            (editor_formula.lock's one restriction), so a closed lock is never a claim the tree
+            cannot back. OPEN means trustedness is gone - the cell is dirty, editable - and an
+            untrusted node cannot be what a derivation follows from, so the children go in either
+            direction of the toggle. A PARENTED box opens through unlock_mid_chain, which keeps a
+            trusted copy holding its chain position first; a root opens by the plain toggle. A
+            refused close changes nothing and prunes nothing. ]]
+            if r.lock_btn and point_in_rect(mpos.x, mpos.y, r.lock_btn.x, r.lock_btn.y,
+                    r.lock_btn.w, r.lock_btn.h) then
+                local fml = state_doc.boxes[i].fml
+                if fml.locked and fml.parent then
+                    state_doc.active_index = content.unlock_mid_chain(state_doc, i)
+                    return
+                end
+                local decls = content.declarations_before(state_doc, i)
+                local was_locked = fml.locked
+                editor_formula.lock(fml, fontset, decls.order)
+                if fml.locked ~= was_locked then
+                    content.prune_descendants(state_doc, fml.id)
+                end
+                return
+            end
             if r.wireframe_btn and point_in_rect(mpos.x, mpos.y, r.wireframe_btn.x,
                     r.wireframe_btn.y, r.wireframe_btn.w, r.wireframe_btn.h) then
                 state_doc.show_wireframe = not state_doc.show_wireframe
@@ -1706,9 +1851,20 @@ function content.handle_input(state_doc, fontset, pos)
     elseif active and active.def then
         editor_definition.handle_input(active.def, fontset, state_doc.font_size)
     elseif active and active.fml then
-        --[[ A true return means the box was pasted into: its content was replaced and its parent
-        link dropped. Everything derived from it followed from the OLD content, so it goes. ]]
-        if editor_formula.handle_input(active.fml, fontset, state_doc.font_size) then
+        --[[ THE PASTE IS ROUTED HERE, not in editor_formula: it is a cell-level transaction -
+        verified against the ast, enabled only where trust survives it (empty, or locked), and
+        swapping the box out of its chain, all of which is this file's to decide. A true return
+        from the paste or from the box's own input means content was replaced: everything derived
+        from this box followed from the OLD content, so it goes. ]]
+        if keymap.pressed("edit.paste")
+                and (not active.fml.formula or active.fml.locked) then
+            if paste_into_formula(state_doc, fontset, state_doc.active_index) then
+                content.prune_descendants(state_doc, active.fml.id)
+            end
+            return
+        end
+        local decls = content.declarations_before(state_doc, state_doc.active_index)
+        if editor_formula.handle_input(active.fml, fontset, state_doc.font_size, decls.order) then
             content.prune_descendants(state_doc, active.fml.id)
         end
     end
@@ -2435,15 +2591,40 @@ function content.draw(state_doc, fontset, pos, opts)
             end
             end -- box.editor: wireframe/graph buttons
 
+            --[[ THE LOCK BUTTON, leftmost in the row and only on a formula box: that box's own
+            EDIT/TRANSFORM toggle (editor_formula.lock). The button's border is the same gray as
+            the siblings'; inside it a small red padlock - closed and filled when the box is a
+            transform cell, open and hollow when it is a mathbox. The circle is drawn first and
+            the body after, so the body's fill covers the shackle's lower half and what reads is
+            the classic padlock shape. ]]
+            local lock_btn
+            if box.fml then
+                lock_btn = {x=gr.x - LOCK_SIZE - 4, y=box_y - LOCK_SIZE - 2,
+                        w=LOCK_SIZE, h=LOCK_SIZE}
+                vc.ImGui_AddRect({x=lock_btn.x, y=lock_btn.y},
+                        {x=lock_btn.x+lock_btn.w, y=lock_btn.y+lock_btn.h},
+                        LOCK_FRAME_COLOR, 3, 1)
+                local bx1, by1 = lock_btn.x + 4, lock_btn.y + 8
+                local bx2, by2 = lock_btn.x + lock_btn.w - 4, lock_btn.y + lock_btn.h - 3
+                local sh_x = (bx1 + bx2) / 2
+                if box.fml.locked then
+                    vc.ImGui_AddCircle({x=sh_x, y=by1}, 3, LOCK_RED, 2)
+                    vc.ImGui_AddRectFilled({x=bx1, y=by1}, {x=bx2, y=by2}, LOCK_RED, 1)
+                else
+                    vc.ImGui_AddCircle({x=sh_x + 2, y=by1 - 2}, 3, LOCK_RED, 2)
+                    vc.ImGui_AddRect({x=bx1, y=by1}, {x=bx2, y=by2}, LOCK_RED, 1, 1)
+                end
+            end
+
             layout[i] = {x=box_x, y=box_y, w=box_w, h=box_h, close=close, wireframe_btn=wf,
-                    graph_btn=gr}
+                    graph_btn=gr, lock_btn=lock_btn}
             y = box_y + box_h + BOX_GAP
         else
             -- Culled: nothing drawn this frame - just carry its own last-known height forward so
             -- everything stacked below it still lands in the right place. Width needs no carrying
             -- (every box is the full column - see box_w above), only the height it last measured.
             layout[i] = {x=box_x, y=box_y, w=box_w, h=cached_h, close=nil, wireframe_btn=nil,
-                    graph_btn=nil}
+                    graph_btn=nil, lock_btn=nil}
             y = box_y + cached_h + BOX_GAP
         end
     end

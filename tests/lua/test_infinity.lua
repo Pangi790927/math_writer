@@ -68,8 +68,11 @@ function run_test()
         check("...of one over zero, positive",
                 node ~= nil and node[1] == 1 and node[2] == 0 and node[3] == 1, out)
 
-        --[[ NOTHING WAS ADDED FOR THIS. The minus goes through build_product's existing "negate a
-        leading NUM in place" branch - see the header for why that mattering is the point. ]]
+        --[[ INFINITY IS A SIGN-NUMBER - +1 or -1 over 0 (the author, 2026-09-15) - so it joins
+        the accumulation of signs: the term's minus folds onto it instead of growing a factor,
+        and `-(-inf)` folds away rather than existing. This restores what the check asserted on
+        2026-09-11, on firmer ground: infinity's numerator is a pure sign, and folding is signs
+        with signs - magnitudes untouched, `-2x` still keeps its factors. ]]
         local out2, err2, node2 = tree(fs, "-" .. B .. "infty ")
         check("a negated infinity builds", out2 ~= nil, err2)
         check("...as the same number with the sign flipped, not as a multiplication",

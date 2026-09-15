@@ -89,8 +89,10 @@ function run_test()
     the right key is refused - the metatable is the type. That is not an assertion that stopped
     holding either: it is the same assertion, made through the same door the right-click menu uses,
     and it now also pins that offer and apply AGREE about the parameter, which two hand-written
-    tables could never have caught. ]]
-    local option = transforms.offers(ns, root, add)[1]
+    tables could never have caught. The click target is the sign's own node - add[2][1], the `+`'s
+    coefficient - since 2026-09-15 only signs offer, and a bare ADD is nothing a click resolves
+    to. ]]
+    local option = transforms.offers(ns, root, add[2][1])[1]
     check("setup: distribute offers itself at the sum", option ~= nil)
     if not option then
         return false

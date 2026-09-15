@@ -218,6 +218,30 @@ instantly, and close to invisible otherwise.
 
 ---
 
+## 5. Bracket-delete recursion
+
+Wanted 2026-09-15: deleting a parenthesis - the right-most one from `a(ab+a(b+c))`, say - should
+jump the cursor INTO the bracket and delete inward recursively (deleting `c` next). With
+ctrl+delete, delete the entire bracket group - or the mul group, when the caret is not on a
+parenthesis.
+
+---
+
+## 6. Formula menu grouping
+
+Idea 2026-09-15, for the next iteration: the formula menu will grow as transformations multiply;
+regroup the things a box offers in more interesting ways, in a menu of its own.
+
+---
+
+## 7. Remember things across reloads
+
+Wanted 2026-09-15: with Ctrl+R hot-swapping the Lua code, the app should remember some things over
+the reload - document locations among them (where the view was, what was open), so a hot-swap does
+not throw the session away.
+
+---
+
 ## Notation reachable with what exists
 
 Recorded because the earlier rewrites listed these as missing elements and the review flagged them

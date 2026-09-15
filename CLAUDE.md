@@ -636,7 +636,12 @@ of this section described an elaborate `SetWinEventHook`-based scheme to catch a
 windows after the fact — **that whole approach is obsolete, don't use it.** The app already has a
 proper, built-in headless mode (`debug_input_pipe.cpp`/`.h`, `imgui_helpers.h`) — use that instead.
 
-**Always launch with `--test`.** Two modes exist (`app_mode.h`, 2026-09-05): no arguments is
+**Always launch with `--test`.** And **only launch at all when the author asks** - decided
+2026-09-15: live runs annoy him (he plays and works on the machine, and a window appearing
+disturbs that; he sees results later in the pipeline anyway). Default to the test harnesses,
+which cover everything headlessly; a live `--test` run is a last resort he requests, not a
+verification step a session takes on its own.
+Two modes exist (`app_mode.h`, 2026-09-05): no arguments is
 PRESENTATION - the instance the developer runs, visible window, no debug pipe, files where they
 always were. `--test` is the instance a session drives: window never shown, debug pipe listening,
 and every file it touches moved under `test_run/` (its own `math_writer.save`, `logfile.log`,

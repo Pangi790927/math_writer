@@ -107,7 +107,7 @@ function run_test()
         holding either: it is the same assertion, made through the same door the right-click menu uses,
         and it now also pins that offer and apply AGREE about the parameter, which two hand-written
         tables could never have caught. ]]
-        local option = transforms.offers(ns, node, add)[1]
+        local option = transforms.offers(ns, node, add[2][1])[1]
         check("setup: distribute offers itself at the sum", option ~= nil)
         if not option then
             return false
