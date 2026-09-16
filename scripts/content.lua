@@ -262,6 +262,10 @@ local CLOSE_COLOR        = 0xffaaaaaa
 local HOVER_COLOR        = 0xff66ff66
 local GRAPH_OFF_COLOR    = 0xff888888
 local GRAPH_ON_COLOR     = 0xff55cc55
+--[[ The bounds toggle's star: on, it wears the arcs' own blue (mexpru.BOUND_COLOR's value, the
+palette the button stands for); off, the same gray as the graph button's off state. 0xAABBGGRR. ]]
+local BOUNDS_OFF_COLOR   = 0xff888888
+local BOUNDS_ON_COLOR    = 0xffffaf50
 local WIREFRAME_OFF_COLOR = 0xff888888
 local WIREFRAME_ON_COLOR  = 0xff66ccff
 
@@ -324,6 +328,7 @@ local STATE_FIELDS = {
 
     show_wireframe    = "global: mexpr's debug bounding boxes, off by default",
     show_graph        = "global: the active formula's reachable-position graph",
+    show_bounds       = "global: the formula boxes' bound-variable arcs, off by default",
     show_ast          = "F4: the parse of the expression you are on",
     show_ast_string   = "F5: its ast.lua serialization",
     show_ast_result   = "F6: what the transformation here would produce; replaces F4",
@@ -360,6 +365,11 @@ local function new_shell()
                                  -- reachable-position graph (mformula_new.reachable_graph(),
                                  -- carried over from the old row-based editor) is drawn, off by
                                  -- default so it doesn't clutter ordinary editing.
+        show_bounds = false,    -- toggled by the star button left of the padlock - global, same
+                                 -- reasoning as its two siblings: whether the formula boxes draw
+                                 -- their bound-variable arcs (editor.draw_bound_links, the
+                                 -- author's 2026-09-16 link design), off by default so the page
+                                 -- stays quiet until the links are wanted.
         font_size = DEFAULT_FONT_SIZE, -- Ctrl+MouseWheel (handle_input()) adjusts this - global, same
                                  -- reasoning as show_wireframe just above. A char.lua size-table
                                  -- index, not a pixel size (DEFAULT_FONT_SIZE's own comment).
@@ -699,6 +709,18 @@ function content.serialize(state_doc)
         box - old saves keep loading unchanged. ]]
         parts[#parts + 1] = (box.kind or KIND_TEXT) .. " " .. tostring(#text) .. "\n" .. text
     end
+    --[[ THE VIEW RIDES ALONG (the author, 2026-09-16: "make it such a reload preserves scrol? and
+    it should also preserve the cursor location") - one final record, "view <scroll> <active>
+    <caret>", where the caret is the ACTIVE text box's own index into its chars. A Ctrl+R saves
+    before reloading, so the reloaded instance opens exactly where the old one sat - scroll, box,
+    caret. A box body can contain any bytes, but bodies are consumed by LENGTH and never scanned,
+    so this record can only be read where a header belongs; a file without it (every older save)
+    simply loads as it always did. ]]
+    local active = state_doc.active_index or 1
+    local ed = state_doc.boxes[active] and state_doc.boxes[active].editor
+    parts[#parts + 1] = string.format("view %d %d %d\n",
+            math.floor(state_doc.scroll_y or 0), active,
+            math.floor(ed and ed.cursor_pos or 0))
     return table.concat(parts)
 end
 
@@ -722,6 +744,7 @@ end
 --]]
 function content.deserialize(text, fontset)
     local state_doc = new_shell()
+    local view = nil
     local pos = 1
     while pos <= #text do
         local nl = text:find("\n", pos, true)
@@ -729,6 +752,15 @@ function content.deserialize(text, fontset)
             break
         end
         local header = text:sub(pos, nl - 1)
+        --[[ THE VIEW RECORD, when one is present (serialize's own note): the final line of a
+        current save. Read here and the loop ends - nothing can follow it by construction, and a
+        body can never fake one, since bodies are consumed by length. ]]
+        local scroll, active, caret = header:match("^view (-?%d+) (%d+) (%d+)$")
+        if scroll then
+            view = {scroll = tonumber(scroll), active = tonumber(active),
+                    caret = tonumber(caret)}
+            break
+        end
         --[[ Two accepted headers, see serialize(): "<kind> <len>" (current) and a bare "<len>"
         (written before box kinds existed, read back as a text box). An unrecognised kind is also
         read as a text box rather than rejected - same leniency the length parse already has. ]]
@@ -802,7 +834,20 @@ function content.deserialize(text, fontset)
     for _, id in ipairs(untrusted) do
         content.prune_descendants(state_doc, fontset, id)
     end
-    state_doc.active_index = 1
+    --[[ THE VIEW, restored when the save carried one and clamped to what it still names: a box
+    count that changed since (the prune above, a hand-edited file) leaves the default first box
+    active rather than an index into nothing, and a caret past the end of its chars is left at the
+    start. The scroll is clamped by the first draw against the real height anyway. ]]
+    if view and view.active >= 1 and view.active <= #state_doc.boxes then
+        state_doc.scroll_y = math.max(0, view.scroll)
+        state_doc.active_index = view.active
+        local ed = state_doc.boxes[view.active].editor
+        if ed and view.caret >= 0 and view.caret <= #ed.chars then
+            ed.cursor_pos = view.caret
+        end
+    else
+        state_doc.active_index = 1
+    end
     return state_doc
 end
 
@@ -1904,6 +1949,11 @@ function content.handle_input(state_doc, fontset, pos)
                 state_doc.show_graph = not state_doc.show_graph
                 return
             end
+            if r.bounds_btn and point_in_rect(mpos.x, mpos.y, r.bounds_btn.x, r.bounds_btn.y,
+                    r.bounds_btn.w, r.bounds_btn.h) then
+                state_doc.show_bounds = not state_doc.show_bounds
+                return
+            end
         end
 
         local hit = nil
@@ -2634,7 +2684,8 @@ function content.draw(state_doc, fontset, pos, opts)
             elseif box.fml then
                 local content_h = editor_formula.draw(box.fml, fontset, {x = box_x + BOX_PADDING,
                         y = box_y + BOX_PADDING}, state_doc.font_size,
-                        content_w, is_active, state_doc.show_wireframe, state_doc.show_graph)
+                        content_w, is_active, state_doc.show_wireframe, state_doc.show_graph,
+                        state_doc.show_bounds)
                 box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
             else
                 box_h = EMPTY_BOX_HEIGHT
@@ -2704,8 +2755,31 @@ function content.draw(state_doc, fontset, pos, opts)
             full circle with the body's fill meant to cover the lower half, which only worked while
             the body was filled: a hollow body let the whole ring show (reported live 2026-09-16,
             "the circle thing is not an arc, it's a circle"). ]]
-            local lock_btn
+            local lock_btn, bounds_btn
             if box.fml then
+                --[[ THE BOUNDS TOGGLE, leftmost of the row (the author, 2026-09-16: "desabled/
+                enabled like the draw graph with a new button, left of the lock one... a mini
+                4-node in a star shape graph drawn with blue"): one centre node and three leaves,
+                the picture of a declaration linking its references. Blue at the arc colour, lit
+                when the drawing is on and dimmed when off, exactly as the graph button beside it
+                dims - the state is a standing fact, and an unlit icon for an on-drawing would
+                lie about it. ]]
+                bounds_btn = {x = gr.x - 2 * LOCK_SIZE - 8, y = box_y - LOCK_SIZE - 2,
+                        w = LOCK_SIZE, h = LOCK_SIZE}
+                vc.ImGui_AddRect({x=bounds_btn.x, y=bounds_btn.y},
+                        {x=bounds_btn.x+bounds_btn.w, y=bounds_btn.y+bounds_btn.h},
+                        LOCK_FRAME_COLOR, 3, 1)
+                local star_c = {x = bounds_btn.x + bounds_btn.w / 2,
+                        y = bounds_btn.y + bounds_btn.h / 2 + 1}
+                local star_col = state_doc.show_bounds and BOUNDS_ON_COLOR or BOUNDS_OFF_COLOR
+                for a = 90, 330, 120 do
+                    local r = math.rad(a)
+                    local leaf = {x = star_c.x + 5 * math.cos(r), y = star_c.y - 5 * math.sin(r)}
+                    vc.ImGui_AddLine(star_c, leaf, star_col, 1)
+                    vc.ImGui_AddCircle(leaf, 1.5, star_col, 1)
+                end
+                vc.ImGui_AddCircle(star_c, 1.5, star_col, 1)
+
                 lock_btn = {x=gr.x - LOCK_SIZE - 4, y=box_y - LOCK_SIZE - 2,
                         w=LOCK_SIZE, h=LOCK_SIZE}
                 vc.ImGui_AddRect({x=lock_btn.x, y=lock_btn.y},
@@ -2725,14 +2799,14 @@ function content.draw(state_doc, fontset, pos, opts)
             end
 
             layout[i] = {x=box_x, y=box_y, w=box_w, h=box_h, close=close, wireframe_btn=wf,
-                    graph_btn=gr, lock_btn=lock_btn}
+                    graph_btn=gr, lock_btn=lock_btn, bounds_btn=bounds_btn}
             y = box_y + box_h + BOX_GAP
         else
             -- Culled: nothing drawn this frame - just carry its own last-known height forward so
             -- everything stacked below it still lands in the right place. Width needs no carrying
             -- (every box is the full column - see box_w above), only the height it last measured.
             layout[i] = {x=box_x, y=box_y, w=box_w, h=cached_h, close=nil, wireframe_btn=nil,
-                    graph_btn=nil, lock_btn=nil}
+                    graph_btn=nil, lock_btn=nil, bounds_btn=nil}
             y = box_y + cached_h + BOX_GAP
         end
     end

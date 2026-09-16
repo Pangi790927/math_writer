@@ -28,6 +28,16 @@
 -- |     One frame of input. True when the TREE changed, not when the cursor
 -- |     merely moved - the seam an owner's undo hangs off.
 -- |
+-- | link_arc(a: {x,y}, b: {x,y}, ceiling: number, n: number) -> {{x,y}, ...} | nil
+-- |     The parabola from a to b whose vertex touches the ceiling - the
+-- |     curve a bound variable's link draws. Nil when no such parabola is.
+-- |
+-- | draw_bound_links(container: mexpru.container, fontset: fontset, sz: size, draw_x: number,
+-- |                 draw_y: number, ceiling: number) -> nothing
+-- |     Arcs each bound variable from its declaration glyph to its
+-- |     references, tangent to the box's ceiling. Call before the glyphs:
+-- |     first drawn is behind.
+-- |
 -- | --- internal, not on the module table ---------------------------------------------------------
 -- |     DRAW_OPTS      every option draw_formula understands; a caller's key is checked
 -- |                    against it, since opts arrives already built
@@ -351,6 +361,129 @@ function editor.edit_bracket(container, fontset, sz)
     local pre_version = container.version
     mformula.handle_input(container, fontset, sz)
     return container.version ~= pre_version
+end
+
+--[[ The colour and weight of the links a bound variable draws between its declaration and its
+references - the bound blue at a ghost's opacity, so the arcs read as annotation rather than ink.
+0xAABBGGRR packing. The first version of this constant carried a stray digit (0x60ffffaf50, ten
+hex digits) and silently truncated on the way into a uint32 - found 2026-09-16 alongside the
+frame mismatch below. @date 2026-09-16 ]]
+local LINK_COLOR  = 0x60ffaf50
+local LINK_THICK  = 1.0
+local LINK_SEGS   = 24
+
+--[[ @brief The parabola that arcs from `a` to `b`, tangent to the ceiling above them.
+-- |
+-- | THE AUTHOR'S OWN SPECIFICATION (2026-09-16), verbatim in substance: "a parabola hiting 3
+-- | points: 1. the variable declaration, 2. the ceiling of the formula box and 3. the reference
+-- | ... the third point, the one on the ceiling should be as such that the ceiling is also
+-- | tangent to the parabola". A horizontal tangent is the VERTEX, so the ceiling point is the
+-- | parabola's vertex: y = ceiling + c(x - h)^2 for the h and c that pass through both ends.
+-- |
+-- | SOLVED IN SCREEN COORDINATES, y growing downward, so "below the ceiling" is the larger y and
+-- | the arms hang from the vertex. With the ends' depths dA and dB below the ceiling, the vertex
+-- | sits BETWEEN them (u and v of opposite sign), which fixes the ratio u/v = -sqrt(dA/dB) and
+-- | with it h; equal depths give the symmetric midpoint, as they should.
+-- |
+-- | @param a        {x, y} - one end, at the top of the declaring glyph
+-- | @param b        {x, y} - the other end, at the top of the reference glyph
+-- | @param ceiling  number - the y of the box's top edge; the arc touches it and never crosses
+-- | @param n        integer - how many segments to sample the curve into
+-- | @return {{x, y}, ...} | nil - the points from `a` to `b`, in order; nil when no parabola
+-- |         exists (ends at the same x, or an end not below the ceiling)
+-- |
+-- | @date 2026-09-16
+--]]
+function editor.link_arc(a, b, ceiling, n)
+    if math.abs(a.x - b.x) < 1e-6 then
+        return nil
+    end
+    local left, right = a, b
+    if left.x > right.x then
+        left, right = b, a
+    end
+    local d_left, d_right = left.y - ceiling, right.y - ceiling
+    if d_left <= 0 or d_right <= 0 then
+        return nil
+    end
+    local ratio = math.sqrt(d_left / d_right)
+    local v = (right.x - left.x) / (ratio + 1)
+    local h = right.x - v
+    local c = d_left / ((left.x - h) * (left.x - h))
+    local pts = {}
+    for k = 0, n do
+        local x = left.x + (right.x - left.x) * k / n
+        pts[#pts + 1] = {x = x, y = ceiling + c * (x - h) * (x - h)}
+    end
+    return pts
+end
+
+--[[ The top-centre of the glyph `node` draws at, ABOVE ITS DECORATOR when it has one: the link's
+end is the outermost ink of the name, an accent included. The box is the tree frame's; the caller
+holds the draw origin. @date 2026-09-16 ]]
+local function glyph_top(fontset, node)
+    local outer = node
+    local parent = outer:get_parent()
+    if parent and mexpru.u(parent) and mexpru.u(parent).kind == "dress" then
+        outer = parent
+    end
+    local box = mformula.node_bbox(fontset, outer)
+    return {x = (box.left + box.right) / 2, y = box.top}
+end
+
+--[[ @brief Draws the bound-variable links, each an arc from declaration to reference.
+-- |
+-- | BEHIND THE FORMULA BY CALL ORDER (the author, 2026-09-16: "an arc behind the formula
+-- | drawing"): the caller issues this before it draws the glyphs, and ImGui has no depth - what
+-- | is drawn first is behind. The links come from the container's own parse (`_bound_links`,
+-- | refreshed by every parse); a container nothing has parsed has none, and so has one whose last
+-- | parse failed.
+-- |
+-- | @param container  mexpru.container - checked; read for its links and glyph boxes
+-- | @param fontset    fontset
+-- | @param sz         size - as drawn; the tree frame's baseline correction is per-size
+-- | @param draw_x     number - the origin the formula is drawn at this frame
+-- | @param draw_y     number - the baseline it is drawn at
+-- | @param ceiling    number - SCREEN y of the box's top edge - the arcs' tangent line
+-- | @return nothing
+-- |
+-- | @date 2026-09-16
+--]]
+function editor.draw_bound_links(container, fontset, sz, draw_x, draw_y, ceiling)
+    mexpru.check_container(container)
+    local prof = require("prof")
+    --[[ THE TREE FRAME'S ORIGIN IS THE BASELINE PLUS THE GLYPH RE-CENTRING (mformula's own draw
+    applies the same correction before mexpr_draw - its baseline_correction's comment): without it
+    every arc lands a half-line below the formula it names, which is exactly how the links first
+    shipped invisible (found live 2026-09-16, "the arcs didn't show up"). ]]
+    local origin_y = draw_y + mformula.baseline_correction(fontset, sz)
+    local links = container._bound_links
+    if not links then
+        return
+    end
+    --[[ Profiling starts only past the early-out, so an unparsed box's empty return does not
+    leave the scope hanging open. ]]
+    prof.begin("lua.draw.bound_links")
+    for _, link in pairs(links) do
+        --[[ BOTH ENDS AND THE CEILING IN ONE FRAME - screen, with the origin folded in before
+        the solver sees them. The first version handed the solver TREE-frame endpoints against a
+        SCREEN ceiling, every depth came out negative, and link_arc's own honest nil swallowed
+        every arc silently - the links existed, the geometry worked, and nothing drew (found
+        2026-09-16, live as "I still see no line connecting the variables"). ]]
+        local ta = glyph_top(fontset, link.decl)
+        local a = {x = draw_x + ta.x, y = origin_y + ta.y}
+        for _, ref in ipairs(link.refs) do
+            local tb = glyph_top(fontset, ref)
+            local b = {x = draw_x + tb.x, y = origin_y + tb.y}
+            local pts = editor.link_arc(a, b, ceiling, LINK_SEGS)
+            if pts then
+                for k = 2, #pts do
+                    vc.ImGui_AddLine(pts[k - 1], pts[k], LINK_COLOR, LINK_THICK)
+                end
+            end
+        end
+    end
+    prof.stop("lua.draw.bound_links")
 end
 
 return editor

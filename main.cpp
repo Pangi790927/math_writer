@@ -298,6 +298,11 @@ int main(int argc, char const *argv[])
         }
 
         static bool reload_armed = false;
+        /*  A reload BLINKS: until this deadline passes, the frame loop draws nothing - 200ms of
+        blank rather than a freeze, so Ctrl+R is visibly confirmed (requested 2026-09-16: "ctrl+r
+        is too fast... maybe wait 200ms before drawing after clearing"). steady_clock because it
+        is monotonic; a blank window that outlives it would be worse than no signal at all. */
+        static std::chrono::steady_clock::time_point reload_blink_until{};
         bool reload_combo = ctrl_now && glfwGetKey(imgui_window, GLFW_KEY_R) == GLFW_PRESS;
         if (!reload_combo)
             reload_armed = true;
@@ -342,6 +347,8 @@ int main(int argc, char const *argv[])
                 }
                 else {
                     DBG("Ctrl+R: Lua reloaded");
+                    reload_blink_until = std::chrono::steady_clock::now()
+                            + std::chrono::milliseconds(200);
                 }
             }
             else {
@@ -380,10 +387,18 @@ int main(int argc, char const *argv[])
                     "DEBUG PIPE OPEN on 47822  (Ctrl+Shift+D to close)");
         }
 
+        /*  The blink guard: skip Lua's draw while it lasts, but keep everything else of the frame
+        - the pipe pump, ImGui's plumbing, the render - so the screen goes blank-and-back rather
+        than freezing, and a command arriving mid-blink still lands. */
+        if (std::chrono::steady_clock::now() < reload_blink_until) {
+            DBG("Ctrl+R: blink - frame skipped");
+        }
+        else {
         auto [ret, err] = [&]{ PROF_SCOPE("cpp.call_lua");
                 return vc::call_lua<int>(vs.get(), "test_draw"); }();
         ASSERT_FN(ret);
         ASSERT_FN(err);
+        }
 
         // bool true_val = true;
         // ImGui::ShowMetricsWindow(&true_val);

@@ -3,8 +3,8 @@
 -- |     A fresh, empty box.
 -- |
 -- | draw(state_formula: editor_formula.state_formula, fontset: fontset, pos: {x,y}, sz: size,
--- |      width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean)
--- |      -> height
+-- |      width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean,
+-- |      show_bounds: boolean) -> height
 -- |     Draws the box and returns the height it filled, so the caller can
 -- |     lay out whatever follows without measuring it again.
 -- |
@@ -165,11 +165,26 @@ local function locked_allows()
     if #vc.ImGui_input_queue_chars() > 0 then
         return false
     end
+    --[[ THE GLYPH FAMILIES ARE RAW POLLS, not actions, so the gate must ask for Alt itself: the
+    Greek letters, the Alt+punctuation set and the glyph map are read straight from ImGui inside
+    the funnel ("destined for F2's glyph-binding section rather than the shortcut registry",
+    mformula_new's own note), and an Alt+Shift+Q frame fires no action and queues no character -
+    which is exactly how an integral sign appeared inside a locked formula (found live,
+    2026-09-16). Refused unless a whitelisted ACTION fired, because Alt-movement still arrives
+    that way (math.back_up and its kin); Ctrl+Alt is AltGr, whose characters the queue already
+    catches. ]]
+    local saw_allowed, ctrl, _, alt = false, keymap.mods()
     for _, id in ipairs(keymap.fired()) do
         local prefix = id:match("^(%a+%.)")
-        if prefix and FUNNEL_PREFIX[prefix] and not LOCKED_ALLOW[id] then
-            return false
+        if prefix and FUNNEL_PREFIX[prefix] then
+            if not LOCKED_ALLOW[id] then
+                return false
+            end
+            saw_allowed = true
         end
+    end
+    if alt and not ctrl and not saw_allowed then
+        return false
     end
     return true
 end
@@ -352,13 +367,14 @@ end
 -- | @param show_cursor     boolean - this is the active box: the field's edge and the caret
 -- | @param show_wireframe  boolean - passed through: mexpr's debug boxes
 -- | @param show_graph      boolean - passed through: the reachable-position graph
+-- | @param show_bounds     boolean - the bound-variable arcs, behind the glyphs
 -- | @return number - the height filled, padding included
 -- |
 -- | @date 2026-09-13 19:10
 --]]
 function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_cursor,
         show_wireframe,
-        show_graph)
+        show_graph, show_bounds)
     STATE_SHAPE.check(state_formula)
     ensure(state_formula, fontset)
     local pad = FIELD_PAD
@@ -397,6 +413,18 @@ function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_
     too - only content knows the document's declarations for the lock's parse check, and locking
     prunes the box's children, which is content's to do. This file supplies the toggle itself
     (lock() below) and the mode flag the button reads. ]]
+
+    --[[ THE BOUND-VARIABLE LINKS, behind the glyphs by being drawn first and above the field's
+    own fill by being drawn after it (the author, 2026-09-16: "an arc behind the formula
+    drawing"): each arcs from the declaration glyph's top to a reference's, tangent to the box's
+    ceiling - editor.link_arc carries the geometry. Gated on its own chrome button, the star left
+    of the padlock, like the wireframe and graph beside it - off by default, the page stays quiet.
+    The links live on the container, written by its last parse, so an unparsed box simply has
+    none; positions are the laid-out ones this same frame draws from. ]]
+    if show_bounds then
+        editor.draw_bound_links(state_formula.formula, fontset, sz, pos.x, baseline,
+                baseline + m.top - pad)
+    end
 
     local r = editor.draw_formula(state_formula.formula, fontset, sz, {x = pos.x, y = baseline}, {
         active = show_cursor,
@@ -520,7 +548,10 @@ function editor_formula.handle_input(state_formula, fontset, sz, decls)
         repaint it needed (found live 2026-09-16: delete "refreshed" a locked formula and the
         declared names went white - the rebuild threw the painted tree away). ]]
         if locked_allows() then
+            local prof = require("prof")
+            prof.begin("lua.input.locked_funnel")
             editor.edit_bracket(state_formula.formula, fontset, sz)
+            prof.stop("lua.input.locked_funnel")
         end
         return false
     end

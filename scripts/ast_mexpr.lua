@@ -13,12 +13,13 @@
 -- |     An ast tree written back out as glyphs, copying what was drawn for
 -- |     anything with an IDENTITY and building the rest. `container` wraps
 -- |     the row with a cursor and a version so an editor can hold it.
--- |     REFUSES BY NAME what it cannot write - divisions, calls, integrals,
--- |     the overprinted \ne - because a refusal is a correct answer and a
--- |     wrong drawing is not. A DERIVATIVE it does write, as the fraction
--- |     it is in notation, bar green through mexpru.mark_diff; so are the
--- |     GROUP BIG OPERATORS, limits over and under, and the plain relations
--- |     a bigop's limit rows are built from.
+-- |     REFUSES BY NAME what it cannot write - divisions, the overprinted
+-- |     \ne - because a refusal is a correct answer and a wrong drawing is
+-- |     not. A DERIVATIVE it does write, as the fraction it is in notation,
+-- |     bar green through mexpru.mark_diff; so are the GROUP BIG OPERATORS,
+-- |     limits over and under, the plain relations a bigop's limit rows are
+-- |     built from, and the INTEGRAL - its \int and closing d built as a
+-- |     real bracket pair, bounds beside the sign.
 -- |
 -- | verify(fontset: fontset, container: mexpru.container, decls: {decl}, ns: ast.ns, node: node)
 -- |       -> ok, want, got
@@ -30,7 +31,7 @@
 -- |     new_write_ctx() THE ONE creator for the `ctx_write` every emit_* is handed
 -- |     PREC/ATOM_PREC, glyph, glyph_desc, glyph_op, append, bracketed,
 -- |     emit_ref, emit_digits, emit_num, emit_factors, emit_sum, emit_power,
--- |     emit_diff, emit_relation, emit_bigop
+-- |     emit_diff, emit_relation, emit_bigop, emit_int
 -- |
 -- | @date 2026-09-15 15:00
 -- | ===============================================================================================
@@ -54,12 +55,15 @@ TWO MECHANISMS, and which one applies is the whole design:
   - BUILD, for STRUCTURE. Operators, brackets and digits have no identity to preserve - one `+` is
     every `+` - so they come from mexpru's plain constructors, the same ones typing uses.
 
-NOT HERE YET, deliberately: divisions, calls, integrals, the CELL, and the overprinted `\ne` -
-refused by name, like anything else this file cannot draw. What it covers is what `distribute` can
-produce - sums, products, whole numbers, references and powers - plus the DERIVATIVE (a fraction
-carrying `u.diff`, through emit_diff), the GROUP BIG OPERATORS (\sum, \lim and the rest, limits
-over and under through emit_bigop) and the plain RELATIONS a bigop's limits are written with
-(k = 0, x \to 0, through emit_relation). A refusal is a correct answer; a wrong drawing is not.
+NOT HERE YET, deliberately: divisions, the CELL, and the overprinted `\ne` - refused by name, like
+anything else this file cannot draw. What it covers is what `distribute` can produce - sums,
+products, whole numbers, references and powers - plus the DERIVATIVE (a fraction carrying `u.diff`,
+through emit_diff), the GROUP BIG OPERATORS (\sum, \lim and the rest, limits over and under through
+emit_bigop), the plain RELATIONS a bigop's limits are written with (k = 0, x \to 0, through
+emit_relation), the CALL (callee letters and a cell-shaped bracket pair, emit_call) and the
+INTEGRAL (its `\int` and closing `d` built as a real bracket pair, the bounds beside the sign,
+through emit_int - found live 2026-09-16 as the reason a distribute inside an integral refused:
+"cannot write a INT back yet"). A refusal is a correct answer; a wrong drawing is not.
 
 THE SELF-CHECK IS PART OF THE CONTRACT: verify() reparses what was built and compares shapes with
 what it was asked to build. It costs one parse and catches the class of bug that matters here - a
@@ -96,6 +100,7 @@ fact about the mexpr row it draws into, and precedence is only ever the bracketi
 for node_type in pairs(ast.GROUP_BIGOP_DRAW) do
     PREC[node_type] = 2
 end
+PREC[ast.INT] = 2   -- the pair delimits its own body; to everything else it draws like a term
 PREC[ast.CALL] = 2
 PREC[ast.CELL] = 4   -- its brackets are always written, so it is an atom to everyone else
 
@@ -528,6 +533,83 @@ local function emit_bigop(ctx_write, node)
     return append({head}, body)
 end
 
+--[[ An integral, written as the pair it is read from: the `\int` glyph with its size boost and
+its bounds beside it, the integrand between the halves, and the closing `d` - a real bracket half
+carrying the peer link, because the reparse refuses an unpaired integral - with the variable
+after it.
+
+    \int_0^1 x dx      INT(var x, NUM 1, NUM 0, VREF x)   writes  the glyph, 1 over 0 beside it,
+                                                                x, the d, x
+
+THE VARIABLE IS CLONED, not built: the parse tags the `dx`'s own glyph with the var (read_integral),
+so origins answers for it exactly as it does for a reference - and the clone carries the bound
+blue the parse painted, the d is painted the differential green at the build, and the integrand's
+caught mentions clone their own blue. A variable with no drawing anywhere is refused by name, as
+every other uncopyable name is. NULL bounds (an indefinite integral) simply draw no sides.
+@date 2026-09-16 16:00 ]]
+local function emit_int(ctx_write, node)
+    local open = glyph_op(ctx_write, "\\int")
+    if not open then
+        return nil, "no glyph for \\int in the font"
+    end
+    local close = glyph(ctx_write, "d")
+    if not close then
+        return nil, "no glyph for d in the font"
+    end
+    -- THE PAIR, the same peer links `bracketed` builds: the reparse finds the close BY PEER.
+    mexpru.u(open).bracket = {is_open = true, type = char.BRACKET_INTEGRAL,
+            peer = mexpru.u(close)}
+    mexpru.u(close).bracket = {is_open = false, type = char.BRACKET_INTEGRAL,
+            peer = mexpru.u(open)}
+    close.color = mexpru.DIFF_COLOR
+
+    --[[ The bounds ride the halves at the size a typed supsub uses, rebound the way emit_power
+    rebinds its exponent - the glyph's own size is what draws, not the row's. A NULL bound is no
+    side at all. ]]
+    local sup_sz = math.min(ctx_write.sz + mformula_new.SUB_SIZE_DELTA, mexpru.MAX_SIZE_INDEX)
+    local bound_ctx = new_write_ctx(ctx_write.fs, sup_sz, ctx_write.origins,
+            ctx_write.var_origins)
+    local function side(bound)
+        if bound.type == ast.NULL then
+            return nil
+        end
+        local run, err = emit(bound_ctx, bound, 1)
+        if not run then
+            return nil, err
+        end
+        return mexpru.horiz(ctx_write.fs, run, sup_sz)
+    end
+    local sup, err = side(node[2])
+    if not sup and err then
+        return nil, err
+    end
+    local sub
+    sub, err = side(node[3])
+    if not sub and err then
+        return nil, err
+    end
+
+    local var = ctx_write.origins[node[1].id] or ctx_write.var_origins[node[1].id]
+    if not var then
+        return nil, "nothing to copy for the differential's variable - it was never drawn in "
+                .. "the source"
+    end
+    local var_run = {mformula_new.clone_node(ctx_write.fs, var)}
+
+    local body, berr = emit(ctx_write, node[4], 1)
+    if not body then
+        return nil, berr
+    end
+
+    local head = mexpru.supsub(ctx_write.fs, open, sup, sub, ctx_write.sz,
+            mexpru.PLACE_BESIDE, mexpru.PLACE_BESIDE)
+    local run = {head}
+    append(run, body)
+    run[#run + 1] = close
+    append(run, var_run)
+    return run
+end
+
 --[[ A CELL, written as exactly what it is: its brackets, around its content's glyphs.
 
     af(x)   MUL(a, f, CELL(x))   writes  a f ( x )   - the user's own parens, kept and given back
@@ -691,6 +773,8 @@ emit = function(ctx_write, node, min_prec)
         end
     elseif node.type == ast.DIFF then
         run, err = emit_diff(ctx_write, node)
+    elseif node.type == ast.INT then
+        run, err = emit_int(ctx_write, node)
     elseif ast.GROUP_BIGOP_DRAW[node.type] then
         run, err = emit_bigop(ctx_write, node)
     elseif RELATION_DESC[node.type] then

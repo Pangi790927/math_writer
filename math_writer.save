@@ -80,12 +80,6 @@ a(ab+ab+ac+ad)(a+b+cab+cad)+\frac{\mathrm{d} }{\mathrm{d} x}(ax+ay)2
 \frac{\mathrm{d} }{\mathrm{d} x}(a(x+y))2
 490
 1
-1formula 55
-4
-39
-\frac{\mathrm{d} }{\mathrm{d} x}(ax+ay)2
-512
-491
 1formula 83
 4
 70
@@ -132,24 +126,45 @@ text 237
 $$aab(a+b+cab+cad)+aab(a+b+cab+cad)+aac(a+b+cab+cad)+aad(a+b+cab+cad)$$
 $$aab(a+b+cab+cad)+aab(a+b+cab+cad)+aaca+aacb+aaccab+aaccad+aad(a+b+cab+cad)$$
 $$aab(a+b+cab+cad)+aab(a+b+cab+cad)+aaca+aacb+aaccab+aaccad+aada+aadb+aadcab+aadcad$$
-formula 60
+formula 69
 4
-47
-\sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}1
+56
+\int \sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}\,dt1
 40
 1
-1formula 63
+1formula 72
 4
-48
-\sum \limits^{N}_{k=0}e^{-jk\delta tw-jk\beta w}2
-541
+57
+\int \sum \limits^{N}_{k=0}e^{-jk\delta tw-jk\beta w}\,dt2
+781
 41
-1formula 63
+1text 124
+$$\int \sum \limits^{N}_{k=0}e^{-jk\delta tw-jk\beta w}\,dt$$
+$$\int \sum \limits^{N}_{k=0}e^{-jk\delta tw-jk\beta w}\,dt$$
+formula 85
+4
+71
+\int \sum \limits^{N}_{k=0}e^{-jk\delta w-jk\beta tw(ab+cd+a(t+k))}\,dt2
+720
+1
+1formula 86
+4
+70
+\int \sum \limits^{N}_{k=0}e^{-jk\delta w-jk\beta tw(ab+cd+at+ak)}\,dt2
+792
+721
+1formula 114
+4
+98
+\int \sum \limits^{N}_{k=0}e^{-jk\delta w-jk\beta twab-jk\beta twcd-jk\beta twat-jk\beta twak}\,dt2
+802
+791
+1formula 61
 4
 47
 \sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}2
-582
-531
+830
+1
 1text 33
 $$a(ab+a(b+c+d))\ (a+b+ca(b+d))$$formula 22
 4
@@ -193,6 +208,12 @@ x\in \R 3
 a(b+f(y))\ +\ \frac{\mathrm{d} }{\mathrm{d} x}f(y)2
 640
 1
+1formula 61
+4
+45
+ab+af(y)+\frac{\mathrm{d} }{\mathrm{d} x}f(y)2
+772
+641
 1formula 26
 4
 12
@@ -200,4 +221,4 @@ a(b+f(y))\ +\ \frac{\mathrm{d} }{\mathrm{d} x}f(y)2
 710
 1
 1text 22
-Editor stage 1 is done
+Editor stage 1 is doneview 6527 24 0

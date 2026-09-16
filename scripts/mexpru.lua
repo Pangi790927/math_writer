@@ -248,6 +248,8 @@ local U_FIELDS = {
     -- the ast correspondence, written by the parse
     ast_id        = "which ast node this glyph NAMES, for resolving a gesture",
     ast_draws     = "which ast node this glyph IS THE INK OF, for the writer",
+    ast_declares  = "TRANSIENT, parse-written: the var id this glyph SPELLS THE DECLARATION of - a "
+                  .. "bigop's first constraint mention, whose reference tag must stay intact",
 
     -- latex
     group_closed  = "a group that has already been closed, while rendering",
@@ -369,6 +371,8 @@ local CONTAINER_FIELDS = {
     _blink_key       = "what the caret's blink phase is keyed on, so it restarts on a move",
     _ast_cache       = "ast_gestures' parse of this row, keyed on `version`",
     _transform_cache = "ast_gestures' preview of one option, keyed on version and option",
+    _bound_links     = "the parse's variable links - for each bound var, its declaration glyph "
+                    .. "and its references - refreshed by every parse, nil after a failed one",
     _contour_cache   = "the vert contours last computed for this tree",
     _graph_cache     = "the reachable-position graph last computed for this tree",
 }

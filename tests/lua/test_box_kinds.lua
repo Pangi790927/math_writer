@@ -176,6 +176,33 @@ function run_test()
     check("empty document still yields one box", #empty.boxes == 1, #empty.boxes)
     check("that box is usable", empty.boxes[1].editor ~= nil)
 
+    -- ---------------------------------------------------------------------------------------
+    -- THE VIEW RIDES THE SAVE (2026-09-16): a final "view <scroll> <active> <caret>" record, so a
+    -- Ctrl+R - which saves before reloading - reopens exactly where the old instance sat. The
+    -- assumption pinned here is that the record is READ WHERE A HEADER BELONGS and nowhere else:
+    -- bodies are consumed by length, so no box's content can fake or swallow one, and a file
+    -- without the record (every older save) loads as it always did.
+    -- ---------------------------------------------------------------------------------------
+    local editor = require("editor_text")
+    local vdoc = content.new()
+    content.insert_box(vdoc, 2, "text")
+    editor.from_text(vdoc.boxes[2].editor, "hello", fontset)
+    vdoc.scroll_y = 321
+    vdoc.active_index = 2
+    vdoc.boxes[2].editor.cursor_pos = 3
+    local vback = content.deserialize(content.serialize(vdoc), fontset)
+    check("the scroll survives a round trip", vback.scroll_y == 321, vback.scroll_y)
+    check("...and the active box", vback.active_index == 2, vback.active_index)
+    check("...and the caret in it", vback.boxes[2].editor.cursor_pos == 3,
+            vback.boxes[2].editor.cursor_pos)
+    --[[ A STALE VIEW names a box that no longer exists - the prune at load, a hand-edited file.
+    It falls back to the first box rather than an index into nothing; the scroll it carried still
+    applies, being clamped by the first draw anyway. ]]
+    local stale = content.serialize(vdoc):gsub("view %d+ %d+ %d+", "view 321 9 3")
+    local sback = content.deserialize(stale, fontset)
+    check("a view past the boxes falls back to box 1", sback.active_index == 1,
+            sback.active_index)
+
     if checks_failed > 0 then
         print(string.format("test_box_kinds: %d/%d checks failed", checks_failed, checks_run))
         return false

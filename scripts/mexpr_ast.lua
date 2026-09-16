@@ -2082,6 +2082,12 @@ local function read_integral(ctx_parse, units, i, glyph, sub_container, sup_cont
         paint_bound_refs(ctx_parse, units[k].node, bound)
     end
     local node = ast.new_int(ctx_parse.ns, vname, to, from, body)
+    --[[ THE VARIABLE'S OWN GLYPH IS TAGGED with the var it names, the tag every reference carries:
+    the writer clones a name's ink from the tag, and without this one the `dx`'s x had no drawing
+    to clone - a written integral would refuse on its last glyph. ]]
+    if var_leaf then
+        tag_draws(var_leaf, node[1])
+    end
     --[[ Stops after the variable, unlike a group operator, which eats the rest of its term. The
     differential is a closing bracket and a closing bracket ends a factor, so
     `\\int_0^1 x dx \\cdot y` leaves `y` for build_product exactly as `(...)y` would. ]]
@@ -2166,11 +2172,72 @@ local function read_bigop(ctx_parse, units, i, glyph, sub_container, sup_contain
         for _, u in ipairs(rest) do
             paint_bound_refs(ctx_parse, u.node, bound)
         end
+        --[[ AND THE DECLARATION IS MARKED, without retagging it: a big operator's declaration IS
+        its first constraint mention (`k=0` declares k), and that glyph's reference tag is doing
+        real work - a click resolves through it, the writer copies from it. So it keeps the tag
+        and carries a SECOND marker, `u.ast_declares`, naming the var it spells; the link
+        collector reads both. Found live 2026-09-16 as "the t is drawn bound but the k is not" -
+        the sum's variables linked nothing while the integral's did. The marker is written AFTER
+        the node is built, because the catch repoints the BODY's mentions to the spawned var
+        while the constraint's own stays where it was - so the var is found through the body
+        (post-catch, the real one) and only the GLYPH comes from the constraint. ]]
+    end
+
+    local node = ast.new_group_bigop(ctx_parse.ns, node_type, vars, sups, subs, body)
+    if next(bound) then
+        local var_of_name = {}
+        local function find_spawned(n)
+            if type(n) ~= "table" or not n.type then
+                return
+            end
+            if n.type == ast.VREF then
+                local v = ast.node_of(ctx_parse.ns, n[1])
+                if v and bound[v[1]] and not var_of_name[v[1]] then
+                    var_of_name[v[1]] = v.id
+                end
+                return
+            end
+            for k = 1, #n do
+                find_spawned(n[k])
+            end
+        end
+        find_spawned(body)
+        local declared = {}
+        local function mark_decl(node_g)
+            if not node_g then
+                return
+            end
+            local id = mexpru.u(node_g).ast_draws
+            if id then
+                local n = ast.node_of(ctx_parse.ns, id)
+                if n and n.type == ast.VREF then
+                    local v = ast.node_of(ctx_parse.ns, n[1])
+                    local spawned = v and var_of_name[v[1]]
+                    if spawned and not declared[v[1]] then
+                        declared[v[1]] = true
+                        mexpru.u(node_g).ast_declares = spawned
+                    end
+                end
+            end
+            for _, child in ipairs(mexpru.child_links(node_g)) do
+                mark_decl(child)
+            end
+        end
+        if sub_container then
+            for _, u in ipairs(row_units(sub_container)) do
+                mark_decl(u.node)
+            end
+        end
+        if sup_container then
+            for _, u in ipairs(row_units(sup_container)) do
+                mark_decl(u.node)
+            end
+        end
     end
 
     -- The body consumed everything remaining in this term - nothing is left for build_product's
     -- own caller to read after this factor.
-    return ast.new_group_bigop(ctx_parse.ns, node_type, vars, sups, subs, body), #units + 1
+    return node, #units + 1
 end
 
 local function name_extents(ctx_parse, units, i)
@@ -2283,16 +2350,39 @@ local function read_derivative(ctx_parse, units, i, u0, fr)
     already says what the fraction is - and a `d` is a sign here, never a linked variable passed
     downwards; found live 2026-09-16, the signs painted blue because `d` is also a letter), the
     linked variables and their caught apparitions go blue, and nothing here touches a global of
-    another name. The sign test is the same one the variable collection above applies. ]]
+    another name. The sign test is the same one the variable collection above applies. EACH LETTER
+    IS ALSO TAGGED with the var it declares - found through the body's caught references, since
+    new_diff keeps only the names - so the link collector can tell a declaration from a mention. ]]
+    local var_node_of = {}
+    local function find_vars(n)
+        if type(n) ~= "table" or not n.type then
+            return
+        end
+        if n.type == ast.VREF then
+            local v = ast.node_of(ctx_parse.ns, n[1])
+            if v and not var_node_of[v[1]] then
+                var_node_of[v[1]] = v
+            end
+            return
+        end
+        for k = 1, #n do
+            find_vars(n[k])
+        end
+    end
+    find_vars(body)
     local bound = {}
     for j, du in ipairs(den_units) do
         local d = atom_desc(du.atom)
         if d ~= "d" and d ~= "\\partial" and is_letter(d) then
             local leaf = mexpru.undressed(du.node)
+            local name = d .. dress_suffix(du.node)
             if leaf then
                 leaf.color = mexpru.BOUND_COLOR
+                if var_node_of[name] then
+                    tag_draws(leaf, var_node_of[name])
+                end
             end
-            bound[d .. dress_suffix(du.node)] = true
+            bound[name] = true
         end
     end
     for _, u in ipairs(rest) do
@@ -2963,8 +3053,48 @@ function mexpr_ast.build(fontset, container, decls, ns)
     the real top of the cascade now. ]]
     local node, err = build_connective(ctx_parse, row_units(container.root))
     if not node then
+        container._bound_links = nil
         return nil, err, ns
     end
+    --[[ THE LINKS A BINDER DECLARES are collected here, for the drawing that arcs them together:
+    for each variable, the glyph its declaration tags (a VAR node's tag - only a binder's own
+    spelling carries one) and every glyph a reference to it tags. A name nothing declares - a
+    global, a plain free letter - has no declaration glyph, so it forms no link and the walk needs
+    no binder list of its own (the author, 2026-09-16: "link the variables by an arc behind the
+    formula drawing"). Stored on the container beside the parse cache, refreshed by every parse
+and dropped by a failed one, so it can never outlive the tree it names. ]]
+    local links = {}
+    local decls_of, refs_of = {}, {}
+    local function collect(node_g)
+        if not node_g then
+            return
+        end
+        local declares = mexpru.u(node_g).ast_declares
+        local id = mexpru.u(node_g).ast_draws
+        if declares then
+            decls_of[declares] = node_g
+        end
+        if id then
+            local tagged = ast.node_of(ns, id)
+            if tagged and tagged.type == ast.VAR then
+                decls_of[id] = node_g
+            elseif tagged and tagged.type == ast.VREF then
+                refs_of[tagged[1]] = refs_of[tagged[1]] or {}
+                refs_of[tagged[1]][#refs_of[tagged[1]] + 1] = node_g
+            end
+        end
+        for _, child in ipairs(mexpru.child_links(node_g)) do
+            collect(child)
+        end
+    end
+    --[[ Walked in two passes' worth of tables rather than one, because a reference can sit BEFORE
+    its declaration in the row - `\int x dx` writes the body's x first - and a one-pass entry
+    would drop it. The merge keeps only variables a declaration glyph names. ]]
+    collect(container.root)
+    for id, decl in pairs(decls_of) do
+        links[id] = {decl = decl, refs = refs_of[id] or {}}
+    end
+    container._bound_links = links
     return node, nil, ns
 end
 
@@ -2999,6 +3129,10 @@ local NODE_LABEL = {
     [ast.INEQ_GEQ]     = "GEQ",
     [ast.EXP]          = "POW",
     [ast.NULL]         = "(null)",
+    --[[ INT renders through its own branch below, whose FIRST call is `line(NODE_LABEL[t])` - it
+    was written assuming this entry and nobody ever added it, so F4 on any integral died with
+    "attempt to index a nil value" (found live 2026-09-16, on an integral around a sum). ]]
+    [ast.INT]          = "INT",
 }
 
 --[[ SUM/PROD/UNION/INTERSECT's own shape - (op, n_vars, n_sup, n_sub, var1..varN, sup1..supM,

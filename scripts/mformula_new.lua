@@ -24,6 +24,9 @@
 -- | vert_contours(container: mexpru.container) -> {contour, ...}
 -- | slot_markers(container: mexpru.container, fontset: fontset, sz: size) -> {rect} | {}
 -- | node_bbox(fontset: fontset, node: node)  -> {left, right, top, bottom}
+-- | baseline_correction(fs: fontset, sz: size) -> number
+-- |     The y shift from a text baseline into the glyph-centred tree
+-- |     frame, the same one draw() itself applies.
 -- | node_rects(fontset: fontset, nodes: {node}) -> {rect | false, ...}
 -- | reachable_graph(container: mexpru.container, fontset: fontset, sz: size, wrap_width: number)
 -- |      -> {nodes, edges}
@@ -253,8 +256,20 @@ plain text at the same pos would.
 @date 2026-09-08 09:00 ]]
 local baseline_correction_cache = {}
 
--- Cached per size: this is asked for on every draw, measure and caret, and the answer only depends
--- on the size.
+--[[ @brief The y shift that moves a text baseline into the glyph-centred tree frame.
+-- |
+-- | THE ONE-TIME-PER-SIZE CORRECTION draw() adds before mexpr_draw (the block comment above
+-- | carries the why), and anything placing ink from node boxes outside this file needs the same
+-- | value - the bound-variable arcs read it, and without it they land a half-line below their
+-- | formula. Cached per size: asked for on every draw, measure and caret, and the answer only
+-- | depends on the size.
+-- |
+-- | @param fs  fontset - the glyph metrics come from 'a' at `sz`
+-- | @param sz  size
+-- | @return number - the y offset, positive downward
+-- |
+-- | @date 2026-09-16
+--]]
 local function baseline_correction(fs, sz)
     local c = baseline_correction_cache[sz]
     if c then
@@ -5179,6 +5194,11 @@ end
 own `pos` plus its local box. Re-deriving that in a test would be a second opinion about the frame,
 and a wrong one is invisible: every probe simply misses. @date 2026-09-12 01:30 ]]
 mformula_new.node_bbox = node_bbox
+--[[ Exported because a DRAWER OUTSIDE THIS FILE needs the same shift draw() itself applies: the
+tree frame's origin is the baseline PLUS baseline_correction (its own comment above), so anything
+placing ink from node boxes - the bound-variable arcs, editor.lua - must add it too or land a
+half-line off the formula. @date 2026-09-16 ]]
+mformula_new.baseline_correction = baseline_correction
 
 -- Plain containment test, in whatever frame both were measured in. @date 2026-09-08 09:30
 local function point_in_bbox(pt, box)
