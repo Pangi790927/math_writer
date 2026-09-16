@@ -77,9 +77,11 @@ function run_test()
         rule to remember, and would make `\sum_{j=i}` and `\sum_{i=j}` the same tree when they are
         not the same formula. ]]
         local v = view(fs, "\\sum_{i=j}(i+j)")
+        --[[ No CELL over the body since 2026-09-15 (the unwrap that made bigop formulas
+        writable); the body's parens are its delimiters, not user grouping. ]]
         check("two names from one constraint spawn in written order",
                 v == [[0:SUM 2 var/0 sup/1 sub / 1:VAR i / 1:VAR j / 1:EQ / 2:REF "i" / 2:REF "j"]]
-                        .. [[ / 1:CELL / 2:ADD / 3:REF "i" / 3:MUL / 4:NUM 1 / 4:REF "j"]], v)
+                        .. [[ / 1:ADD / 2:REF "i" / 2:MUL / 3:NUM 1 / 3:REF "j"]], v)
 
         --[[ The mirror image, to catch a walk that happens to be stable but sorted: if `j,i` came
         back as `i,j` here, the order is not the row's. ]]
@@ -148,8 +150,13 @@ function run_test()
         local node = build(fs, "\\sum_{i=1}(\\sum_{i=2}(i))")
         check("the nested row builds", node ~= nil, node)
 
+        --[[ THE BODY IS THE INNER SUM DIRECTLY. It used to be wrapped in a CELL - "the body's one
+        bracket factor gets a CELL from maybe_cell" - until 2026-09-15, when the CELL turned out
+        to make any formula containing a bigop UNWRITABLE (ast_mexpr refuses CELLs), so the parse
+        unwraps it the same way read_derivative does: the parens are the body's delimiters, not
+        user grouping. This assertion changed with it, recording why. ]]
         local outer_var = node[4]
-        local inner = node[#node][1]          -- body is a CELL; the inner sum is inside it
+        local inner = node[#node]
         local inner_var = inner[4]
         local inner_body = inner[#inner]
 

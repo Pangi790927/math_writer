@@ -295,12 +295,26 @@ local function split_term(t_node)
     if t_node.type == ast.NUM then
         return t_node, {}
     end
-    if t_node.type == ast.MUL and t_node[1].type == ast.NUM then
+    if t_node.type == ast.MUL then
+        --[[ A MUL WITH A LEADING NUM splits sign-from-factors; a MUL WITHOUT one has all of its
+        children as plain factors, and they are SPLICES into the surrounding factor list, not a
+        nested product riding through. The distinction matters to the round trip: juxtaposition
+        reparses FLAT (found 2026-09-15 on `\sum e^{-jk(\delta t+\beta)w}` - distributing the
+        inner sum left `MUL(\delta, t)` nested inside the term, the written form was the same ink,
+        and verify failed on flat-vs-nested). A first term of an inner bracketed sum is the case
+        that arrives here bare - every term after the first carries its sign coefficient and takes
+        the branch above. ]]
         local rest = {}
-        for k = 2, #t_node do
+        if t_node[1].type == ast.NUM then
+            for k = 2, #t_node do
+                rest[#rest + 1] = t_node[k]
+            end
+            return t_node[1], rest
+        end
+        for k = 1, #t_node do
             rest[#rest + 1] = t_node[k]
         end
-        return t_node[1], rest
+        return nil, rest
     end
     return nil, {t_node}
 end

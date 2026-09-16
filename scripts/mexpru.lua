@@ -75,6 +75,19 @@
 -- | accent(fs: fontset, recipe_fn: function, target: node, sz: size) -> node
 -- | dots(fs: fontset, n: number, sz: size)  -> node
 -- | frac(fs: fontset, num: node, den: node, sz: size) -> node
+-- | mark_diff(frac: node, on: boolean)      -> node
+-- |     Marks a fraction as a DIFFERENTIAL (d/dx): one bit in the
+-- |     fraction's own `u`, drawn as a green bar - the only visual
+-- |     difference from a plain fraction. The d's carry nothing.
+-- | DECL_NAME_COLOR                         constant
+-- |     The orange a declared name wears - the root of the declaration
+-- |     alone. Brighter than the differential family's, on purpose.
+-- | BOUND_COLOR                             constant
+-- |     The blue a binder's variable wears, with every apparition
+-- |     caught inside its scope.
+-- | DIFF_COLOR                              constant
+-- |     The emerald of the differential family - the derivative's bar
+-- |     and the integral's closing d.
 -- | PLACE_BESIDE / PLACE_DISPLAY            constants
 -- | cut(node: node)                         -> nothing
 -- | update_positions(node: node, pos: {x,y}) -> nothing
@@ -88,7 +101,7 @@
 -- |                    attached - every constructor goes through it
 -- |     U_FIELDS, U_SHAPE, the creator wrappers, the size table and the bracket scanner
 -- |
--- | @date 2026-09-13 21:15
+-- | @date 2026-09-15 15:00
 -- | ===============================================================================================
 --]]
 
@@ -216,6 +229,10 @@ local U_FIELDS = {
     -- fractions
     num           = "numerator row",
     den           = "denominator row",
+    diff          = "true on a fraction that is a DIFFERENTIAL (d/dx): the bar draws green and the"
+                    .. " parse reads the fraction as a DIFF binder. Nothing is marked on the d's",
+    diff_sign     = "TRANSIENT, from_latex only: this d came in as \\mathrm{d}. Read the moment the"
+                    .. " enclosing fraction is built, then cleared - never a lasting tag",
 
     -- brackets
     bracket       = "{is_open, type, peer} on a bracket atom; nil on everything else",
@@ -240,6 +257,57 @@ local U_FIELDS = {
 Six containers in this project need the same seventeen lines; see that file for the rule and for why
 the read and the write halves behave differently. @date 2026-09-12 05:45 ]]
 local U_SHAPE = sealed.declare("mexpru", "u", U_FIELDS)
+
+--[[ The colour of the DIFFERENTIAL family - emerald green, per the author (2026-09-16: "make the
+derivative green, an emerald green"), and the ONLY visual difference between a differential and a
+plain fraction. The integral's closing `d` wears it too ("the d of the integral should also be
+green, similar to differential fraction", the same day), which is why it is exported: the parse
+paints that half with the same value the bar draws. It was an orange until the declared names took
+that hue, and the two marks are distinct colours on purpose. 0xAABBGGRR packing. ]]
+mexpru.DIFF_COLOR = 0xff50c878
+
+--[[ The orange a DECLARED NAME wears - the root of the declaration alone, never its arguments.
+Asked for brighter than the differential's, "more orange, like, not faded" (the author, 2026-09-16):
+less white in the mix than the bar's. Exported because two files paint with it - the parse, on the
+glyph a use resolved from, and the writer, on a call's built callee letters. 0xAABBGGRR packing. ]]
+mexpru.DECL_NAME_COLOR = 0xff008cff
+
+--[[ The blue a BOUND VARIABLE wears - the variable a binder declares beside its mark, and every
+apparition of it caught inside that binder's scope (the author, 2026-09-16: "the variable besides
+it should be blue, indicating an linked var and it's aparitions inside the integral should be blue
+also, globals get orange, green for structural"). The palette reads as: orange for globals, green
+for structural marks, blue for what a binder linked. 0xAABBGGRR packing. ]]
+mexpru.BOUND_COLOR = 0xffffaf50
+
+--[[ @brief Marks a fraction as a DIFFERENTIAL, or unmarks it.
+-- |
+-- | THE FRACTION IS THE ONE WHO KNOWS (the author, 2026-09-15): the d's are plain letter glyphs
+-- | with nothing on them, and every derivative semantic - order, variables, the binding - is
+-- | re-derived from those glyphs at each parse. This one bit is all the tree stores, and its
+-- | drawing view is the bar's color.
+-- |
+-- | The bar is the frac's THIRD anchor (above, bellow, rule - mexpr_frac's own construction order),
+-- | a raw C++ LINE_STRIP child with no `u` of its own; its color is the node's own registered
+-- | field, so the tint is a plain assignment and the unmark restores the default every node is
+-- | built with (mexpr_t's own initializer).
+-- |
+-- | @param frac  node - checked: a fraction, by its u.kind
+-- | @param on    boolean - mark (green bar, differential) or unmark (default bar)
+-- | @return node - `frac`
+-- | @throws naming what arrived when it is not a fraction
+-- |
+-- | @date 2026-09-15 15:00
+--]]
+function mexpru.mark_diff(frac, on)
+    local u = mexpru.u(frac)
+    if not u or u.kind ~= "frac" then
+        error("mark_diff needs a fraction")
+    end
+    u.diff = on and true or nil
+    local rule = frac:anchor_at(3)[1]
+    rule.color = on and mexpru.DIFF_COLOR or 0xffeeeeee
+    return frac
+end
 
 --[[ @brief A node's OWN table - the per-node bookkeeping this layer hangs on an mexpr_t.
 -- |
@@ -1321,6 +1389,15 @@ function mexpru.propagate_rebuild(fs, old_node, new_node, known_parent)
             error("propagate_rebuild: old_node not found among parent frac's num/den")
         end
         rebuilt = mexpru.frac(fs, num, den, u.sz)
+        --[[ THE ONE BIT TRAVELS WITH THE REBUILD: a fraction that was a differential stays one,
+        however its rows changed. Found live 2026-09-15 - typing the variable after the d rebuilt
+        the denominator, this branch rebuilt the frac, and the fresh node knew nothing: the diff
+        bar went grey, ctrl+c wrote plain d's, and the parse read a division. The same carry is in
+        mformula_new's rescale_node (zoom and undo both funnel there); a rebuild that drops it is
+        invisible to every test that does not type. ]]
+        if u.diff then
+            mexpru.mark_diff(rebuilt, true)
+        end
     elseif kind == "vert" then
         local u = mexpru.u(parent)
         local slots = u.slots

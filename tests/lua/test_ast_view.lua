@@ -258,9 +258,12 @@ function run_test()
         is only reached AFTER resolution has failed on every extent, so a declared `g(x)` is still
         a CALL. And an undeclared letter is an independent variable, which is not applicable to
         anything - so the product is the reading that says something true. ]]
+        --[[ THE GROUP KEEPS ITS CELL since 2026-09-16: a leaf group juxtaposed after a factor no
+        longer promotes (the two-spellings ruling - `af(x)` is MUL(a, f, CELL(x)), `afx` is
+        MUL(a, f, x)), so this argument is MUL(g, CELL(x)), not MUL(g, x). ]]
         local v = view(fs, "f(g(x))", {f})
         check("an unresolved letter before a bracket is a product",
-                v == [[0:CALL "f(),(1)" / 1:MUL / 2:REF "g" / 2:REF "x"]], v)
+                v == [[0:CALL "f(),(1)" / 1:MUL / 2:REF "g" / 2:CELL / 3:REF "x"]], v)
 
         --[[ A SUBSCRIPT ONLY MEANS SOMETHING ON A DECLARED NAME, where it is part of the identity.
         On anything else nobody has decided what it means, and dropping it silently would build a
@@ -298,13 +301,17 @@ function run_test()
 
         Both halves are the author's own calls, made a day apart, and each is right on its own -
         this is what they cost jointly. ]]
-        --[[ NOTE THE SHAPE: not `MUL(REF(F), CELL(NUM(0)))` but a flat product, because a group
-        around a leaf carries no grouping - so undeclared, `F(0)` and `F 0` are the SAME tree.
-        Accepted by the author, 2026-09-10: "I agree with the implication that F becomes
-        multiplication, it is what it is, maybe we should deny such a syntax, but not for now". ]]
+        --[[ THE SHAPE CHANGED TWICE, and the second change is deliberate. 2026-09-10 flattened the
+        group away - undeclared, `F(0)` and `F 0` were the SAME tree, accepted then: "I agree with
+        the implication that F becomes multiplication, it is what it is". 2026-09-16 reversed the
+        flattening by ruling: `af(x)` with nothing declared is MUL(a, f, CELL(x)) while `afx` is
+        MUL(a, f, x) - two spellings, two trees, because the parens are the user's own grouping.
+        So `F(0)` is MUL(F, CELL(0)) and `F 0` is the different tree it always looked like. What
+        survives from the old note is the product reading itself, the 2026-09-10 decision this
+        block exists to record. ]]
         local v = view(fs, "F(0)", {})
-        check("undeclared, `F(0)` is a product",
-                v == [[0:MUL / 1:REF "F" / 1:NUM 0]], v)
+        check("undeclared, `F(0)` is a product with its cell",
+                v == [[0:MUL / 1:REF "F" / 1:CELL / 2:NUM 0]], v)
 
         v = view(fs, "F(0)", {F})
         check("declared, the same row is a CALL",
@@ -342,9 +349,13 @@ function run_test()
         check("declared with a call, the bracket group is the argument",
                 v == [[0:CALL "f(),(1)" / 1:REF "x"]], v)
 
+        --[[ THE BARE DECLARATION ANSWERED, so no call is built - and since 2026-09-16 the group
+        does not then flatten away either: juxtaposed after the `f` factor it is a CELL, the same
+        two-spellings rule as anywhere else (`f(x)` with f declared bare is MUL(f, CELL(x)),
+        while `fx` is MUL(f, x)). ]]
         v = view(fs, "f(x)", {f_bare})
-        check("declared bare, the same brackets are a product",
-                v == [[0:MUL / 1:REF "f" / 1:REF "x"]], v)
+        check("declared bare, the same brackets are a product with its cell",
+                v == [[0:MUL / 1:REF "f" / 1:CELL / 2:REF "x"]], v)
 
         --[[ AND BOTH DECLARED IS AN AMBIGUITY, not a preference. Two readings of one factor differ
         in EXTENT, so specificity has nothing to compare - ranking cannot help here and does not
@@ -359,9 +370,12 @@ function run_test()
         check("a name is followed by the rest of the row",
                 v == [[0:MUL / 1:CALL "f(),(1)" / 2:REF "x" / 1:REF "y"]], v)
 
+        --[[ `(y)` keeps its cell since 2026-09-16: it sits juxtaposed after the CALL factor, and
+        a leaf group no longer promotes there - so the row is MUL(CALL(f, x), CELL(y)), and `f(x)y`
+        above is the spelling without the parens. ]]
         v = view(fs, "f(x)(y)", {f_call})
         check("a second bracket group is a separate factor",
-                v == [[0:MUL / 1:CALL "f(),(1)" / 2:REF "x" / 1:REF "y"]], v)
+                v == [[0:MUL / 1:CALL "f(),(1)" / 2:REF "x" / 1:CELL / 2:REF "y"]], v)
     end
 
     if checks_failed == 0 then

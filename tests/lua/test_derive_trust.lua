@@ -54,20 +54,26 @@ function run_test()
     so they go. ]]
     local grand = content.derive_identity(state, 3)
     check("setup: the chain has a grandchild", grand == 4, grand)
-    local back = content.unlock_mid_chain(state, 3)
+    local back = content.unlock_mid_chain(state, fontset, 3)
     local copy = state.boxes[3].fml
     check("the copy holds the original's chain position",
             copy.parent == 2 and copy.locked == true and copy.latex == "a(b+c)", copy.parent)
     check("...and the original answers at its new index", back == 4, back)
     check("the original is free: no parent, no lock",
             child.parent == nil and child.locked == nil, child.parent)
+    --[[ THE GRANDCHILD IS COLLECTED, not lost (2026-09-16): a text box takes the first deleted
+    child's place - below the freed original, where the grandchild sat - holding its formula, and
+    no derivation link survives in it. The count grows by one: the dance inserted the copy, and
+    the swap replaced the grandchild with the text box. ]]
     check("the grandchild followed the original's old content and went",
-            #state.boxes == 4, #state.boxes)
+            #state.boxes == 5, #state.boxes)
+    check("...and was collected into a text box in its place",
+            state.boxes[5].kind == "text", state.boxes[5].kind)
 
     -- A root unlock is the plain toggle: no copy, nothing inserted.
     editor_formula.lock(child, fontset, {})
     check("unlocking a root makes it a root again (no parent to drop)",
-            child.parent == nil and #state.boxes == 4, #state.boxes)
+            child.parent == nil and #state.boxes == 5, #state.boxes)
 
     if checks_failed == 0 then
         print("PASS: derivation requires trust (" .. checks_run .. " checks)")

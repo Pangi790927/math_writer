@@ -61,7 +61,7 @@
 -- |     unit()          the one creator for the parser's per-slot container - a different
 -- |                     table from mexpru's `u`, despite both being called `u` in use
 -- |     the unit list, the parser cascade (build_sum -> build_product ->
--- |     read_factor), the pattern trie and the ast tagging
+-- |     read_factor), the pattern trie, the ast tagging and the declared-name paint
 -- |
 -- | @date 2026-09-14
 -- | ===============================================================================================
@@ -265,12 +265,15 @@ local function tag_draws(node, ast_node)
 end
 
 --[[ The node whose ink is the LEAF written at `u0`, which is not always the row slot it sits in: a
-power wraps the leaf in a supsub, and that supsub draws the leaf AND its exponent. The base alone is
-the leaf. A subscript cannot arrive here - apply_power refuses one on anything that is not a
-declared name - so the two cases below are all there are.
-@date 2026-09-12 02:00 ]]
+power wraps the leaf in a supsub, and that supsub draws the leaf AND its exponent; a declared
+name's SUBSCRIPT wraps it the same way, and what the sub holds is the name's ARGUMENTS, not the
+name - `\vec{F}_{k}` is the name `\vec{F}` applied to `k`, so the leaf is the base under the sub
+and never the `k` (found live 2026-09-16: the declared-name paint coloured the subscript along
+with the symbol, "the k subscript of F shouldn't be colored, only the symbol F"). The base alone
+is the leaf, whichever side rode on it.
+@date 2026-09-16 ]]
 local function leaf_drawn_by(u0)
-    if u0.sup then
+    if u0.sup or u0.sub then
         return u0.base
     end
     return u0.node
@@ -1750,9 +1753,67 @@ local function apply_power(ctx_parse, node, u)
     return node
 end
 
+--[[ The default every glyph otherwise carries (mexpr_t's own initializer), and the walk that sets
+it. The declared-name orange itself lives in mexpru beside the differential bar's, because the
+writer paints a call's built letters with the same value. @date 2026-09-16 ]]
+local GLYPH_DEFAULT_COLOR = 0xffeeeeee
+
+--[[ Sets every SYMBOL at or under `node` to `color`, touching nothing else: a rule keeps its own
+colour (a differential's green bar is one), and a vert or a dress is walked through to the symbols
+it draws. The one walk behind both the reset at the parse's start and the painting of a resolved
+name's root. @date 2026-09-16 ]]
+local function paint_symbols(node, color)
+    if not node then
+        return
+    end
+    if node.type == vc.MEXPR_TYPE_SYMBOL then
+        node.color = color
+    end
+    for _, child in ipairs(mexpru.child_links(node)) do
+        paint_symbols(child, color)
+    end
+end
+
+--[[ Paints blue every glyph under `node` whose tagged ast node is a reference to one of `names` -
+the bound-variable colour for a binder's caught apparitions (the author, 2026-09-16: "the
+variable besides it should be blue, indicating an linked var and it's aparitions inside the
+integral should be blue also"). The tags the parse left name which glyph draws which reference and
+the reference names its variable, so "every x inside the integral" is exactly the glyphs whose
+reference resolves to a variable called one of these. A global of the same name outside the
+binder's own ink is not under this walk and keeps its orange; inside the scope the binder shadows
+it, so blue is the honest reading there either way.
+@date 2026-09-16 ]]
+local function paint_bound_refs(ctx_parse, node, names)
+    if not node then
+        return
+    end
+    local id = mexpru.u(node).ast_draws
+    if id then
+        local n = ast.node_of(ctx_parse.ns, id)
+        if n and n.type == ast.VREF then
+            local var = ast.node_of(ctx_parse.ns, n[1])
+            if var and names[var[1]] then
+                paint_symbols(node, mexpru.BOUND_COLOR)
+            end
+        end
+    end
+    for _, child in ipairs(mexpru.child_links(node)) do
+        paint_bound_refs(ctx_parse, child, names)
+    end
+end
+
 --[[ A resolved name-use, as a node: its arguments built, and its powers wrapped around the result.
-@date 2026-09-10 04:30 ]]
-local function build_named(ctx_parse, use, hit)
+
+THE BASE GLYPH NAMES WHAT IT RESOLVED TO, the same two tags the free-letter branch writes, and for
+the same two readers: ast_id so a click on a declared name says which node it is, ast_draws so the
+writer can copy the name's own ink. Without the second one, a distributed copy of a declared
+reference had nothing to draw - the write refused with "never drawn in the source" while the
+transform itself had succeeded (reported live 2026-09-16). Tagged only when the base is one glyph's
+ink - a letter with its dress, or an operator's vert - because that is what a copy can clone whole;
+a quoted or digit-run base is several glyphs, and a copy of one of them would be a wrong drawing
+rather than a refusal.
+@date 2026-09-16 12:00 ]]
+local function build_named(ctx_parse, use, hit, base_unit)
     local args = {}
     for _, a in ipairs(hit.args) do
         local node, aerr = build_expr(ctx_parse, a)
@@ -1770,6 +1831,14 @@ local function build_named(ctx_parse, use, hit)
         node = var_ref(ctx_parse, hit.decl.text)
     else
         node = ast.new_call(ctx_parse.ns, hit.decl.text, table.unpack(args))
+    end
+
+    local d = base_unit and atom_desc(base_unit.atom)
+    if d and (is_letter(d) or operator_name(base_unit.atom)) then
+        tag_ast(base_unit, node)
+        tag_draws(leaf_drawn_by(base_unit), node)
+        -- The name's own glyphs go orange - the root alone, never the arguments below.
+        paint_symbols(mexpru.undressed(leaf_drawn_by(base_unit)), mexpru.DECL_NAME_COLOR)
     end
 
     -- Powers wrap what they are applied to, innermost first.
@@ -1801,21 +1870,14 @@ which could never parse.
 before this table in read_factor. `\int` is deliberately absent: its variable comes from a trailing
 differential, so read_integral reads it instead.
 @date 2026-09-11 10:20 ]]
-local BIGOP_BY_SPELLING = {
-    ["\\sum"]    = ast.SUM,
-    ["\\prod"]   = ast.PROD,
-    ["\\bigcup"] = ast.UNION,
-    ["\\bigcap"] = ast.INTERSECT,
-    ["lim"]     = ast.LIM,
-    ["limsup"]  = ast.LIMSUP,
-    ["liminf"]  = ast.LIMINF,
-    ["min"]     = ast.MIN,
-    ["max"]     = ast.MAX,
-    ["sup"]     = ast.SUP,
-    ["inf"]     = ast.INF,
-    ["argmin"]  = ast.ARGMIN,
-    ["argmax"]  = ast.ARGMAX,
-}
+--[[ DERIVED from ast.GROUP_BIGOP_DRAW's reverse, rather than written out: spelling -> type is
+the parse-side question, the draw table owns the spellings, and a second literal listing of the
+same 13 rows is a mirror free to fall behind (the same fault the draw table was split out to
+end). Added 2026-09-15 when the writer needed the forward direction. ]]
+local BIGOP_BY_SPELLING = {}
+for node_type, spelling in pairs(ast.GROUP_BIGOP_DRAW) do
+    BIGOP_BY_SPELLING[spelling] = node_type
+end
 
 --[[ The constraint ROWS a sub or sup slot holds: a container's units are ONE constraint, unless
 they are a single `vert` atom (mexpru.vert()'s own N-slots-stacked primitive, already user-buildable
@@ -2003,6 +2065,22 @@ local function read_integral(ctx_parse, units, i, glyph, sub_container, sup_cont
     --[[ ast.new_int DECLARES the variable and catches the body's free mentions of it - so `x` in
     the integrand stops being free and starts meaning this integral's `x`. Built last for that
     reason: catching needs the body to exist. ]]
+    --[[ THE CLOSING `d` IS GREEN and ITS VARIABLE BLUE - the differential's own colour on the
+    structural mark, the bound-variable colour on what it links (the author, 2026-09-16: the
+    palette is "globals get orange, green for structural", and a binder's variable "should be
+    blue, indicating an linked var and it's aparitions inside the integral should be blue also").
+    Every caught apparition in the integrand goes blue with it. Painted at the end of the
+    validations, so an integral that does not read paints nothing; the parse's opening reset puts
+    them back like any symbol. ]]
+    units[close_i].atom.color = mexpru.DIFF_COLOR
+    local var_leaf = mexpru.undressed(units[var_i].node)
+    if var_leaf then
+        var_leaf.color = mexpru.BOUND_COLOR
+    end
+    local bound = {[vname] = true}
+    for k = i + 1, close_i - 1 do
+        paint_bound_refs(ctx_parse, units[k].node, bound)
+    end
     local node = ast.new_int(ctx_parse.ns, vname, to, from, body)
     --[[ Stops after the variable, unlike a group operator, which eats the rest of its term. The
     differential is a closing bracket and a closing bracket ends a factor, so
@@ -2056,6 +2134,39 @@ local function read_bigop(ctx_parse, units, i, glyph, sub_container, sup_contain
     if not body then
         return nil, nil, glyph .. " needs a body: " .. tostring(body_err)
     end
+    --[[ A BODY THAT CAME OUT AS A CELL IS UNWRAPPED, the same fix read_derivative carries: a
+    bracket group that is the body-product's one factor gets a CELL from maybe_cell, but the parens
+    there are the BODY'S delimiters, not user grouping - and left on, the CELL made the whole
+    formula unwritable (ast_mexpr refuses CELLs), so `\sum_{i=0}^{n}(i+i)` could not be written
+    back at all. The node delimits its own body; the writer brackets an add-like body by
+    precedence, the reparse's CELL comes back off, and the round trip holds. ]]
+    if body.type == ast.CELL then
+        body = body[1]
+    end
+
+    --[[ THE SPAWNED VARIABLES ARE BLUE - the bound-variable colour, on every mention the operator
+    linked: the constraint rows that declared them and the body's caught apparitions (the palette
+    ruling, 2026-09-16 - the integral's `dx` wears the same blue). The constraints' glyphs live in
+    the operator's own sub/sup rows, not in this term's units, so those trees are walked too. ]]
+    local bound = {}
+    for _, name in ipairs(vars) do
+        bound[name] = true
+    end
+    if next(bound) then
+        if sub_container then
+            for _, u in ipairs(row_units(sub_container)) do
+                paint_bound_refs(ctx_parse, u.node, bound)
+            end
+        end
+        if sup_container then
+            for _, u in ipairs(row_units(sup_container)) do
+                paint_bound_refs(ctx_parse, u.node, bound)
+            end
+        end
+        for _, u in ipairs(rest) do
+            paint_bound_refs(ctx_parse, u.node, bound)
+        end
+    end
 
     -- The body consumed everything remaining in this term - nothing is left for build_product's
     -- own caller to read after this factor.
@@ -2081,6 +2192,116 @@ local function name_extents(ctx_parse, units, i)
     return out
 end
 
+--[[ A DERIVATIVE - a fraction whose one `diff` bit is set (mexpru.mark_diff), read as the fourth
+binder.
+
+THE SIGNS ARE COLLECTED, NEVER SPAWNED: every `d` in the numerator and denominator is the
+differential sign by construction - no variable may be named d here (the author, 2026-09-15) - so
+the d's are skipped as syntax and never reach var_ref. The LETTERS beyond the denominator's sign
+are the declared variables, each with its dress exactly as a name carries one everywhere else.
+
+THE NUMERATOR IS A SIGN TO A POWER, for now - `d` or `∂`, optionally with an exponent (the
+order). Anything else in it is not parsed yet rather than guessed at. The BODY is read at PRODUCT
+order over the rest of the term, the bigop rule verbatim: product-like needs no wrapping, an add
+needs its parens.
+
+@date 2026-09-15 15:00 ]]
+local function read_derivative(ctx_parse, units, i, u0, fr)
+    local num_units, den_units = row_units(fr.num), row_units(fr.den)
+    if #num_units == 0 or #den_units == 0 then
+        return nil, nil, "a differential needs both its sign rows"
+    end
+
+    local first_desc = atom_desc(num_units[1].atom)
+    local partial = (first_desc == "\\partial")
+    if not (partial or first_desc == "d") then
+        return nil, nil, "a differential's numerator is d or the diffsign, not `"
+                .. tostring(first_desc) .. "`"
+    end
+
+    local order = 1
+    if num_units[1].sup then
+        local exp, eerr = build_expr(ctx_parse, units_of(row_children(num_units[1].sup)))
+        if not exp then
+            return nil, nil, "a differential's order did not read: " .. tostring(eerr)
+        end
+        if exp.type ~= ast.NUM or exp[2] ~= 1 or exp[1] < 1 then
+            return nil, nil, "a differential's order must be a whole number"
+        end
+        order = exp[1]
+    end
+    if #num_units > 1 then
+        return nil, nil, "not parsed yet: a differential's numerator is one sign to a power"
+    end
+
+    --[[ THE VARIABLES: every unit past the sign that is a letter, with its dress; every d or ∂ is
+    another sign and skipped. Anything else - a digit, a bracket - is not parsed yet. ]]
+    local vars = {}
+    for j = 1, #den_units do
+        local du = den_units[j]
+        local d = atom_desc(du.atom)
+        if d == "d" or d == "\\partial" then
+            if (d == "\\partial") ~= partial then
+                return nil, nil, "a differential mixes its signs - d and the diffsign"
+            end
+        elseif is_letter(d) then
+            if du.sup or du.sub then
+                return nil, nil, "not parsed yet: a decorated variable in a differential"
+            end
+            vars[#vars + 1] = d .. dress_suffix(du.node)
+        else
+            return nil, nil, "not parsed yet: `" .. tostring(d) .. "` in a differential's sign row"
+        end
+    end
+    if #vars == 0 then
+        return nil, nil, "a differential declares no variable - nothing follows its sign"
+    end
+
+    local rest = slice(units, i + 1, #units)
+    local body, berr = build_product(ctx_parse, rest)
+    if not body then
+        return nil, nil, "a differential needs a body: " .. tostring(berr)
+    end
+    --[[ A BODY THAT CAME OUT AS A CELL IS UNWRAPPED, because the parens there are the BODY'S
+    DELIMITERS, not the user's grouping: `d/dx(a(x+y))` is bracketed because an add-like body
+    needs wrapping (the product-order rule), and a bracket group that is the body-product's one
+    factor gets a CELL from maybe_cell. Left on, the CELL made the whole formula unwritable -
+    ast_mexpr refuses CELLs - so every distribute anywhere in a formula containing such a body
+    refused at the write (found live 2026-09-15, reported as "distribute doesn't work on the +
+    inside the derivative"). The node itself delimits the body, exactly as a bigop's does; and
+    the round trip still holds: emit writes an add-like body bracketed by precedence, the reparse
+    makes the CELL again, and this unwrap takes it back off - same tree both ways. ]]
+    if body.type == ast.CELL then
+        body = body[1]
+    end
+
+    -- The one bit is the truth; the order, the signs and the variables were all just re-derived
+    -- from the glyphs, and the body consumed the rest of the term as any factor-eater does.
+    local node = ast.new_diff(ctx_parse.ns, partial, order, vars, body)
+    --[[ THE VARIABLES ARE BLUE, beside their signs and in the body - the bound-variable colour the
+    integral's `dx` wears (the same palette ruling, 2026-09-16): the signs stay plain (the bar
+    already says what the fraction is - and a `d` is a sign here, never a linked variable passed
+    downwards; found live 2026-09-16, the signs painted blue because `d` is also a letter), the
+    linked variables and their caught apparitions go blue, and nothing here touches a global of
+    another name. The sign test is the same one the variable collection above applies. ]]
+    local bound = {}
+    for j, du in ipairs(den_units) do
+        local d = atom_desc(du.atom)
+        if d ~= "d" and d ~= "\\partial" and is_letter(d) then
+            local leaf = mexpru.undressed(du.node)
+            if leaf then
+                leaf.color = mexpru.BOUND_COLOR
+            end
+            bound[d .. dress_suffix(du.node)] = true
+        end
+    end
+    for _, u in ipairs(rest) do
+        paint_bound_refs(ctx_parse, u.node, bound)
+    end
+    tag_ast(u0, node)
+    return node, #units + 1
+end
+
 local function read_factor(ctx_parse, units, i)
     local hits = {}
     for _, use in ipairs(name_extents(ctx_parse, units, i)) do
@@ -2103,7 +2324,8 @@ local function read_factor(ctx_parse, units, i)
         return nil, nil, "two readings of this factor: " .. table.concat(names, " / ")
     end
     if #hits == 1 then
-        local node, err = build_named(ctx_parse, hits[1].use, hits[1].hit)
+        -- `units[i]` is the extent's base glyph, for build_named to tag what it resolves to.
+        local node, err = build_named(ctx_parse, hits[1].use, hits[1].hit, units[i])
         if not node then
             return nil, nil, err
         end
@@ -2134,6 +2356,11 @@ local function read_factor(ctx_parse, units, i)
 
     -- ---- CASE 3b: a fraction bar, which is a division whether or not \div was ever typed -----
     if fr then
+        --[[ THE ONE BIT DECIDES WHICH READER: a fraction marked as a differential (its bar drew
+        green, mexpru.mark_diff) is the fourth binder, not a division. ]]
+        if fr.diff then
+            return read_derivative(ctx_parse, units, i, u0, fr)
+        end
         local num, nerr = build_expr(ctx_parse, row_units(fr.num))
         if not num then
             return nil, nil, nerr
@@ -2269,16 +2496,22 @@ local MUL_OPS = {["\\cdot"] = true, ["\\times"] = true}
 emitted exactly when the parentheses are NOT implied by precedence - required ones are absorbed into
 the tree shape (`a(b+c)` is MUL(a, ADD(...)), nothing left to record), redundant ones are kept
 because they carry the user's own grouping, which is what transforms drag around. Here "required"
-means one thing: an ADD inside a product of several factors. A group around a LEAF is not grouping -
-`(a)+b` promotes to `a+b`.
-@date 2026-09-10 07:05 ]]
+means one thing: an ADD inside a product of several factors.
+
+A LEAF GROUP PROMOTES ONLY WHEN IT LEADS ITS PRODUCT (ruled 2026-09-16, reversing the older
+promote-always): `af(x)` with nothing declared is MUL(a, f, CELL(x)) while `afx` is
+MUL(a, f, x) - two spellings, two trees, because the parens are the user's own grouping and
+carrying them is what lets a transform write `af(x)` back instead of collapsing it to `afx`
+(found live on exactly that distribute). The LEADING group still promotes - `(a)+b` is `a+b` -
+there being nothing in front of it for the parens to group WITH.
+@date 2026-09-16 10:30 ]]
 local CELL_LEAF = {[ast.NUM] = true, [ast.VAR] = true, [ast.VREF] = true}
 
-local function maybe_cell(ctx_parse, node, in_product)
+local function maybe_cell(ctx_parse, node, in_product, preceded)
     if in_product and node.type == ast.ADD then
         return node
     end
-    if CELL_LEAF[node.type] then
+    if CELL_LEAF[node.type] and not preceded then
         return node
     end
     return ast.new_cell(ctx_parse.ns, node)
@@ -2311,7 +2544,13 @@ function build_product(ctx_parse, units, sign, sign_unit)
             return nil, err
         end
         factors[#factors + 1] = node
-        bracketed[#factors] = from_brackets
+        --[[ `or false`, never nil: a nil here is a HOLE, and the sign prepend below does
+        table.insert(bracketed, 1, false), which shifts by #bracketed - a length Lua may answer
+        with any border short of the real end when the table has holes. The TRUE marking the
+        group landed one slot left, on the letter before it, and (found 2026-09-16, live as a
+        CELL around that letter) the misplaced flag wrapped the WRONG factor in a cell. A false
+        is as falsy as a nil to every reader here, and the array stays a sequence. ]]
+        bracketed[#factors] = from_brackets or false
         i = next_i
     end
     if #factors == 0 then
@@ -2343,10 +2582,12 @@ function build_product(ctx_parse, units, sign, sign_unit)
     end
 
     -- Decided last, since "required" is a question about the product this factor ended up in.
+    -- `preceded` = not this product's first factor, which is what keeps a juxtaposed leaf group
+    -- a CELL (maybe_cell's own note).
     local in_product = #factors > 1
     for k = 1, #factors do
         if bracketed[k] then
-            factors[k] = maybe_cell(ctx_parse, factors[k], in_product)
+            factors[k] = maybe_cell(ctx_parse, factors[k], in_product, k > 1)
         end
     end
 
@@ -2706,6 +2947,13 @@ function mexpr_ast.build(fontset, container, decls, ns)
         ast.check_ns(ns)
     end
     ns = ns or ast.new_ns()
+    --[[ THE DECLARED-NAME ORANGE IS A PARSE FACT, so the parse owns it end to end: this puts every
+    symbol back to the default before the cascade runs, and build_named paints the roots that
+    resolve. Painting is therefore pure - same tree, same declarations, same colours - and a name
+    that stops resolving (a definition deleted above) loses its orange at the next parse rather
+    than keeping it forever. Asked for exactly here, 2026-09-16: "make that change during/after
+    validation, don't continuously verify". Rules are untouched; a differential's bar is not ours. ]]
+    paint_symbols(container.root, GLYPH_DEFAULT_COLOR)
     local ctx_parse = new_parse_ctx(ns, with_builtins(fontset, decls or {}))
     --[[ ALWAYS three values, in the same order, success or not: `node, err, ns`. Returning
     `node, ns` on success and `nil, err, ns` on failure would put the namespace in a different
@@ -2806,6 +3054,25 @@ local function render(ns, node, depth, out, prefix)
         render(ns, node[2], depth + 1, out, "sup: ")
         render(ns, node[3], depth + 1, out, "sub: ")
         render(ns, node[4], depth + 1, out)
+        return
+    end
+
+    --[[ A DIFF NEEDS ITS OWN BRANCH, or the generic walk crashes on it: its first three slots are
+    SCALARS (partial, order, count) and the variable names are STRINGS, none of which is a node to
+    recurse into - found live 2026-09-15, F4 dying with "attempt to index a number value". The
+    label carries the whole sign row, the way a group bigop's label carries its counts, and only
+    the body is a child. ]]
+    if t == ast.DIFF then
+        local partial, order, n_vars = node[1] == 1, node[2], node[3]
+        local names = {}
+        for k = 1, n_vars do
+            names[#names + 1] = tostring(node[3 + k])
+        end
+        local sign = partial and "\\partial" or "d"
+        line({{text = "DIFF", role = "op_sym"},
+              {text = " " .. sign .. (order > 1 and ("^" .. order) or "") .. " / " .. sign
+                      .. " " .. table.concat(names, " ")}})
+        render(ns, node[4 + n_vars], depth + 1, out)
         return
     end
 

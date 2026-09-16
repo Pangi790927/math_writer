@@ -13,9 +13,12 @@
 -- |     An ast tree written back out as glyphs, copying what was drawn for
 -- |     anything with an IDENTITY and building the rest. `container` wraps
 -- |     the row with a cursor and a version so an editor can hold it.
--- |     REFUSES BY NAME what it cannot write - fractions, calls, big
--- |     operators, relations - because a refusal is a correct answer and a
--- |     wrong drawing is not.
+-- |     REFUSES BY NAME what it cannot write - divisions, calls, integrals,
+-- |     the overprinted \ne - because a refusal is a correct answer and a
+-- |     wrong drawing is not. A DERIVATIVE it does write, as the fraction
+-- |     it is in notation, bar green through mexpru.mark_diff; so are the
+-- |     GROUP BIG OPERATORS, limits over and under, and the plain relations
+-- |     a bigop's limit rows are built from.
 -- |
 -- | verify(fontset: fontset, container: mexpru.container, decls: {decl}, ns: ast.ns, node: node)
 -- |       -> ok, want, got
@@ -25,10 +28,11 @@
 -- |
 -- | --- internal, not on the module table ---------------------------------------------------------
 -- |     new_write_ctx() THE ONE creator for the `ctx_write` every emit_* is handed
--- |     PREC/ATOM_PREC, glyph, glyph_desc, append, bracketed, emit_ref,
--- |     emit_digits, emit_num, emit_factors, emit_sum, emit_power
+-- |     PREC/ATOM_PREC, glyph, glyph_desc, glyph_op, append, bracketed,
+-- |     emit_ref, emit_digits, emit_num, emit_factors, emit_sum, emit_power,
+-- |     emit_diff, emit_relation, emit_bigop
 -- |
--- | @date 2026-09-14 11:00
+-- | @date 2026-09-15 15:00
 -- | ===============================================================================================
 --]]
 
@@ -50,10 +54,12 @@ TWO MECHANISMS, and which one applies is the whole design:
   - BUILD, for STRUCTURE. Operators, brackets and digits have no identity to preserve - one `+` is
     every `+` - so they come from mexpru's plain constructors, the same ones typing uses.
 
-NOT HERE YET, deliberately: fractions, calls, big operators, integrals, relations, and the CELL -
+NOT HERE YET, deliberately: divisions, calls, integrals, the CELL, and the overprinted `\ne` -
 refused by name, like anything else this file cannot draw. What it covers is what `distribute` can
-produce: sums, products, whole numbers, references and powers. A refusal is a correct answer; a
-wrong drawing is not.
+produce - sums, products, whole numbers, references and powers - plus the DERIVATIVE (a fraction
+carrying `u.diff`, through emit_diff), the GROUP BIG OPERATORS (\sum, \lim and the rest, limits
+over and under through emit_bigop) and the plain RELATIONS a bigop's limits are written with
+(k = 0, x \to 0, through emit_relation). A refusal is a correct answer; a wrong drawing is not.
 
 THE SELF-CHECK IS PART OF THE CONTRACT: verify() reparses what was built and compares shapes with
 what it was asked to build. It costs one parse and catches the class of bug that matters here - a
@@ -79,7 +85,31 @@ rides on the closing bracket, which is how this editor has always drawn it.
 local PREC = {
     [ast.ADD] = 1,
     [ast.MUL] = 2,
+    [ast.DIFF] = 2,
     [ast.EXP] = 3,
+}
+--[[ A GROUP BIG OPERATOR binds at product strength for DRAWING purposes only: `d/dx \sum_i i^2`
+writes the derivative's body against the sum unbracketed, and `(\sum_i i)^2` brackets it. In the
+AST a bigop is NOT a term - it is an operator that declares variables; "sits like a factor" is a
+fact about the mexpr row it draws into, and precedence is only ever the bracketing question
+(the author, 2026-09-15). ]]
+for node_type in pairs(ast.GROUP_BIGOP_DRAW) do
+    PREC[node_type] = 2
+end
+PREC[ast.CALL] = 2
+PREC[ast.CELL] = 4   -- its brackets are always written, so it is an atom to everyone else
+
+--[[ A relation's glyph, keyed by node type. Mirrors mexpr_ast's RELATIONS (desc -> constructor)
+from the far side of the pair because the two face opposite directions and a constructor cannot
+be inverted without calling it; they live in different files, so keep them in step by hand. NEQ
+is absent ON PURPOSE: it draws as an overprinted pair (a zero-advance `\not` under the `=`), which
+this writer does not build - it refuses, by name, as ever. ]]
+local RELATION_DESC = {
+    [ast.EQ] = "=", [ast.INEQ_LESS] = "<", [ast.INEQ_GREATER] = ">",
+    [ast.INEQ_LEQ] = "\\le", [ast.INEQ_GEQ] = "\\ge", [ast.TENDS] = "\\rightarrow",
+    [ast.IN] = "\\in", [ast.NI] = "\\ni", [ast.SUBSET] = "\\subset",
+    [ast.SUBSETEQ] = "\\subseteq", [ast.SUPSET] = "\\supset",
+    [ast.SUPSETEQ] = "\\supseteq",
 }
 local ATOM_PREC = 4
 
@@ -365,6 +395,271 @@ local function emit_power(ctx_write, node)
     return base
 end
 
+--[[ A catalog glyph WITH ITS SIZE BOOST, if it has one - the exact rule from_latex applies to
+every macro it reads (its own push_char): `char.size_delta` says how many steps bigger the glyph
+draws (`\int` is the one today), the glyph is built at that physical size, and `u.sz` keeps the
+surrounding LOGICAL level so nothing downstream compounds on the boost. For a glyph with no boost
+this is exactly `glyph_desc`. ]]
+local function glyph_op(ctx_write, desc)
+    local entry = char.find_by_desc(desc)
+    if not entry then
+        return nil
+    end
+    local delta = char.size_delta(entry.desc)
+    local glyph_sz = delta and math.max(1, math.min(ctx_write.sz + delta,
+            mexpru.MAX_SIZE_INDEX)) or ctx_write.sz
+    local g = mexpru.mexpr_symbol(ctx_write.fs,
+            {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
+    mexpru.u(g).sz = ctx_write.sz
+    return g
+end
+
+--[[ A relation, flat: left, the relation's own glyph, right.
+
+    k = 0        EQ(VREF k, NUM 0)          writes  k = 0
+    x \to 0      TENDS(VREF x, NUM 0)       writes  x \to 0
+
+NO BRACKETS ANYWHERE, because a relation never contains a relation (build_relation refuses the
+second one) and its operands are whole expressions that reparse as whole expressions - the sum in
+`a+b = c` writes with its plain `+` and reads back split on the `=`. A relation has exactly one
+job in this writer today: a bigop's limit rows, where the reparse expects `i=0`, `i<n`,
+`x \to 0` verbatim. NEQ is not here - it draws as an overprinted pair this writer does not build,
+and refuses, by name, as ever. ]]
+local function emit_relation(ctx_write, node)
+    local desc = RELATION_DESC[node.type]
+    if not desc then
+        return nil, "cannot write a " .. (ast.type_name(node.type) or "?") .. " back yet"
+    end
+    local lhs, err = emit(ctx_write, node[1], 1)
+    if not lhs then
+        return nil, err
+    end
+    local rhs
+    rhs, err = emit(ctx_write, node[2], 1)
+    if not rhs then
+        return nil, err
+    end
+    local g = glyph_desc(ctx_write, desc)
+    if not g then
+        return nil, "no glyph for " .. desc .. " in the font"
+    end
+    return append(append(lhs, {g}), rhs)
+end
+
+--[[ A group big operator, drawn the way typing draws it: the operator carrying its limits over
+and under, the body as the rest of the term's factors.
+
+    \sum_{i=0}^{n} i          SUM(n_vars=1, ..., sub EQ(i,0), sup VREF n, body i)
+         ->  the \sum glyph, "i = 0" under it, "n" over it, then the body's glyphs
+    \lim_{x \to 0} x          LIM(sub TENDS(x,0), body x)
+         ->  a 1-tall vert spelling "lim", "x \to 0" under it, then the body
+
+THE OPERATOR: a word ("lim", "argmax") builds the same 1-tall vert typing builds - loose letters
+would reparse as a product; a glyph operator ("\\sum") builds its glyph WITH any size boost, the
+from_latex rule. THE LIMITS are emitted by the ordinary emitters, so a name inside them copies
+its ink through `origins` exactly as it does everywhere else - a copied `n` stays the drawn `n`,
+not a rebuilt one; more than one constraint on a side becomes a VERT of rows, the one shape
+constraint_rows reads back as several. THE BODY emits at product order, the settled bigop rule:
+`\sum_i i^2` swallows its whole term, and an add-like body brackets itself through emit's own
+precedence path. THE TUPLE'S VAR SLOTS ARE NOT EMITTED - a declaration has no ink; its ink is the
+references (the `i` in `i=0`, the `i` in the body), which copy through the parse's tags.
+
+No SOURCE node is taken beyond the standard maps: the operator, the vert and the limit rows are
+built (one `\sum` is every `\sum`); the constraints and the body recurse through `emit`, and the
+names inside them resolve through `origins`/`var_origins` - the reason a copied factor of a
+distributed body still draws the user's own glyphs.
+@date 2026-09-15 17:00 ]]
+local function emit_bigop(ctx_write, node)
+    local n_vars, n_sup, n_sub = node[1], node[2], node[3]
+    local spelling = ast.GROUP_BIGOP_DRAW[node.type]
+
+    local op
+    if spelling:match("^%a+$") then
+        -- A word operator: one row of letter glyphs in a 1-tall vert - what typing makes and
+        -- operator_name validates on the way back in.
+        local letters = {}
+        for k = 1, #spelling do
+            letters[#letters + 1] = glyph(ctx_write, spelling:sub(k, k))
+        end
+        op = mexpru.vert(ctx_write.fs,
+                {mexpru.horiz(ctx_write.fs, letters, ctx_write.sz)}, ctx_write.sz)
+    else
+        op = glyph_op(ctx_write, spelling)
+        if not op then
+            return nil, "no glyph for " .. spelling .. " in the font"
+        end
+    end
+
+    --[[ Each side's constraint rows: node[base+1] .. node[base+count]. One constraint is one row;
+    several become a vert of rows, because constraint_rows reads exactly that back. An absent side
+    (n == 0) answers nil and the supsub simply has no anchor there. ]]
+    local function side(base, count)
+        local rows = {}
+        for k = 1, count do
+            local run, err = emit(ctx_write, node[base + k], 1)
+            if not run then
+                return nil, err
+            end
+            rows[#rows + 1] = mexpru.horiz(ctx_write.fs, run, ctx_write.sz)
+        end
+        if count > 1 then
+            return mexpru.vert(ctx_write.fs, rows, ctx_write.sz)
+        end
+        return rows[1]
+    end
+    local sup, err = side(3 + n_vars, n_sup)
+    if not sup and err then
+        return nil, err
+    end
+    local sub
+    sub, err = side(3 + n_vars + n_sup, n_sub)
+    if not sub and err then
+        return nil, err
+    end
+
+    local head = mexpru.supsub(ctx_write.fs, op, sup, sub, ctx_write.sz,
+            mexpru.PLACE_DISPLAY, mexpru.PLACE_DISPLAY)
+
+    local body
+    body, err = emit(ctx_write, node[#node], PREC[ast.MUL])
+    if not body then
+        return nil, err
+    end
+    return append({head}, body)
+end
+
+--[[ A CELL, written as exactly what it is: its brackets, around its content's glyphs.
+
+    af(x)   MUL(a, f, CELL(x))   writes  a f ( x )   - the user's own parens, kept and given back
+
+THE BRACKETS ARE ALWAYS WRITTEN, never absorbed by precedence, because a CELL exists precisely
+because the parens were NOT implied - the parse kept them as the user's grouping (maybe_cell's own
+note), and writing them back is the whole point: `af(x)` stays `af(x)` through a transform
+instead of collapsing to `afx` (found live 2026-09-16 on exactly that distribute). The reparse
+agrees from the other side: a juxtaposed group re-reads as a CELL, so the round trip holds.
+@date 2026-09-16 10:30 ]]
+local function emit_cell(ctx_write, node)
+    local inner, err = emit(ctx_write, node[1], 1)
+    if not inner then
+        return nil, err
+    end
+    return bracketed(ctx_write, inner)
+end
+
+--[[ A call: the callee's name, then the arguments inside ONE bracket pair that is a CELL's ink.
+
+    f(x)        CALL("f(),(1)", VREF x)     writes  f ( x )   - name glyphs, then a cell-shaped
+                                                                     bracket pair around the args
+    f(x,y)      CALL(key, x, y)             writes  f ( x , y ) - a comma between the args
+
+THE EXTRA PARENTHESIS IS A CELL, by the author's ruling (2026-09-16): a call's brackets are the
+user's own grouping - ordinary glyph pairs with peer links, what `bracketed` builds - not some
+call-specific notation. The reparse agrees: with `f` declared above, the name extent swallows the
+bracket group and resolve_use rebuilds the CALL, so the round trip holds; without the declaration
+the brackets promote away exactly as a cell's would, and the formula reads as juxtaposition - the
+reading it always had.
+
+THE NAME IS EMITTED, NOT COPIED: the CALL node carries only the declaration's key (a string), not
+the glyphs it was read from, and the parse's `ast_draws` tags were never written for a resolved
+name. That is a loss for a DRESSED callee (`F\vec(x)` would re-render without its accent, which
+is the mistake the whole copy-don't-render rule exists to prevent), so anything but plain letters,
+digits and underscores is REFUSED by name until the parse tags the base glyphs and this can clone
+them - a refusal today, not a quietly wrong drawing.
+@date 2026-09-16 10:00 ]]
+local function emit_call(ctx_write, node)
+    local name = tostring(node[1]):match("^([^%(]*)%(")
+    if name then
+        name = name:gsub("^'", ""):gsub("'$", "")
+    end
+    if not name or name == "" or name:find("[^%w_]") then
+        return nil, "cannot write the callee `" .. tostring(node[1]) .. "` back yet"
+    end
+
+    local run = {}
+    for k = 1, #name do
+        local g = glyph(ctx_write, name:sub(k, k))
+        --[[ THE CALLEE LETTERS WEAR THE DECLARED-NAME ORANGE (mexpru's constant), the colour the
+        parse puts on a name that resolves: a written call is a use of a declaration by
+        construction - the key came from one - and a child box showing it plain would say
+        undeclared. The argument glyphs below keep the default; the root alone is the name. ]]
+        if g then
+            g.color = mexpru.DECL_NAME_COLOR
+        end
+        run[#run + 1] = g
+    end
+
+    local inner = {}
+    for k = 2, #node do
+        if k > 2 then
+            local comma = glyph(ctx_write, ",")
+            if not comma then
+                return nil, "no comma glyph in the font"
+            end
+            inner[#inner + 1] = comma
+        end
+        local part, err = emit(ctx_write, node[k], 1)
+        if not part then
+            return nil, err
+        end
+        append(inner, part)
+    end
+    return append(run, bracketed(ctx_write, inner))
+end
+
+--[[ A derivative, drawn as the fraction it is in notation: the sign over the sign and the
+variables, the body following as the rest of the term's factors.
+
+THE FRACTION CARRIES THE ONE BIT (mexpru.mark_diff), which tints the bar green - the only visual
+difference from a division - and the signs are PLAIN letter-d glyphs (or ∂), exactly the glyphs
+the parse re-reads. A variable whose name is longer than one letter - a dress is part of a name -
+is refused rather than drawn without it: dropping a dress would write a different variable than
+the node binds. The order rides the numerator's sign as a superscript, the slot typing puts one in.
+@date 2026-09-15 15:00 ]]
+local function emit_diff(ctx_write, node)
+    local partial, order = node[1] == 1, node[2]
+    local n_vars = node[3]
+    local sign = partial and glyph_desc(ctx_write, "\\partial") or glyph(ctx_write, "d")
+
+    local num
+    if order > 1 then
+        --[[ THE ORDER'S DIGITS ARE BUILT AT THE SMALL SIZE, by rebinding the ctx the way
+        emit_power does - not by wrapping full-size glyphs in a small horiz, which was this
+        function's own bug: emit_digits builds at ctx_write.sz, so a horiz at sup_sz around them
+        changed nothing and the 2 of d^2 drew full-size (found 2026-09-15, reported as "the 2 is
+        not drawn in a smaller font"). The glyph's own size is what draws, not the row's. ]]
+        local sup_sz = math.min(ctx_write.sz + mformula_new.SUB_SIZE_DELTA,
+                mexpru.MAX_SIZE_INDEX)
+        num = {mexpru.supsub(ctx_write.fs, sign,
+                mexpru.horiz(ctx_write.fs,
+                        emit_digits(new_write_ctx(ctx_write.fs, sup_sz, ctx_write.origins,
+                                ctx_write.var_origins), order), sup_sz), nil,
+                mexpru.u(sign).sz or ctx_write.sz, mexpru.PLACE_BESIDE, mexpru.PLACE_BESIDE)}
+    else
+        num = {sign}
+    end
+
+    local den = {partial and glyph_desc(ctx_write, "\\partial") or glyph(ctx_write, "d")}
+    for k = 1, n_vars do
+        local name = node[3 + k]
+        if #name ~= 1 then
+            return nil, "cannot write the variable `" .. name .. "` in a differential yet"
+        end
+        den[#den + 1] = glyph(ctx_write, name)
+    end
+
+    local frac = mexpru.frac(ctx_write.fs, mexpru.horiz(ctx_write.fs, num, ctx_write.sz),
+            mexpru.horiz(ctx_write.fs, den, ctx_write.sz), ctx_write.sz)
+    mexpru.mark_diff(frac, true)
+
+    local run = {frac}
+    local body, err = emit(ctx_write, node[4 + n_vars], PREC[ast.MUL])
+    if not body then
+        return nil, err
+    end
+    append(run, body)
+    return run
+end
+
 --[[ One ast node as a RUN of row slots - a list, not a node, because that is what a sum or a
 product is in this model. `min_prec` is what the surrounding context requires; a node binding
 looser than that is bracketed here, in ONE place, rather than at each site that could need it.
@@ -394,6 +689,16 @@ emit = function(ctx_write, node, min_prec)
         else
             run, err = emit_factors(ctx_write, node, 1)
         end
+    elseif node.type == ast.DIFF then
+        run, err = emit_diff(ctx_write, node)
+    elseif ast.GROUP_BIGOP_DRAW[node.type] then
+        run, err = emit_bigop(ctx_write, node)
+    elseif RELATION_DESC[node.type] then
+        run, err = emit_relation(ctx_write, node)
+    elseif node.type == ast.CALL then
+        run, err = emit_call(ctx_write, node)
+    elseif node.type == ast.CELL then
+        run, err = emit_cell(ctx_write, node)
     elseif node.type == ast.ADD then
         run, err = emit_sum(ctx_write, node)
     elseif node.type == ast.EXP then

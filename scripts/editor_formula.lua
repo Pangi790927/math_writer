@@ -19,19 +19,23 @@
 -- |     must parse into an ast, so a locked box always has a live tree to
 -- |     transform. Answers whether the box is locked now.
 -- |
--- | undo(state_formula: editor_formula.state_formula, fontset: fontset) -> boolean
--- | redo(state_formula: editor_formula.state_formula, fontset: fontset) -> boolean
+-- | undo(state_formula: editor_formula.state_formula, fontset: fontset, decls: {decl} | nil)
+-- |      -> boolean
+-- | redo(state_formula: editor_formula.state_formula, fontset: fontset, decls: {decl} | nil)
+-- |      -> boolean
 -- |     Steps the box back to its previous committed text, and forward
--- |     again. EDIT mode only - a locked box is frozen and has nothing to
--- |     step over.
+-- |     again - rebuilding and revalidating as any change does. EDIT mode
+-- |     only - a locked box is frozen and has nothing to step over.
 -- |
 -- | handle_input(state_formula: editor_formula.state_formula, fontset: fontset, sz: size,
 -- |      decls: {decl} | nil) -> changed
 -- |     One frame of input. Unlocked, the formula is fully editable, the
 -- |     mathbox from editor_text and nothing else, and every edit commits
--- |     back to the saved text. Locked, the content is frozen and an edit
--- |     is discarded by rebuilding from it. The paste is content.lua's to
--- |     route, not this file's.
+-- |     back to the saved text and revalidates - the parse, the paint and
+-- |     the gesture cache are one edit behind the text at most. Locked,
+-- |     the keyboard meets a whitelist - movement, selection and copy
+-- |     pass, everything else is refused at the door, so the tree never
+-- |     changes. The paste is content.lua's to route, not this file's.
 -- |
 -- | rescale(state_formula: editor_formula.state_formula, fontset: fontset) -> nothing
 -- |     Re-lays-out after a zoom.
@@ -57,8 +61,9 @@ appear with the transformation".
 
 So a formula box has exactly two states and there is no third:
 
-  EMPTY     nothing in it yet. A paste fills it. That is the ONLY way content gets in - you do not
-            type a formula here, you type it in a text box and bring it over.
+  EMPTY     nothing in it yet. Typing starts here - the mathbox appears with the box's first frame
+            of input (an unlocked empty box builds one, `mformula.new`, caret ready), and a paste
+            fills it as the cell transaction content.lua verifies.
   FILLED    not editable. You may select and copy; you may apply a transformation. A transformation
             does not change this box - it emits a NEW one holding the result.
 
@@ -93,10 +98,17 @@ exists: there is no `mexpr_ast` expression parser yet, so a formula box has no A
 Being able to hold a formula, show it, and let it be copied is everything that can honestly be built
 before that parser.
 
-The immutability is enforced the same way the definition box's derived rows enforce theirs: input
-goes to the formula so that selection, navigation and copy work, and an EDIT is discarded by
-rebuilding from the text that was last committed. Enumerating "which keys are edits" would be a
-list to forget an entry from; asking "did the tree change" cannot be.
+The immutability is enforced by a WHITELIST at the door (the author, 2026-09-16: "it will not be a
+blacklist, it will be a whitelist, towards the mathbox... all the movement actions are allowed, all
+the selection allowed. If I want more I will say, that way additions to the list are a feature not
+fixing a bug"): the keyboard funnel runs only when every MATHBOX action that fired is one
+LOCKED_ALLOW names - actions of other UI contexts share the arrow keys and are not this box's
+business, see locked_allows - and no character is queued, so movement, selection and copy work and
+nothing else reaches the tree at all. Until that ruling the box let everything through and
+discarded the edit by rebuilding
+from the committed text - "did the tree change" instead of a list of editing keys - which kept the
+content but threw the parsed-and-painted tree away with each edit, and the rebuild was its own
+visible refresh. The whitelist refuses at the door; there is nothing to discard.
 
 @date 2026-09-08 08:06
 ]]
@@ -107,7 +119,7 @@ local mexpru = require("mexpru")
 local keymap = require("keymap")
 local editor = require("editor")  -- the shared formula host; see its header
 local sealed = require("sealed")
-local mexpr_ast = require("mexpr_ast")
+local ast_gestures = require("ast_gestures")
 local mformula_latex = require("mformula_latex")
 
 local editor_formula = {}
@@ -115,6 +127,52 @@ local editor_formula = {}
 local FIELD_PAD = 3
 local SLOT_BG_COLOR   = 0x22ffffff
 local SLOT_EDGE_COLOR = 0x66ffffff
+
+--[[ WHAT A LOCKED BOX ANSWERS TO - a whitelist, not a blacklist (the author, 2026-09-16: "it will
+not be a blacklist, it will be a whitelist, towards the mathbox... all the movement actions are
+allowed, all the selection allowed. If I want more I will say, that way additions to the list are a
+feature not fixing a bug"). The keyboard funnel runs only on a frame where every MATHBOX action
+that fired is in this set and no character is waiting - actions of other UI contexts share the
+arrow keys and are not this gate's business, see locked_allows; anything else is refused at the
+door, so the tree cannot change and there is nothing to discard. Copy rides with selection - a
+locked formula was always
+selectable and copyable, which is what the gesture layer and the mid-chain dance need. A typo'd id
+here fails SAFE: the action is refused like any other, never silently admitted.
+
+The ids are movement (nav.*, the sprints, the structural backs), selection, and copy - the actions
+mformula's own input reads between the caret branches. Mouse selection is not this gate's business:
+the click path above the lock branch is shared by both modes, by design. @date 2026-09-16 ]]
+local LOCKED_ALLOW = {
+    ["nav.left"] = true, ["nav.right"] = true, ["nav.up"] = true, ["nav.down"] = true,
+    ["math.sprint_left"] = true, ["math.sprint_right"] = true,
+    ["math.back_up"] = true, ["math.back_down"] = true,
+    ["math.select_left"] = true, ["math.select_right"] = true,
+    ["edit.select_all"] = true, ["edit.copy"] = true,
+}
+
+-- Whether every action that fired this frame is one the locked box answers to, and no typed
+-- character is waiting - the frame may pass the door, or it may not.
+--[[ ONLY THE MATHBOX'S OWN ACTIONS COUNT, because one physical key fires every action bound to
+it, and the arrows are bound twice on purpose - `radial.formula` rides Left, `radial.text` Up,
+`help.prev_chapter` Left again - for contexts that are closed while a box owns the frame. Those
+twins are not this gate's business; what counts is an action under one of the prefixes the funnel
+itself reads (nav., math., text., edit. - the naming convention IS the context marker), and any
+such action not in LOCKED_ALLOW refuses the frame. New funnel actions follow the prefixes, so they
+arrive refused until whitelisted - additions stay a feature, never a hole (found live 2026-09-16:
+the twins made the whitelist refuse the very arrows it existed to admit). ]]
+local FUNNEL_PREFIX = {["nav."] = true, ["math."] = true, ["text."] = true, ["edit."] = true}
+local function locked_allows()
+    if #vc.ImGui_input_queue_chars() > 0 then
+        return false
+    end
+    for _, id in ipairs(keymap.fired()) do
+        local prefix = id:match("^(%a+%.)")
+        if prefix and FUNNEL_PREFIX[prefix] and not LOCKED_ALLOW[id] then
+            return false
+        end
+    end
+    return true
+end
 
 --[[ THE `state_formula` CONTAINER for a formula box. Declared through sealed.lua; see that file
 for the rule. `formula` is built lazily by ensure() below, which is why it and `latex` are both
@@ -166,8 +224,10 @@ local function push_undo(state_formula)
 end
 
 --[[ Steps one snapshot back into the box: the current text goes onto `to`, the snapshot becomes
-the committed text, and the formula is rebuilt from it. An empty snapshot restores an empty box. ]]
-local function restore(state_formula, fontset, from, to)
+the committed text, and the formula is rebuilt from it - and the rebuilt tree is revalidated, an
+undo being a change like any other (the paint and the standing verdict follow the text). An empty
+snapshot restores an empty box. ]]
+local function restore(state_formula, fontset, decls, from, to)
     local latex = from[#from]
     if latex == nil then
         return false
@@ -178,6 +238,9 @@ local function restore(state_formula, fontset, from, to)
     state_formula.formula = state_formula.latex
             and mformula.from_latex(fontset, mexpru.DEFAULT_SIZE, state_formula.latex)
             or nil
+    if state_formula.formula then
+        ast_gestures.ast_for(fontset, state_formula.formula, decls or {})
+    end
     return true
 end
 
@@ -188,28 +251,30 @@ end
 -- | edit's commit, a paste - never per frame, the same discipline editor_definition's undo uses.
 -- |
 -- | @param state_formula  editor_formula.state_formula - checked
--- | @param fontset        fontset - the formula is rebuilt on restore
+-- | @param fontset        fontset - the formula is rebuilt and revalidated on restore
+-- | @param decls          {mexpr_ast.decl} | nil - the revalidation's declarations
 -- | @return boolean - whether anything was restored
 -- |
--- | @date 2026-09-15 13:00
+-- | @date 2026-09-16 15:00
 --]]
-function editor_formula.undo(state_formula, fontset)
+function editor_formula.undo(state_formula, fontset, decls)
     STATE_SHAPE.check(state_formula)
-    return restore(state_formula, fontset, state_formula.undo_stack or {},
+    return restore(state_formula, fontset, decls, state_formula.undo_stack or {},
             state_formula.redo_stack or {})
 end
 
 --[[ @brief Steps forward again over an undo (Ctrl+Shift+Z), with the same shape as undo itself.
 -- |
 -- | @param state_formula  editor_formula.state_formula - checked
--- | @param fontset        fontset
+-- | @param fontset        fontset - the formula is rebuilt and revalidated on restore
+-- | @param decls          {mexpr_ast.decl} | nil - the revalidation's declarations
 -- | @return boolean - whether anything was restored
 -- |
--- | @date 2026-09-15 13:00
+-- | @date 2026-09-16 15:00
 --]]
-function editor_formula.redo(state_formula, fontset)
+function editor_formula.redo(state_formula, fontset, decls)
     STATE_SHAPE.check(state_formula)
-    return restore(state_formula, fontset, state_formula.redo_stack or {},
+    return restore(state_formula, fontset, decls, state_formula.redo_stack or {},
             state_formula.undo_stack or {})
 end
 
@@ -231,6 +296,12 @@ end
 -- | being transformed always has a live tree underneath, so the gesture layer never meets a
 -- | formula it cannot resolve. An unparseable tree simply stays unlocked.
 -- |
+-- | THE CHECK READS THE STANDING VALIDATION (the author, 2026-09-16: validate "on any change...
+-- | in this way any formula would validate whenever"): every edit already re-parsed the box, so
+-- | ast_for answers from its cache and the lock itself parses nothing. The restriction is
+-- | unchanged - only its moment moved. A box nothing has parsed yet (loaded before the load's own
+-- | pass, freshly built) pays one lazy parse here, the first reader to ask.
+-- |
 -- | UNLOCKING returns the box to a mathbox AND TO ROOT: the parent goes here and the children go
 -- | with the caller's prune (content.lua's lock button), because an untrusted node can claim a
 -- | lineage in neither direction. Found live 2026-09-15: the parent survived the unlock, leaving
@@ -242,7 +313,7 @@ end
 -- |                       nil parses with the built-ins alone
 -- | @return boolean - whether the box is locked after the call
 -- |
--- | @date 2026-09-15 14:15
+-- | @date 2026-09-16 15:00
 --]]
 function editor_formula.lock(state_formula, fontset, decls)
     STATE_SHAPE.check(state_formula)
@@ -255,8 +326,8 @@ function editor_formula.lock(state_formula, fontset, decls)
     if not formula then
         return false
     end
-    local ok = mexpr_ast.build(fontset, formula, decls or {})
-    if not ok then
+    local node = ast_gestures.ast_for(fontset, formula, decls or {})
+    if not node then
         return false
     end
     state_formula.locked = true
@@ -368,15 +439,16 @@ end
 -- | typing, brackets, accents and the rest all work, and every edit commits back to the saved
 -- | text as it happens.
 -- |
--- | TRANSFORM (locked): the content is frozen. An edit is discarded by rebuilding from the
--- | committed text - selection, navigation and Ctrl+C still work through mformula, because the
--- | gesture layer needs the pointer in the tree.
+-- | TRANSFORM (locked): the keyboard passes LOCKED_ALLOW's door or it does not - movement,
+-- | selection and copy run, everything else is refused before the tree can change. The gesture
+-- | layer needs the pointer in the tree, which is the click path both modes share.
 -- |
 -- | @param state_formula  editor_formula.state_formula - checked
 -- | @param fontset        fontset
 -- | @param sz             size
--- | @param decls          {mexpr_ast.decl} | nil - reserved for this file's future needs; the
--- |                       paste verification moved to content.lua with the paste itself
+-- | @param decls          {mexpr_ast.decl} | nil - what the document declares above this box; the
+-- |                       edit commit revalidates with it, keeping the paint and the gesture
+-- |                       layer's cache one parse behind the text at most
 -- | @return boolean - true when what the box WAS is gone and its descendants should be pruned.
 -- |                  With the paste gone to content.lua, nothing here answers true today; the
 -- |                  contract stays, because the caller's prune is the right response to
@@ -385,7 +457,7 @@ end
 -- | @note from_latex never fails, so any non-empty clipboard replaces the content - unreadable text
 -- |       arrives as an empty atom. Only an empty clipboard leaves the box as it was.
 -- |
--- | @date 2026-09-15 12:00
+-- | @date 2026-09-16 13:30
 --]]
 function editor_formula.handle_input(state_formula, fontset, sz, decls)
     STATE_SHAPE.check(state_formula)
@@ -395,11 +467,11 @@ function editor_formula.handle_input(state_formula, fontset, sz, decls)
     restores. ]]
     if not state_formula.locked then
         if keymap.pressed("edit.undo") then
-            editor_formula.undo(state_formula, fontset)
+            editor_formula.undo(state_formula, fontset, decls)
             return false
         end
         if keymap.pressed("edit.redo") then
-            editor_formula.redo(state_formula, fontset)
+            editor_formula.redo(state_formula, fontset, decls)
             return false
         end
     end
@@ -409,8 +481,19 @@ function editor_formula.handle_input(state_formula, fontset, sz, decls)
     swaps the box out of its derivation chain, keeping the previous shape in it. content.lua owns
     all of that (paste_into_formula's own comment); an unlocked filled box simply has no paste. ]]
 
+    --[[ AN EMPTY BOX IS STILL A MATHBOX (since EDIT mode, 2026-09-15): the box you type in and the
+    box you paste into are the same box, so the first keystroke has to land somewhere. Reported live
+    2026-09-16: an empty box ignored every key, and the only way in was pasting a character and
+    deleting it - which worked because the paste builds a formula and nothing ever took it away
+    again. The empty mathbox is the same one `formula.new` inserts in a text box, caret and all;
+    `latex` stays nil, so an empty box still saves as empty - the string is the truth, this
+    container is only the place a first character can arrive. handle_input runs for the ACTIVE box
+    alone, so no other empty box on the page grows one. ]]
     if not state_formula.formula then
-        return false
+        if state_formula.locked then
+            return false
+        end
+        state_formula.formula = mformula.new(fontset, mexpru.DEFAULT_SIZE)
     end
 
     -- Click and drag place the caret and select, exactly as in any other box.
@@ -430,12 +513,14 @@ function editor_formula.handle_input(state_formula, fontset, sz, decls)
     end
 
     if state_formula.locked then
-        --[[ TRANSFORM: an edit is UNDONE by rebuilding from the committed text - the box is a step
-        in a derivation while locked, and its content is not the user's to change in place.
-        Rebuilding rather than blocking keys means no list of "editing keys" to fall out of date. ]]
-        if editor.edit_bracket(state_formula.formula, fontset, sz) then
-            state_formula.formula = mformula.from_latex(fontset, mexpru.DEFAULT_SIZE,
-                    state_formula.latex)
+        --[[ TRANSFORM: the keyboard passes the whitelist's door or it does not, and what passes -
+        movement, selection, copy - cannot change the tree, so there is nothing to watch for and
+        nothing to discard. Selection and navigation keep working because they ARE the whitelist,
+        and the discard-rebuild this branch used to do is gone with the refresh-flicker and the
+        repaint it needed (found live 2026-09-16: delete "refreshed" a locked formula and the
+        declared names went white - the rebuild threw the painted tree away). ]]
+        if locked_allows() then
+            editor.edit_bracket(state_formula.formula, fontset, sz)
         end
         return false
     end
@@ -448,6 +533,14 @@ function editor_formula.handle_input(state_formula, fontset, sz, decls)
     if editor.edit_bracket(state_formula.formula, fontset, sz) then
         push_undo(state_formula)
         state_formula.latex = mformula_latex.to_latex(state_formula.formula)
+        --[[ AND THE EDIT REVALIDATES (the author, 2026-09-16: "not to validate it on lock, but on
+        any change... in this way any formula would validate whenever"): one parse per edit, the
+        version bump being the event - nothing watches anything between edits. Through ast_for, so
+        the gesture layer's cache is seeded for free and the lock reads this verdict instead of
+        parsing its own. The paint is why the user sees it: names turn orange as they resolve, a
+        binder's linked variables go blue the keystroke they bind, and both honestly flicker off
+        while the formula is mid-word and does not read. ]]
+        ast_gestures.ast_for(fontset, state_formula.formula, decls or {})
     end
     return false
 end

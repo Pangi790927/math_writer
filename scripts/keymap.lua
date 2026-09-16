@@ -13,6 +13,9 @@
 -- | ASKING, PER FRAME
 -- | begin_frame()                           -> nothing
 -- | pressed(id: id)                         -> boolean
+-- | fired()                                 -> {id}
+-- |     The ids of every action that fired this frame - what a caller
+-- |     admitting only a subset of them has to ask. Idle answers empty.
 -- | mods()                                  -> ctrl, shift, alt
 -- |     THE call. One refresh per frame backs both, so every question
 -- |     asked in a frame gets one consistent answer.
@@ -600,6 +603,12 @@ local DEFAULTS = {
     and records where it came from. Ctrl+D is otherwise unused across every binding here. ]]
     {id = "formula.derive",       desc = "Derive a formula box from this one",
                   binds = {"Ctrl+D"}},
+    --[[ Ctrl+F: the keyboard's lock toggle, the same trust bit the padlock button flips (the
+    author, 2026-09-15; moved here from Ctrl+L the same day - "it's annoying, I need to raise my
+    left hand to do this", and F sits under the left hand's home reach). Routed through the very
+    same handler, so the button and the key can never disagree about what a toggle does. ]]
+    {id = "formula.lock",         desc = "Lock or unlock the current formula box",
+                  binds = {"Ctrl+F"}},
 
     -- The radial new-box menu ------------------------------------------------------------------
     -- Escape takes "+All" everywhere it means LEAVE or CANCEL. Ruled 2026-09-07 for formula.exit
@@ -880,6 +889,32 @@ function keymap.pressed(id)
         end
     end
     return false
+end
+
+--[[ @brief Every action whose bind fired this frame.
+-- |
+-- | THE WHITELIST GATE'S QUESTION, and the one `pressed` cannot ask: not "did this action fire"
+-- | but "what fired at all" - a caller admitting a SUBSET of the actions (a locked formula answers
+-- | to movement and selection, the author, 2026-09-16: "additions to the list are a feature not
+-- | fixing a bug") must know that nothing outside the set fired, which is a different query from
+-- | any single id. Typed characters are not actions and never appear here; a caller gating on a
+-- | set asks the character queue itself.
+-- |
+-- | @return {id, ...} - one entry per action that fired, in no order; empty on an idle frame
+-- |
+-- | @date 2026-09-16
+--]]
+function keymap.fired()
+    local out = {}
+    for id, action in pairs(actions) do
+        for _, bind in ipairs(action.binds) do
+            if bind_matches(bind, action.repeat_) then
+                out[#out + 1] = id
+                break
+            end
+        end
+    end
+    return out
 end
 
 --[[ @brief Which modifiers are held right now.

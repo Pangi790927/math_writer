@@ -526,8 +526,20 @@ local function node_to_latex(node, subst)
         -- requires both - mexpru.frac()'s own comment), so an empty one round-trips as "\frac{}{}"
         -- rather than being dropped.
         local u = mexpru.u(node)
-        return "\\frac{" .. node_to_latex(u.num, subst) .. "}{"
-                .. node_to_latex(u.den, subst) .. "}"
+        local num_out = node_to_latex(u.num, subst)
+        local den_out = node_to_latex(u.den, subst)
+        --[[ A DIFFERENTIAL'S D'S GO OUT AS `\mathrm{d}` (the author, 2026-09-15): the ISO spelling,
+        a specific LaTeX code rather than the letter, so the mark is exact in both directions and
+        never collides with `\,d` - that is the INTEGRAL close's mark, and a derivative inside an
+        integral keeps the two readable apart. The replace-all is safe by the invariants: in a
+        marked fraction the numerator is d's (to a power) and the denominator is d's and single
+        letters that may never be named d - the one stray it could catch is a `\ddot` dress inside
+        a marked fraction's rows, which the marking paths do not produce. ]]
+        if u.diff then
+            num_out = num_out:gsub("d", "\\mathrm{d} ")
+            den_out = den_out:gsub("d", "\\mathrm{d} ")
+        end
+        return "\\frac{" .. num_out .. "}{" .. den_out .. "}"
     elseif mexpru.u(node).kind == "vert" then
         --[[ AN OPERATOR NAME GOES OUT AS AN OPERATOR, not as a one-row matrix.
 
@@ -1093,6 +1105,32 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                         end
                         children[#children + 1] = g
                     end
+                elseif name == "mathrm" then
+                    --[[ `\mathrm{d}` - THE DIFFERENTIAL'S OWN CODE (the author, 2026-09-15): the
+                    ISO spelling of a deliberate differential, which nothing writes by accident, so
+                    a fraction carrying it is one - to_latex's own frac branch is the writer of this
+                    spelling and this is its reader. The glyph pushed is the ORDINARY letter d
+                    (upright d is a different font face this app does not draw); the transient
+                    `diff_sign` on its `u` is consumed by the frac branch the moment the enclosing
+                    fraction is built and never survives the parse. Any other `\mathrm{...}` is
+                    dropped, as unknown macros are. ]]
+                    if s:sub(pos, pos) == "{" then
+                        local close = s:find("}", pos + 1, true)
+                        if close then
+                            local word = s:sub(pos + 1, close - 1)
+                            pos = close + 1
+                            if word == "d" then
+                                local e = char.find_by_ascii("d")
+                                if e then
+                                    local g = mexpru.mexpr_symbol(fontset,
+                                            {size = mexpru.physical_sz(sz), code = e.ncod}, true)
+                                    mexpru.u(g).sz = sz
+                                    mexpru.u(g).diff_sign = true
+                                    children[#children + 1] = g
+                                end
+                            end
+                        end
+                    end
                 elseif name == "frac" then
                     -- num/den render at the SAME sz as the surrounding text (mexpru.frac()'s own
                     -- comment - standard typesetting doesn't shrink a fraction's contents the way
@@ -1112,7 +1150,31 @@ local function parse_latex_children(fontset, s, pos, sz, row_mode)
                     end
                     local num_horiz = parse_brace_group()
                     local den_horiz = parse_brace_group()
-                    children[#children + 1] = mexpru.frac(fontset, num_horiz, den_horiz, sz)
+                    local frac = mexpru.frac(fontset, num_horiz, den_horiz, sz)
+                    --[[ A FRACTION CARRYING DIFFERENTIAL MARKS IS ONE: a `\mathrm{d}` came in as
+                    the ISO-spelled sign (the mathrm branch below flags the atom transiently), or a
+                    `\partial` is simply present - either marks the fraction, exactly as to_latex's
+                    own branch spells them back out. The transient is read and cleared HERE, the
+                    one moment both rows are in hand; a plain `\frac{d}{dx}` stays an ordinary
+                    fraction - the letter d is a variable, and nothing guesses. ]]
+                    local function carries_diff(row)
+                        for _, g in ipairs(mexpru.u(row).children or {}) do
+                            local gu = mexpru.u(g)
+                            if gu and gu.diff_sign then
+                                gu.diff_sign = nil
+                                return true
+                            end
+                            local entry = g.symb and char.find_by_ncod(g.symb.code)
+                            if entry and entry.desc == "\\partial" then
+                                return true
+                            end
+                        end
+                        return false
+                    end
+                    if carries_diff(num_horiz) or carries_diff(den_horiz) then
+                        mexpru.mark_diff(frac, true)
+                    end
+                    children[#children + 1] = frac
                 elseif name == "begin" then
                     --[[ "\\begin{matrix} a \\\\ b \\end{matrix}" - what node_to_latex() now writes a
                     vert as, and real amsmath rather than this file's old invented "\\stack".

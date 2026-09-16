@@ -2472,6 +2472,12 @@ local function rescale_node(fontset, node, cursor_target)
         local new_num, m1 = rescale_node(fontset, u.num, cursor_target)
         local new_den, m2 = rescale_node(fontset, u.den, cursor_target)
         new_node = mexpru.frac(fontset, new_num, new_den, logical)
+        --[[ THE ONE BIT TRAVELS WITH THE REBUILD, as in mexpru.propagate_rebuild's own frac
+        branch (the live find, 2026-09-15): this path is zoom's AND undo's - clone_node is this
+        function - so losing it here would turn a differential back into a division on either. ]]
+        if u.diff then
+            mexpru.mark_diff(new_node, true)
+        end
         mapped = m1 or m2
     elseif u.kind == "vert" then
         local new_slots = {}
@@ -2504,6 +2510,11 @@ local function rescale_node(fontset, node, cursor_target)
         new_node = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz), code = entry.ncod}, true)
         mexpru.u(new_node).bracket = {is_open = u.bracket.is_open, type = u.bracket.type}
         mexpru.u(new_node).sz = logical
+        -- A half's colour rides the rebuild like any glyph's - an integral's green `d` must
+        -- survive a zoom or an undo, and a bracket is how that d is drawn.
+        if node.color ~= nil then
+            new_node.color = node.color
+        end
     elseif node.type == vc.MEXPR_TYPE_EMPTY_BOX then
         new_node = build_empty_atom(fontset, logical)
     else
@@ -2522,6 +2533,13 @@ local function rescale_node(fontset, node, cursor_target)
         local glyph_sz = delta and math.max(1, math.min(logical + delta, MAX_SIZE_INDEX)) or logical
         new_node = mexpru.mexpr_symbol(fontset, {size = mexpru.physical_sz(glyph_sz), code = node.symb.code}, true)
         mexpru.u(new_node).sz = logical
+        --[[ A GLYPH'S COLOUR IS PART OF WHAT IT IS, so the 1:1 mirror carries it: a declared name
+        wears its orange wherever a copy of it lands (a distributed factor clones through here), and
+        a clone that dropped it would show a name undeclared that the document declares. The diff
+        bar needs no such line - the frac branch re-derives it from the one bit above. ]]
+        if node.color ~= nil then
+            new_node.color = node.color
+        end
     end
 
     if cursor_target and mexpru.same(node, cursor_target) then
@@ -3649,6 +3667,58 @@ local function frac_slot_owner(target, slot)
     return mexpru.same(mexpru.u(hp)[slot], horiz) and hp or nil
 end
 
+--[[ A row with nothing typed in it: no children at all, or the single empty placeholder a fresh
+side is built with. The same reading mexpr_ast's is_untouched gives a unit list. ]]
+local function row_is_blank(row)
+    local kids = mexpru.u(row).children or {}
+    if #kids == 0 then
+        return true
+    end
+    return #kids == 1 and kids[1].type == vc.MEXPR_TYPE_EMPTY_BOX
+end
+
+--[[ @brief Fills an empty fraction as a DIFFERENTIAL: `d` over `d`, marked, caret after the d.
+-- |
+-- | THE SECOND STROKE OF THE ENTRY (the author, 2026-09-15): ctrl+/ made the empty fraction and a
+-- | typed `/` upgrades it, because a plain `/` there would only nest another fraction. The signs
+-- | are ORDINARY letter-d glyphs - nothing is marked on them, the fraction's own bit is the whole
+-- | record - and the caret lands between the denominator's d and whatever letter comes next, which
+-- | is where the variable is typed.
+-- |
+-- | The empty placeholders both rows were built with are REPLACED, not kept: a differential is
+-- | never seen half-upgraded, so there is no state where a sign row still holds one.
+-- |
+-- | @param container  mexpru.container - checked
+-- | @param fontset    fontset
+-- | @param fr         node - the empty fraction (both rows blank, the caller checked)
+-- | @param sz         size - logical, the fraction's own level
+-- |
+-- | @date 2026-09-15 15:00
+--]]
+local function upgrade_to_diff(container, fontset, fr, sz)
+    local d_entry = char.find_by_ascii("d")
+    if not d_entry then
+        return
+    end
+    local function d_glyph()
+        local g = mexpru.mexpr_symbol(fontset,
+                {size = mexpru.physical_sz(sz), code = d_entry.ncod}, true)
+        mexpru.u(g).sz = sz
+        return g
+    end
+    --[[ A FRESH FRACTION, spliced over the old one (mexpru.propagate_rebuild, the component-replace
+    pattern), rather than rows reassigned on the live node: a frac's C++ anchors were wired at
+    construction and only a rebuild re-derives them, so writing u.num/u.den alone would leave the
+    drawing stale below the old shape. The new node carries the mark; the caret lands on the
+    denominator row itself, after its d, which is where the variable is typed. ]]
+    local made = mexpru.frac(fontset, mexpru.horiz(fontset, {d_glyph()}, sz),
+            mexpru.horiz(fontset, {d_glyph()}, sz), sz)
+    mexpru.mark_diff(made, true)
+    container.root = mexpru.propagate_rebuild(fontset, fr, made)
+    container.version = (container.version or 0) + 1
+    container.cursor_pos = vc.wref_mexpr(mexpru.u(made).den)
+end
+
 --[[ @brief Alt+Down: back out of a numerator or a stack row onto the compound itself.
 -- |
 -- | THE NON-RECIPROCAL ROAD BACKWARDS. From a fraction node, Up enters the numerator - but from
@@ -4690,6 +4760,22 @@ function mformula_new.handle_input(container, fontset, sz)
             -- trace to cursor_pos resting on an EXISTING supsub's own base (reached by navigating
             -- out of its sup/sub and back onto the base - move_left()'s own "into base" landing,
             -- exactly like the plain-letter case above), then '(' typed there.
+            --[[ A `/` TYPED INTO AN EMPTY FRACTION'S NUMERATOR UPGRADES IT TO A DIFFERENTIAL (the
+            author, 2026-09-15): ctrl+/ made the fraction, and the `/` is the second stroke of that
+            entry - without it a plain `/` would nest another fraction, which nobody wants as the
+            first thing in an empty numerator. The upgrade fills the sign rows (d over d, the
+            caret between the denominator's d and the variable slot) and marks the fraction, whose
+            green bar is the visible confirmation. Anything already typed in either row means this
+            is not that gesture - an ordinary `/` glyph is typed instead, exactly as before. ]]
+            if ch == "/" then
+                local fr = frac_slot_owner(target, "num")
+                if fr and row_is_blank(mexpru.u(fr).num)
+                        and row_is_blank(mexpru.u(fr).den) then
+                    upgrade_to_diff(container, fontset, fr, target_sz)
+                    return
+                end
+            end
+
             if OPEN_BRACKETS[ch] then
                 if target_is_supsub_base then
                     print("mformula_new: ignoring '(' typed onto a supsub's own base - a bracket "

@@ -19,12 +19,14 @@
 -- | DERIVATION
 -- | derive_identity(state_doc: content.state_doc, i: number) -> index | nil
 -- |     Refuses an unlocked source, and the child is born locked.
--- | unlock_mid_chain(state_doc: content.state_doc, i: number) -> index
+-- | unlock_mid_chain(state_doc: content.state_doc, fontset: fontset, i: number) -> index
 -- |     Opens a locked, PARENTED box the author's way: a trusted copy
 -- |     takes its place in the chain first, then the original drops its
 -- |     links and goes free below the copy. Answers the original's new
 -- |     index.
--- | prune_descendants(state_doc: content.state_doc, id: id) -> removed
+-- | prune_descendants(state_doc: content.state_doc, fontset: fontset, id: id) -> removed
+-- |     The dropped children are collected into a text box - their
+-- |     formulas one to a line, in place of the first deleted child.
 -- |     A derived box and everything derived from it, however deep - the
 -- |     whole subtree, not one level.
 -- | declarations_before(state_doc: content.state_doc, index: number) -> {order, by_text}
@@ -134,7 +136,15 @@ local WIREFRAME_SIZE = 16 -- wireframe-toggle button, sits just left of the clos
 local GRAPH_SIZE = 16    -- graph-toggle button, sits just left of the wireframe button
 local LOCK_SIZE = 16     -- lock button (formula boxes only), leftmost in that row
 local LOCK_FRAME_COLOR = 0xff888888 -- the button's border, the same gray as the siblings
-local LOCK_RED = 0xff6666ff -- the padlock glyph inside it, both states (0xAABBGGRR: alpha,B,G,R)
+local LOCK_RED = 0xff6666ff -- the padlock glyph when UNLOCKED: open, hollow - not verified
+                            -- (0xAABBGGRR: alpha,B,G,R)
+local LOCK_GREEN = 0xff50c878 -- ...and when LOCKED: closed, filled - verified. First ruled the
+                              -- other way round (2026-09-16, "when unlocked the lock should turn
+                              -- green"), reversed the same day: "actually reverse the colors, it
+                              -- should be better of if the locked formula is green (from
+                              -- 'verified')". Its own constant, an emerald by eye but not the
+                              -- differential family's: the lock's green means verified, and the
+                              -- two meanings move independently
 local RAIL_CLICK_RADIUS = 16 -- how close to the rail line counts as "clicking the rail"
 
 --[[ The three box kinds, chosen from the radial menu (RADIAL_* below) when a box is made and never
@@ -546,13 +556,15 @@ end
 -- | toggle instead (the lock button's other branch).
 -- |
 -- | @param state_doc  content.state_doc - checked
+-- | @param fontset    fontset - the dropped children are collected into a text box, whose
+-- |                   formulas are built with it
 -- | @param i          integer - a locked, parented formula box; anything else is left alone
 -- | @return integer - the original box's index after the copy took its place (i + 1), or i when
 -- |         nothing applied
 -- |
--- | @date 2026-09-15 14:30
+-- | @date 2026-09-16 14:00
 --]]
-function content.unlock_mid_chain(state_doc, i)
+function content.unlock_mid_chain(state_doc, fontset, i)
     STATE_SHAPE.check(state_doc)
     local fml = state_doc.boxes[i] and state_doc.boxes[i].fml
     if not (fml and fml.locked and fml.parent) then
@@ -566,7 +578,7 @@ function content.unlock_mid_chain(state_doc, i)
     keep.locked = true
     fml.parent = nil             -- the original is nobody's consequence now
     fml.locked = nil
-    content.prune_descendants(state_doc, fml.id)
+    content.prune_descendants(state_doc, fontset, fml.id)
     return i + 1
 end
 
@@ -577,20 +589,29 @@ end
 -- | anything - the exact failure docs/phase2_design.md section 1's immutability exists to prevent.
 -- | Requested 2026-09-07: "also should remove all childs".
 -- |
+-- | THE CHILDREN ARE COLLECTED, NOT LOST (the author, 2026-09-16): in place of the first deleted
+-- | child a TEXT box appears, holding every removed formula one to a line, so the content survives
+-- | as prose while the derivation link is properly deleted - "the formulas are not imediately
+-- | lost, but the link is properly deleted". The text body is the editor's own `$$LaTeX$$` inline
+-- | form, so the formulas come back as real formula objects, selectable and copyable like any
+-- | prose formula. An empty child contributes no line, and a subtree with nothing in it leaves no
+-- | empty text box behind.
+-- |
 -- | A FIXPOINT OVER THE PARENT RELATION rather than a recursive walk, so it does not depend on
 -- | children appearing after their parents - a box can be moved anywhere and its lineage holds.
 -- |
 -- | @param state_doc  content.state_doc - checked
+-- | @param fontset    fontset - the collecting text box's formulas are built from their LaTeX
 -- | @param id         id | nil - the root whose descendants go; the root itself stays. nil removes
 -- |                   nothing
 -- | @return integer - how many boxes were removed
 -- |
--- | @note DESTRUCTIVE AND NOT UNDOABLE. A paste into a box with a long derivation under it discards
--- |       all of it.
+-- | @note THE LINKS ARE DELETED FOR GOOD; only the formulas' content rides on into the text box.
+-- |       A paste into a box with a long derivation under it still ends that derivation.
 -- |
--- | @date 2026-09-13 20:30
+-- | @date 2026-09-16 14:00
 --]]
-function content.prune_descendants(state_doc, id)
+function content.prune_descendants(state_doc, fontset, id)
     STATE_SHAPE.check(state_doc)
     if not id then
         return 0
@@ -608,6 +629,20 @@ function content.prune_descendants(state_doc, id)
         end
     end
 
+    --[[ What the text box will hold, and where it lands: the doomed formulas in DOCUMENT order -
+    the order the derivation was read in - and the position of the first deleted child, which the
+    text box takes over. Collected before any removal shifts an index. ]]
+    local collected, first_i = {}, nil
+    for i, b in ipairs(state_doc.boxes) do
+        local f = b.fml
+        if f and f.id and doomed[f.id] then
+            first_i = first_i or i
+            if f.latex and f.latex ~= "" then
+                collected[#collected + 1] = "$$" .. f.latex .. "$$"
+            end
+        end
+    end
+
     -- Backwards, so each removal cannot shift an index still to be visited.
     local removed = 0
     for i = #state_doc.boxes, 1, -1 do
@@ -616,6 +651,11 @@ function content.prune_descendants(state_doc, id)
             content.remove_box(state_doc, i)
             removed = removed + 1
         end
+    end
+    if first_i and #collected > 0 then
+        local index = content.insert_box(state_doc, first_i, KIND_TEXT)
+        editor.from_text(state_doc.boxes[index].editor,
+                table.concat(collected, "\n") .. "\n", fontset)
     end
     return removed
 end
@@ -722,6 +762,45 @@ function content.deserialize(text, fontset)
     end
     if #state_doc.boxes == 0 then
         content.add_box(state_doc)
+    end
+    --[[ THE DEFINITIONS PARSE FIRST: a loaded one holds only its slots until its first draw
+    (from_text's own note), and the name parse that makes declaration() answer lives in the draw
+    path. Without this, every formula box below parses against nothing and paints no declared
+    names (found live 2026-09-16: "the coloring of variables didn't work after a reload, required
+    a re-locking"). ]]
+    for _, box in ipairs(state_doc.boxes) do
+        if box.def then
+            editor_definition.refresh(box.def, fontset)
+        end
+    end
+    --[[ EVERY FORMULA BOX IS PARSED ONCE AT LOAD, which is what paints its declared names - the
+    same parse a lock or a gesture runs later, done here because a loaded box otherwise waits for
+    the first touch: reported live 2026-09-16, "the first load does not paint them". One parse per
+    box, at load time only; nothing continuous. A box that does not parse keeps its default colours
+    - the parse's own reset leaves nothing behind. ]]
+    --[[ A LOCKED BOX THAT FAILS THE PARSE IS UNLOCKED, WITH ALL THAT MEANS (the author,
+    2026-09-16): the parent link goes and the children are pruned - the same consequences the lock
+    button's unlock carries, because a tree that cannot parse cannot hold the trust its chain
+    claims. The unlocks are collected and the pruning happens after the loop: removing boxes while
+    walking them would shift the indices under the walk. ]]
+    local untrusted = {}
+    for i, box in ipairs(state_doc.boxes) do
+        if box.fml and box.fml.formula then
+            local decls = content.declarations_before(state_doc, i)
+            --[[ Through ast_for, not a bare build: this parse seeds the gesture layer's cache for
+            the whole document, so the first right-click after a load reads it instead of paying
+            its own - and the lock's verdict is this same parse (the on-any-change ruling,
+            2026-09-16: the load is just the first change). ]]
+            local node = ast_gestures.ast_for(fontset, box.fml.formula, decls.order)
+            if box.fml.locked and not node then
+                box.fml.locked = nil
+                box.fml.parent = nil
+                untrusted[#untrusted + 1] = box.fml.id
+            end
+        end
+    end
+    for _, id in ipairs(untrusted) do
+        content.prune_descendants(state_doc, fontset, id)
     end
     state_doc.active_index = 1
     return state_doc
@@ -1678,6 +1757,29 @@ function content.handle_input(state_doc, fontset, pos)
         return
     end
 
+    --[[ formula.lock (Ctrl+L) - the keyboard counterpart of clicking the padlock, doing EXACTLY
+    what the button does by calling the same code: the mid-chain dance, the parse check, the
+    children going in either direction. Rebuilt here rather than shared as a function because the
+    button's half is five lines inside a click-rect branch; were the two to drift, the trust rules
+    would drift with them, so the note in both places says where the other one is. ]]
+    if keymap.pressed("formula.lock") then
+        local i = state_doc.active_index
+        local fml = i and state_doc.boxes[i].fml
+        if fml then
+            if fml.locked and fml.parent then
+                state_doc.active_index = content.unlock_mid_chain(state_doc, fontset, i)
+            else
+                local decls = content.declarations_before(state_doc, i)
+                local was_locked = fml.locked
+                editor_formula.lock(fml, fontset, decls.order)
+                if fml.locked ~= was_locked then
+                    content.prune_descendants(state_doc, fontset, fml.id)
+                end
+            end
+        end
+        return
+    end
+
     if keymap.pressed("box.new") then
         local index = (state_doc.active_index or #state_doc.boxes) + 1
         local disp = vc.ImGui_GetDisplaySize()
@@ -1768,6 +1870,8 @@ function content.handle_input(state_doc, fontset, pos)
                 return
             end
             --[[ THE LOCK IS A TRUST BIT, the author's mutex (2026-09-15). CLOSED means trusted,
+            and this button's every rule also lives at formula.lock (Ctrl+L), which re-runs the
+            same branches - keep the two in step.
             and CLOSING CHECKS that trust first: the formula must parse into an ast
             (editor_formula.lock's one restriction), so a closed lock is never a claim the tree
             cannot back. OPEN means trustedness is gone - the cell is dirty, editable - and an
@@ -1779,14 +1883,14 @@ function content.handle_input(state_doc, fontset, pos)
                     r.lock_btn.w, r.lock_btn.h) then
                 local fml = state_doc.boxes[i].fml
                 if fml.locked and fml.parent then
-                    state_doc.active_index = content.unlock_mid_chain(state_doc, i)
+                    state_doc.active_index = content.unlock_mid_chain(state_doc, fontset, i)
                     return
                 end
                 local decls = content.declarations_before(state_doc, i)
                 local was_locked = fml.locked
                 editor_formula.lock(fml, fontset, decls.order)
                 if fml.locked ~= was_locked then
-                    content.prune_descendants(state_doc, fml.id)
+                    content.prune_descendants(state_doc, fontset, fml.id)
                 end
                 return
             end
@@ -1859,13 +1963,13 @@ function content.handle_input(state_doc, fontset, pos)
         if keymap.pressed("edit.paste")
                 and (not active.fml.formula or active.fml.locked) then
             if paste_into_formula(state_doc, fontset, state_doc.active_index) then
-                content.prune_descendants(state_doc, active.fml.id)
+                content.prune_descendants(state_doc, fontset, active.fml.id)
             end
             return
         end
         local decls = content.declarations_before(state_doc, state_doc.active_index)
         if editor_formula.handle_input(active.fml, fontset, state_doc.font_size, decls.order) then
-            content.prune_descendants(state_doc, active.fml.id)
+            content.prune_descendants(state_doc, fontset, active.fml.id)
         end
     end
 
@@ -2593,10 +2697,13 @@ function content.draw(state_doc, fontset, pos, opts)
 
             --[[ THE LOCK BUTTON, leftmost in the row and only on a formula box: that box's own
             EDIT/TRANSFORM toggle (editor_formula.lock). The button's border is the same gray as
-            the siblings'; inside it a small red padlock - closed and filled when the box is a
-            transform cell, open and hollow when it is a mathbox. The circle is drawn first and
-            the body after, so the body's fill covers the shackle's lower half and what reads is
-            the classic padlock shape. ]]
+            the siblings'; inside it a small padlock, GREEN when the box is a transform cell
+            (closed and filled - verified) and RED when it is a mathbox (open and hollow) - the
+            colour is the state, so the shape is a bonus rather than the only signal. The shackle
+            is an ARC, the upper half of its circle riding the body's top edge - it used to be a
+            full circle with the body's fill meant to cover the lower half, which only worked while
+            the body was filled: a hollow body let the whole ring show (reported live 2026-09-16,
+            "the circle thing is not an arc, it's a circle"). ]]
             local lock_btn
             if box.fml then
                 lock_btn = {x=gr.x - LOCK_SIZE - 4, y=box_y - LOCK_SIZE - 2,
@@ -2608,10 +2715,11 @@ function content.draw(state_doc, fontset, pos, opts)
                 local bx2, by2 = lock_btn.x + lock_btn.w - 4, lock_btn.y + lock_btn.h - 3
                 local sh_x = (bx1 + bx2) / 2
                 if box.fml.locked then
-                    vc.ImGui_AddCircle({x=sh_x, y=by1}, 3, LOCK_RED, 2)
-                    vc.ImGui_AddRectFilled({x=bx1, y=by1}, {x=bx2, y=by2}, LOCK_RED, 1)
+                    vc.ImGui_AddArc({x=sh_x, y=by1}, 3, LOCK_GREEN, math.pi, 2 * math.pi, 2)
+                    vc.ImGui_AddRectFilled({x=bx1, y=by1}, {x=bx2, y=by2}, LOCK_GREEN, 1)
                 else
-                    vc.ImGui_AddCircle({x=sh_x + 2, y=by1 - 2}, 3, LOCK_RED, 2)
+                    -- The open shackle: the same arc, lifted and shifted right, clear of its body.
+                    vc.ImGui_AddArc({x=sh_x + 2, y=by1 - 1}, 3, LOCK_RED, math.pi, 2 * math.pi, 2)
                     vc.ImGui_AddRect({x=bx1, y=by1}, {x=bx2, y=by2}, LOCK_RED, 1, 1)
                 end
             end

@@ -30,6 +30,9 @@
 -- | from_text(state_definition: editor_definition.state_definition, text: string,
 -- |           fontset: fontset) -> nothing
 -- |     The save format: a length-prefixed list of slot LaTeX.
+-- | refresh(state_definition: editor_definition.state_definition, fontset: fontset) -> nothing
+-- |     Parses a loaded definition's name now, so its declaration
+-- |     answers before the first draw.
 -- |
 -- | --- internal, not on the module table ---------------------------------------------------------
 -- |     slot layout, the derived rows, arity syncing and click routing
@@ -1222,6 +1225,40 @@ function editor_definition.from_text(state_definition, text, fontset)
     end
     if #slots > 0 then
         state_definition.slots = slots
+    end
+end
+
+--[[ @brief Parses a loaded definition's name now, without waiting for a draw.
+-- |
+-- | FOR A LOADED DEFINITION, whose slots exist but whose parse does not (from_text's own note:
+-- | "the parse and the derived rows start empty and are rebuilt on the next draw"). A caller that
+-- | needs the definition's DECLARATION before that first draw - a document being loaded, parsing
+-- | the formula boxes below it so their declared names paint - calls this first; without it,
+-- | declaration() answers nil and every box below parses against nothing (found live 2026-09-16:
+-- | "the coloring of variables didn't work after a reload, required a re-locking").
+-- |
+-- | PATTERN-ONLY, deliberately not sync_arity: the arity reshape is the LIVE box's business, and
+-- | a body that loads with the wrong slot count must load exactly as it was saved - a parse here
+-- | is for READING (what the boxes below may resolve against), never for WRITING (what slots this
+-- | box should have). The parse itself is the same call sync_arity makes; only its consequences
+-- | stop at `pattern`. No slots, no name: nothing to parse and nothing to build, and the draw's
+-- | own ensure() owns the empty row.
+-- |
+-- | @param state_definition  editor_definition.state_definition - checked
+-- | @param fontset           fontset - the name slot's parse needs one
+-- | @return nothing
+-- |
+-- | @date 2026-09-16
+--]]
+function editor_definition.refresh(state_definition, fontset)
+    STATE_SHAPE.check(state_definition)
+    local slots = state_definition.slots
+    if not slots or not slots[1] then
+        return
+    end
+    local pat = mexpr_ast.parse_name(fontset, slots[1])
+    if pat then
+        state_definition.pattern = pat
     end
 end
 

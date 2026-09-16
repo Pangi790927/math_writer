@@ -95,6 +95,18 @@ inline void add_circle(ImVec2 center, float radius, uint32_t col, float thicknes
         dl->AddCircle(center, radius, col, 0, thickness);
 }
 
+/*! An arc: the part of a circle between two angles, radians, ImGui's own convention (y grows
+ * downward, angle 0 at 3 o'clock, sweeping toward PI/2 = down). Drawn with the path API since
+ * ImDrawList has no AddArc - a padlock's shackle is the current user, a semicircle from PI to
+ * 2*PI sitting on top of its body. */
+inline void add_arc(ImVec2 center, float radius, uint32_t col, float a_min, float a_max,
+                    float thickness) {
+    if (auto *dl = draw_list()) {
+        dl->PathArcTo(center, radius, a_min, a_max, 0);
+        dl->PathStroke(col, 0, thickness);
+    }
+}
+
 inline void add_circle_filled(ImVec2 center, float radius, uint32_t col) {
     if (auto *dl = draw_list())
         dl->AddCircleFilled(center, radius, col, 0);
@@ -439,6 +451,9 @@ inline int register_meta(vc::virt_state_t *vs) {
         >},
         {"ImGui_AddCircleFilled", vc::luaw_function_wrapper<
                add_circle_filled, ImVec2, float, uint32_t
+        >},
+        {"ImGui_AddArc", vc::luaw_function_wrapper<
+               add_arc, ImVec2, float, uint32_t, float, float, float
         >},
         {"ImGui_AddTriangle", vc::luaw_function_wrapper<
                add_triangle, ImVec2, ImVec2, ImVec2, uint32_t, float

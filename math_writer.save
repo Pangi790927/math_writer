@@ -1,9 +1,9 @@
-text 2306
+text 2412
 $$\frac{d\vec{F}_{n}(t)}{dt}\ =\ \vec{A}_{n}sin\left(w_{n}t+\phi _{n}\right)$$ 
 
 $$\vec{a}\ \vec{m}\ \vec{F}\ \vec{I}$$
 
-$$F(x)=\frac{T}{2\pi }{\int \limits_{0}}^{1}x\,dx;\ (a+b)^{2}=a^{2}+2ab+b^{2};\ x^{a}\ =\ \frac{\dot{a}+b}{\frac{a+b+c+4}{b+3}}\ $$ 
+$$F(x)=\frac{T}{2\pi }\ \int x^{2}\,dx;\ (a+b)^{2}=a^{2}+2ab+b^{2};\ x^{a}\ =\ \frac{\dot{a}+b}{\frac{a+b+c+4}{b+3}}\ $$ 
 
 $$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$$$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$$$\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]+\left[\begin{matrix}\ 0\ \\\ 1\ \\\ 2\ \\\ 3\ \end{matrix}\right]+\left[\begin{matrix}0\\1\\2\\3\end{matrix}\right]$$
 
@@ -13,7 +13,14 @@ $$a\bar{a}\ =\ |a|^{2}\ a\ \not =\ b$$
 
 $$\frac{df(x)}{dx}\ =\ \mathop{\lim }\limits_{x\rightarrow x0}\frac{f(x)\ -\ f(x_{0})}{x\ -\ x_{0}}\ \exists \ \neg \vee \wedge ;\ A\perp B\ ;\ C\parallel D$$$$\Delta ABC\ \equiv \ \Delta BGD\ $$
 
+$$\lim \limits_{x\rightarrow x_{0}}\frac{f(x)-f(x_{0})}{x\ -\ x_{0}}\ \ $$
+
 $$\vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}\ $$$$\int \limits^{+\infty }_{-\infty }ax^{2}+bx+c\ \,dx$$$$\sum \limits^{N}_{\begin{matrix}i=0\\j<i\end{matrix}}ji^{2}\pi $$$$\lim \limits_{x\rightarrow 0}\left\lvert \frac{x}{y}\right\rvert \ \ $$$$\left(\frac{a}{b}\right)$$
+
+Asta e text normal
+
+$$\int x^{2}\,dx$$
+
 deeccasdabcdef abcdefgf
 $$\frac{x^{2}}{y}+\frac{2\pi }{T}$$
 
@@ -42,29 +49,47 @@ a\in \{0,3,4\}7
 a_{n}8
 n\in \N 3
 \R text 102
-$$F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}$$$$a_{1}=-1+1$$text 67
-$$\sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}$$$$a(ab+a(b+c))$$formula 42
+$$F_{1,'acdefg',m,m}\left(-b1acd23d^{3+e^{4x+wi}}3,a,3\right)\ =\ 22^{2^{a}}a^{3b}_{2}$$$$a_{1}=-1+1$$text 71
+$$\sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}$$$$a(ab+a(b+c))$$$$$$formula 42
 4
 29
 a(ab+a(b+c+d))\ (a+b+ca(b+d))1
 30
 1
-1formula 42
-4
-27
-a(ab+a(b+c+d))(a+b+cab+cad)2
-401
-31
 1formula 43
 4
 27
 a(ab+ab+ac+ad)(a+b+cab+cad)2
 442
 401
-1formula 40
+1formula 86
 4
-27
-a(ab+ab+ac+ad)(a+b+cab+cad)2
+72
+a(ab+ab+ac+ad)(a+b+cab+cad)\ +\ \frac{\mathrm{d} }{\mathrm{d} x}(a(x+y))2
+480
+1
+1formula 83
+4
+67
+a(ab+ab+ac+ad)(a+b+cab+cad)+\frac{\mathrm{d} }{\mathrm{d} x}(ax+ay)2
+522
+481
+1formula 54
+4
+40
+\frac{\mathrm{d} }{\mathrm{d} x}(a(x+y))2
+490
+1
+1formula 55
+4
+39
+\frac{\mathrm{d} }{\mathrm{d} x}(ax+ay)2
+512
+491
+1formula 83
+4
+70
+a(ab+ab+ac+ad)(a+b+ab+cd)\ +\ \frac{\mathrm{d} }{\mathrm{d} x}(a(x+y))2
 470
 0
 formula 97
@@ -85,25 +110,59 @@ formula 43
 a(ab+a(b+c+d))\ (a+b+ca(b+d))2
 100
 1
-1formula 60
+1formula 43
+4
+27
+a(ab+ab+ac+ad)(a+b+ca(b+d))2
+552
+101
+1formula 43
+4
+27
+a(ab+ab+ac+ad)(a+b+cab+cad)2
+692
+551
+1formula 40
+4
+27
+a(ab+ab+ac+ad)(a+b+cab+cad)2
+560
+0
+text 237
+$$aab(a+b+cab+cad)+aab(a+b+cab+cad)+aac(a+b+cab+cad)+aad(a+b+cab+cad)$$
+$$aab(a+b+cab+cad)+aab(a+b+cab+cad)+aaca+aacb+aaccab+aaccad+aad(a+b+cab+cad)$$
+$$aab(a+b+cab+cad)+aab(a+b+cab+cad)+aaca+aacb+aaccab+aaccad+aada+aadb+aadcab+aadcad$$
+formula 60
 4
 47
 \sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}1
 40
 1
+1formula 63
+4
+48
+\sum \limits^{N}_{k=0}e^{-jk\delta tw-jk\beta w}2
+541
+41
+1formula 63
+4
+47
+\sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}2
+582
+531
 1text 33
-$$a(ab+a(b+c+d))\ (a+b+ca(b+d))$$formula 18
+$$a(ab+a(b+c+d))\ (a+b+ca(b+d))$$formula 22
 4
-6
-a(b+d)1
-50
+9
+a(b+f(x))2
+590
 1
-1formula 19
+1formula 23
 4
-5
-ab+ad2
-461
-51
+8
+ab+af(x)2
+702
+591
 1definition 16
 2
 1
@@ -113,15 +172,32 @@ x9
 11
 \vec{F}_{k}8
 k\in \N 7
-\R ^{3}formula 58
+\R ^{3}formula 57
 4
 45
 \vec{F}\ =\ \sum \limits^{N}_{k=1}\vec{F}_{k}1
 80
-1
-1definition 10
+0
+definition 10
 2
 1
 a3
-\R text 22
+\R definition 23
+3
+4
+f(x)8
+x\in \R 3
+\R formula 64
+4
+50
+a(b+f(y))\ +\ \frac{\mathrm{d} }{\mathrm{d} x}f(y)2
+640
+1
+1formula 26
+4
+12
+\int x\,dx\ 2
+710
+1
+1text 22
 Editor stage 1 is done

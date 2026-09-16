@@ -72,6 +72,11 @@
 -- |                 body: node)             -> node
 -- |     The explicit form. `vars` is a list of NAMES, not nodes.
 -- |
+-- | new_diff(ns: ast.ns, partial: boolean, order: number, vars: {name}, body: node) -> node
+-- |     A derivative, the fourth binder: `d/dx` or `∂/∂x`. Binds
+-- |     its names in the body, and `d` may never be one of them -
+-- |     in a derivative's denominator a d is the sign, always.
+-- |
 -- | new_sum / new_prod / new_union / new_intersect / new_lim / new_limsup / new_liminf / new_min /
 -- | new_max / new_sup / new_inf / new_argmin / new_argmax
 -- |     (ns: ast.ns, vars: {name}, sups: {node}, subs: {node}, body: node) -> node
@@ -79,6 +84,11 @@
 -- |     typed out - so there is no `function ast.new_sum(...)` line
 -- |     anywhere. They are otherwise identical to new_group_bigop with the
 -- |     type already chosen, and each carries the same argument checks.
+-- |
+-- | GROUP_BIGOP_DRAW                        {type -> how the operator is drawn}
+-- |     The DRAWING spelling ("\\sum", "lim") for each of the thirteen -
+-- |     what the row holds, so the writer builds glyphs and the parser
+-- |     derives its own reverse from it. One table, no mirrors.
 -- |
 -- | LEAVES AND STRUCTURE
 -- | new_num(ns: ast.ns, m: number, n: number, sign: number) -> node
@@ -258,6 +268,14 @@ local ast = {
     glyph ("tends to" vs "implies"), a different node. @date 2026-09-11 16:00 ]]
     IMPLIES = 41,
     IFF = 42,
+    --[[ A DERIVATIVE - `d/dx` or `∂/∂x`, the fourth binder. The Leibniz form IS a fraction in
+    notation, and on the mexpr side it stays one (an ordinary frac whose one `u.diff` bit says what
+    it is, bar drawn green); this node is what the parse derives from those glyphs each time:
+    order from the exponent on the sign, variables from the denominator's letters beyond the sign
+    (never `d` itself - a d there is a sign, and no variable may be named one inside a
+    derivative), body bound by the usual catch. See DESIGN.md and mexpr_ast's reader.
+    @date 2026-09-15 15:00 ]]
+    DIFF = 43,
 }
 
 --[[ THE `ns` CONTAINER's declared fields - the id -> node storage plus the next id to hand out.
@@ -662,6 +680,23 @@ for name in pairs(GROUP_BIGOP_SYMBOL) do
     GROUP_BIGOPS[ast[name]] = true
 end
 
+--[[ EVERY GROUP BIG OPERATOR, BY HOW IT IS DRAWN - type -> the spelling the row holds: a glyph
+desc ("\\sum") for the four symbol operators, a WORD ("lim") for the named ones. One table, three
+readers: the writer (ast_mexpr) turns a node into glyphs from it, the parser (mexpr_ast) derives
+its spelling->type map from its reverse, and membership in it is "this is a group big operator" -
+which is why it is the exported one and GROUP_BIGOPS above stays local.
+
+Distinct from GROUP_BIGOP_SYMBOL beside it: that one is the SERIALIZATION spelling ("S" for SUM,
+to_string's wire format), this one is the DRAWING spelling. Two jobs, two tables, same 13 rows.
+@date 2026-09-15 17:00 ]]
+ast.GROUP_BIGOP_DRAW = {
+    [ast.SUM] = "\\sum", [ast.PROD] = "\\prod", [ast.UNION] = "\\bigcup",
+    [ast.INTERSECT] = "\\bigcap",
+    [ast.LIM] = "lim", [ast.LIMSUP] = "limsup", [ast.LIMINF] = "liminf",
+    [ast.MIN] = "min", [ast.MAX] = "max", [ast.SUP] = "sup", [ast.INF] = "inf",
+    [ast.ARGMIN] = "argmin", [ast.ARGMAX] = "argmax",
+}
+
 --[[ Rebinds every FREE reference to `name` inside `sub` so it points at `var` - the whole of the
 binding. Free means not already claimed by a nearer binder: a nested operator declaring the same
 name shadows this one, so its body is skipped while its bounds (written outside its own scope) are
@@ -705,6 +740,16 @@ local function catch_free(ns, sub, name, var)
         end
         catch_free(ns, sub[idx + 1], name, var) -- body
         return
+    end
+    if sub.type == ast.DIFF then
+        --[[ A DERIVATIVE binds its own names: if it declares this one, its body is its scope and
+        we stop here, exactly as a group bigop's is. The name slots hold STRINGS, so the generic
+        walk below would self-skip them anyway - this branch exists only for the shadowing stop. ]]
+        for k = 1, sub[3] do
+            if sub[3 + k] == name then
+                return
+            end
+        end
     end
     for i = 1, #sub do
         catch_free(ns, sub[i], name, var)
@@ -875,6 +920,50 @@ for name in pairs(GROUP_BIGOP_SYMBOL) do
         NODE_SHAPE.check(body, "body")
         return new_bigop_group(ns, node_type, vars, sups, subs, body)
     end
+end
+
+--[[ @brief A derivative: `d/dx` or `o/x` of a body - the fourth binder.
+-- |
+-- |     ast.new_diff(ns, false, 1, {"x"}, body)   -- d/dx of it; its free x means this one
+-- |
+-- | A BINDER, INT's shape in kind: the names are bound in the body by the usual catch, and the
+-- | operator makes its own VARs (which live in the namespace, not in the tuple - same as the group
+-- | bigops). `partial` says which DIFFSIGN it carries, so the writer draws the partial sign rather
+-- | than `d`; `order` is the exponent on the sign (second and higher derivatives).
+-- |
+-- | THE VARIABLES ARE NAMES, and `d` may never be among them - a `d` in a derivative's denominator
+-- | is a sign by construction (the author, 2026-09-15), which is what keeps the reading of the
+-- | glyphs unambiguous.
+-- |
+-- | @param ns       ast.ns - checked
+-- | @param partial  boolean - the sign is the partial sign rather than `d`
+-- | @param order    integer - asserted positive; 1 for a first derivative
+-- | @param vars     {string} - NAMES, each checked; the operator makes its own VAR for each
+-- | @param body     node - checked; the differentiated expression
+-- | @return node - a DIFF node
+-- |
+-- | @date 2026-09-15 15:00
+--]]
+function ast.new_diff(ns, partial, order, vars, body)
+    NS_SHAPE.check(ns)
+    assert(type(order) == "number" and order == math.floor(order) and order >= 1,
+            "a derivative's order must be a positive whole number")
+    assert(type(vars) == "table", "a derivative needs its variable list")
+    for k, name in ipairs(vars) do
+        assert(type(name) == "string", "variable " .. k .. " of a derivative must be a name")
+        assert(name ~= "d", "a derivative's variable may not be named d - that is the sign")
+    end
+    NODE_SHAPE.check(body, "body")
+    local ret = ast.new(ns, ast.DIFF)
+    ret[1] = partial and 1 or 0
+    ret[2] = order
+    ret[3] = #vars
+    for k, name in ipairs(vars) do
+        ret[3 + k] = name
+        catch_free(ns, body, name, ast.new_var(ns, name))
+    end
+    ret[4 + #vars] = body
+    return ret
 end
 
 --[[ @brief `base^exponent`.
@@ -1164,6 +1253,7 @@ local type_to_symbol = {
     [ast.TENDS] = "to",
     [ast.IMPLIES] = "=>",
     [ast.IFF] = "<=>",
+    [ast.DIFF] = "diff",
 }
 
 --[[ The group operators' symbols come from the one table that defines them - see

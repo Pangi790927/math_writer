@@ -581,7 +581,10 @@ C++ core (`char_draw_composer.h` = fonts/glyphs, `math_expr_composer.h` = expres
 exposed to Lua via `virt_composer`. The actual math model lives in Lua: `ast.lua` (the AST),
 `char.lua` (glyph catalog), `transforms.lua` (algebraic term-dragging, WIP). Full detail and
 data-flow diagram in `README.md`. Dated design decisions - the drawing/structure layering among
-them - live in `DESIGN.md`; read the relevant entry before reversing one.
+them - live in `DESIGN.md`; read the relevant entry before reversing one. `DESIGN.md` is the only
+trustworthy design record - the author, 2026-09-16: "The only trutable design is DESIGN.md". A
+comment in the code describes what the code does; it rules nothing, and where it seems to, follow
+DESIGN.md, not the comment.
 
 ## Where the project is
 

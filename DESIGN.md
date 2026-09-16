@@ -70,3 +70,46 @@ keep its lock - but a paste drops ALL chains, parent and children alike, because
 convention demands a proven derivation and "a just copied in function is not a derivation"
 (the author, 2026-09-15). Parse-validity and lineage are different claims, and only a
 transformation earns the second.
+
+A LOCKED BOX'S KEYBOARD IS A WHITELIST (2026-09-16): "it will not be a blacklist, it will be a
+whitelist, towards the mathbox... all the movement actions are allowed, all the selection allowed.
+If I want more I will say, that way additions to the list are a feature not fixing a bug". The
+funnel runs only when every action that fired is on the list and no character is queued - movement,
+selection and copy pass, everything else is refused before the tree can change. The earlier design
+let everything through and discarded the edit by rebuilding from the committed text; the whitelist
+replaced it because a rebuild throws away what the parse hung on the tree, and because a set that
+grows only by request cannot silently rot. A LOAD TESTS EVERY LOCK: each formula box is parsed once
+as the document comes in - which is also what paints declared names - and a locked box that fails
+comes back unlocked, parent dropped, children pruned, "with all that means".
+
+VALIDATION RUNS ON ANY CHANGE (2026-09-16): "I am thinking not to validate it on lock, but on any
+change... in this way any formula would validate whenever" - the edit's own version bump is the
+event, one parse per keystroke, never a per-frame watch (the earlier "don't continuously verify"
+stands against polling, not against this). The lock reads the standing verdict instead of parsing
+its own; the load seeds it. The paint is the visible half: globals orange, a binder's linked
+variables blue with every apparition caught in scope, structural marks green - "globals get
+orange, green for structural" - and each honestly flickers off while the formula is mid-word.
+
+---
+
+## Derivatives are marked fractions    (2026-09-15)
+
+A derivative IS a fraction in notation and stays one on the mexpr side: the fraction's own
+`u.diff` is the only stored fact - drawn as a GREEN bar, the one visual difference - and every
+semantic (the order, the signs, the variables, the binding) is re-derived from the glyphs at each
+parse. The d's are plain letter glyphs with nothing on them; `d` may never name a variable inside
+a derivative, so every d-unit is a sign by inspection and `d^2d` reads determinately.
+
+The bar was an orange until 2026-09-16, when the declared names took that hue ("make the
+derivative green, an emerald green") - the two marks are distinct colours on purpose.
+
+ON THE WIRE the d's go out as `\mathrm{d}` - the ISO spelling, a specific code nothing writes by
+accident - and `\partial` rides as itself; on the way in, either mark upgrades the fraction back.
+This is deliberately a DIFFERENT mark from the integral close's `\,d`, so a derivative inside an
+integral keeps the two readable apart; a plain `\frac{d}{dx}` stays an ordinary fraction, because
+the letter d is a variable and nothing guesses.
+
+TYPED: ctrl+/ makes the empty fraction, and a `/` typed into its empty numerator upgrades it to
+`d` over `d` with the caret between the denominator's d and the variable slot. THE AST NODE is
+the fourth binder - INT's shape in kind: order from the sign's exponent, variables from the
+denominator's letters, body read at product order like a bigop's.
