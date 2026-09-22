@@ -43,14 +43,14 @@ struct char_t {
 
 namespace virt_composer {
 
-template <ssize_t index>
-struct luaw_param_t<ImVec2, index> {
-    ImVec2 luaw_single_param(lua_State *L);
+template <>
+struct luaw_param_t<ImVec2> : luaw_param_base_t {
+    ImVec2 luaw_single_param(lua_State *L, ssize_t index);
 };
 
-template <ssize_t index>
-struct luaw_param_t<char_draw_composer::char_t, index> {
-    char_draw_composer::char_t luaw_single_param(lua_State *L);
+template <>
+struct luaw_param_t<char_draw_composer::char_t> : luaw_param_base_t {
+    char_draw_composer::char_t luaw_single_param(lua_State *L, ssize_t index);
 };
 
 } /* virt_composer */
@@ -337,8 +337,7 @@ inline int register_meta(vc::virt_state_t *vs) {
 namespace virt_composer
 {
     
-template <ssize_t index>
-inline ImVec2 luaw_param_t<ImVec2, index>::luaw_single_param(lua_State *L) {
+inline ImVec2 luaw_param_t<ImVec2>::luaw_single_param(lua_State *L, ssize_t index) {
     ImVec2 ret;
     if (lua_isnil(L, index))
         return ret;
@@ -351,9 +350,8 @@ inline ImVec2 luaw_param_t<ImVec2, index>::luaw_single_param(lua_State *L) {
     return ret;
 }
 
-template <ssize_t index>
 inline char_draw_composer::char_t
-luaw_param_t<char_draw_composer::char_t, index>::luaw_single_param(lua_State *L)
+luaw_param_t<char_draw_composer::char_t>::luaw_single_param(lua_State *L, ssize_t index)
 {
     char_draw_composer::char_t ret;
     if (lua_isnil(L, index))

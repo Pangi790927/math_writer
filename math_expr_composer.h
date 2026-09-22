@@ -100,14 +100,14 @@ get_enum_val<math_expr_composer::mexpr_accent_e>(fkyaml::node &n);
 template <> inline math_expr_composer::mexpr_e
 get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n);
 
-template <ssize_t index>
-struct luaw_param_t<math_expr_composer::mexpr_bracket_t, index> {
-    math_expr_composer::mexpr_bracket_t luaw_single_param(lua_State *L);
+template <>
+struct luaw_param_t<math_expr_composer::mexpr_bracket_t> : luaw_param_base_t {
+    math_expr_composer::mexpr_bracket_t luaw_single_param(lua_State *L, ssize_t index);
 };
 
-template <ssize_t index>
-struct luaw_param_t<math_expr_composer::mexpr_accent_t, index> {
-    math_expr_composer::mexpr_accent_t luaw_single_param(lua_State *L);
+template <>
+struct luaw_param_t<math_expr_composer::mexpr_accent_t> : luaw_param_base_t {
+    math_expr_composer::mexpr_accent_t luaw_single_param(lua_State *L, ssize_t index);
 };
 
 template <>
@@ -1678,20 +1678,19 @@ get_enum_val<math_expr_composer::mexpr_e>(fkyaml::node &n) {
 }
 
 
-template <ssize_t index>
 inline math_expr_composer::mexpr_accent_t
-luaw_param_t<math_expr_composer::mexpr_accent_t, index>::luaw_single_param(lua_State *L) {
+luaw_param_t<math_expr_composer::mexpr_accent_t>::luaw_single_param(lua_State *L, ssize_t index) {
     math_expr_composer::mexpr_accent_t ret{};
     if (lua_isnil(L, index))
         return ret;
     using char_t = char_draw_composer::char_t;
 
     lua_getfield(L, index, "kind");
-    ret.kind = luaw_param_t<bm_t<math_expr_composer::mexpr_accent_e>, -1>{}.luaw_single_param(L);
+    ret.kind = luaw_param_t<bm_t<math_expr_composer::mexpr_accent_e>>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, index, "stroke");
-    ret.stroke = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.stroke = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
 
     /* `tiers` is a plain Lua array, narrowest first; anything past four is ignored rather than
@@ -1701,7 +1700,7 @@ luaw_param_t<math_expr_composer::mexpr_accent_t, index>::luaw_single_param(lua_S
         int len = (int)lua_rawlen(L, -1);
         for (int i = 1; i <= len && i <= 4; i++) {
             lua_rawgeti(L, -1, i);
-            ret.tiers[i - 1] = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+            ret.tiers[i - 1] = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
             lua_pop(L, 1);
             ret.tier_count = i;
         }
@@ -1711,58 +1710,57 @@ luaw_param_t<math_expr_composer::mexpr_accent_t, index>::luaw_single_param(lua_S
     return ret;
 }
 
-template <ssize_t index>
 inline math_expr_composer::mexpr_bracket_t
-luaw_param_t<math_expr_composer::mexpr_bracket_t, index>::luaw_single_param(lua_State *L) {
+luaw_param_t<math_expr_composer::mexpr_bracket_t>::luaw_single_param(lua_State *L, ssize_t index) {
     math_expr_composer::mexpr_bracket_t ret{};
     if (lua_isnil(L, index))
         return ret;
     using char_t = char_draw_composer::char_t;
 
     lua_getfield(L, index, "type");
-    ret.type = luaw_param_t<bm_t<math_expr_composer::mexpr_bracket_e>, -1>{}.luaw_single_param(L);
+    ret.type = luaw_param_t<bm_t<math_expr_composer::mexpr_bracket_e>>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, index, "tl");
-    ret.tl = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.tl = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
     
     lua_getfield(L, index, "bl");
-    ret.bl = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.bl = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
     
     lua_getfield(L, index, "tr");
-    ret.tr = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.tr = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
     
     lua_getfield(L, index, "br");
-    ret.br = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.br = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
     
     lua_getfield(L, index, "cl");
-    ret.cl = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.cl = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
     
     lua_getfield(L, index, "cr");
-    ret.cr = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.cr = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, index, "conl");
-    ret.conl = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.conl = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, index, "conr");
-    ret.conr = luaw_param_t<char_t, -1>{}.luaw_single_param(L);
+    ret.conr = luaw_param_t<char_t>{}.luaw_single_param(L, -1);
     lua_pop(L, 1);
     
     lua_getfield(L, index, "left");
-    auto left = luaw_param_t<std::vector<char_t>, -1>{}.luaw_single_param(L);
+    auto left = luaw_param_t<std::vector<char_t>>{}.luaw_single_param(L, -1);
     for (int i = 0; i < left.size() && i < 4; i++)
         ret.left[i] = left[i];
     lua_pop(L, 1);
 
     lua_getfield(L, index, "right");
-    auto right = luaw_param_t<std::vector<char_t>, -1>{}.luaw_single_param(L);
+    auto right = luaw_param_t<std::vector<char_t>>{}.luaw_single_param(L, -1);
     for (int i = 0; i < right.size() && i < 4; i++)
         ret.right[i] = right[i];
     lua_pop(L, 1);
