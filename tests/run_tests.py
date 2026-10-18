@@ -80,6 +80,9 @@ CXX_FLAGS = [
 # reflects whatever the real app would actually do.
 HARNESS_SOURCES = [
     (UTILS / "virt_composer.cpp", "virt_composer"),
+    # utils' plugin component, which every program linking virt_composer.cpp links since
+    # 06-10-2026: the owners of names every registration reads live in it.
+    (UTILS / "virt_composer_plugins.cpp", "virt_composer_plugins"),
     (IMGUI / "imgui.cpp", "imgui"),
     (IMGUI / "imgui_draw.cpp", "imgui_draw"),
     (IMGUI / "imgui_tables.cpp", "imgui_tables"),

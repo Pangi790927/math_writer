@@ -56,6 +56,24 @@ $$\sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}$$$$a(ab+a(b+c))$$$$$$formula 4
 a(ab+a(b+c+d))\ (a+b+ca(b+d))1
 30
 1
+1formula 68
+4
+53
+a(ab+a(b+c+d))a+a(ab+a(b+c+d))b+a(ab+a(b+c+d))ca(b+d)2
+901
+31
+1formula 69
+4
+53
+a(ab+a(b+c+d))a+aabb+aa(b+c+d)b+a(ab+a(b+c+d))ca(b+d)2
+912
+901
+1formula 73
+4
+57
+a(ab+a(b+c+d))a+aabb+aabb+aacb+aadb+a(ab+a(b+c+d))ca(b+d)2
+922
+911
 1formula 43
 4
 27
@@ -116,11 +134,47 @@ a(ab+ab+ac+ad)(a+b+ca(b+d))2
 a(ab+ab+ac+ad)(a+b+cab+cad)2
 692
 551
-1formula 40
+1formula 41
 4
 27
 a(ab+ab+ac+ad)(a+b+cab+cad)2
 560
+1
+1formula 83
+4
+67
+a(ab+ab+ac+ad)a+a(ab+ab+ac+ad)b+a(ab+ab+ac+ad)cab+a(ab+ab+ac+ad)cad2
+842
+561
+1formula 87
+4
+71
+a(ab+ab+ac+ad)a+aabb+aabb+aacb+aadb+a(ab+ab+ac+ad)cab+a(ab+ab+ac+ad)cad2
+852
+841
+1formula 91
+4
+75
+aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+a(ab+ab+ac+ad)cab+a(ab+ab+ac+ad)cad2
+862
+851
+1formula 101
+4
+85
+aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+a(ab+ab+ac+ad)cab+aabcad+aabcad+aaccad+aadcad2
+872
+861
+1formula 111
+4
+95
+aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+aabcab+aabcab+aaccab+aadcab+aabcad+aabcad+aaccad+aadcad2
+892
+871
+1formula 108
+4
+95
+aaba+aaba+aaca+aada+aabb+aabb+aacb+aadb+aabcab+aabcab+aaccab+aadcab+aabcad+aabcad+aaccad+aadcad2
+880
 0
 text 237
 $$aab(a+b+cab+cad)+aab(a+b+cab+cad)+aac(a+b+cab+cad)+aad(a+b+cab+cad)$$
@@ -132,6 +186,12 @@ formula 69
 \int \sum \limits^{N}_{k=0}e^{-jk(\delta t+\beta )w}\,dt1
 40
 1
+1formula 72
+4
+57
+\int \sum \limits^{N}_{k=0}e^{-jk\delta tw-jk\beta w}\,dt2
+931
+41
 1formula 72
 4
 57
@@ -221,4 +281,4 @@ ab+af(y)+\frac{\mathrm{d} }{\mathrm{d} x}f(y)2
 710
 1
 1text 22
-Editor stage 1 is doneview 6527 24 0
+Editor stage 1 is doneview 5559 30 0

@@ -106,6 +106,12 @@ function run_test()
         {"a(b-(c+d))", 2, "a(b-c-d)"},   -- the splice: the terms join the outer sum
         {"(a+b)(c+d)", 2, "(a+b)c+(a+b)d"},
         {"x+a(b+c)", 2, "x+ab+ac"},      -- the splice
+        {"x+a(bc+de+fg)", 2, "x+abc+ade+afg"},
+        --[[ The case above is the one where the sum's bare FIRST term lands in a non-first
+        position of the outer sum: the splice must give it a +1 of its own, and a second bare
+        term never exists - every term after the first carries the sign the parse stamped. Two
+        spliced terms leading with a placed +1 would be one id in two places, which the sharing
+        rule forbids. @date 2026-09-19 11:20 ]]
     }
     for _, case in ipairs(CASES) do
         local src, which, want = case[1], case[2], case[3]

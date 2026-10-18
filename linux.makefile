@@ -30,7 +30,10 @@ INCLCUDES += -I${IMGUI} -I${IMGUI}/backends/ -I${IMPLOT}
 # This is a header-only project 
 DEPS      := $(wildcard ./*.h)
 SRCS      += ${IMGUI_SRC} ${BACKEND_SRC} ${IMPLOT_SRC}
+# utils' plugin component goes beside virt_composer.cpp: every registration reads the owners of
+# names, which live in it since 06-10-2026.
 SRCS      += ${UTILS}/virt_composer.cpp
+SRCS      += ${UTILS}/virt_composer_plugins.cpp
 SRCS      += debug_input_pipe.cpp
 OBJS      := $(SRCS:.cpp=.o)
 
