@@ -131,6 +131,15 @@ local function new_write_ctx(fontset, sz, origins, var_origins)
     return {fs = fontset, sz = sz, origins = origins, var_origins = var_origins}
 end
 
+--[[ The ctx a sup or a sub is written in, and its size: one step smaller than `ctx_write`'s
+(SUB_SIZE_DELTA, capped), which is what loading and typing give every side. The glyphs have to be
+BUILT at that size - a small row around full-size glyphs draws them full-size.
+@date 18-10-2026-20:45 ]]
+local function side_write_ctx(ctx_write)
+    local sz = math.min(ctx_write.sz + mformula_new.SUB_SIZE_DELTA, mexpru.MAX_SIZE_INDEX)
+    return new_write_ctx(ctx_write.fs, sz, ctx_write.origins, ctx_write.var_origins), sz
+end
+
 --[[ One glyph, built the way every other glyph in this editor is: logical size on `u`, physical
 size in the geometry (mexpru.rescale's own rule). Takes the catalog ENTRY, so the two lookups below
 are one line each. @date 2026-09-14 ]]
@@ -296,24 +305,36 @@ end
 
 local emit    -- forward: the four below are mutually recursive with it
 
---[[ The factors of a product from index `from`, juxtaposed. WHEN A DOT IS NEEDED: `ab` needs
-nothing between it, but `2 3` written as `23` is the number twenty-three - so a dot goes before any
-numeric factor that is not the first. It never changes the meaning, and verify() proves it.
-@date 2026-09-12 02:00 ]]
-local function emit_factors(ctx_write, node, from)
-    local run = {}
+--[[ Answers whether a factor's glyphs begin with a numeral, which holds for a number and for a
+power of one: a numeral base is written bare, never bracketed. @date 19-10-2026-22:31 ]]
+local function starts_with_numeral(node)
+    return node.type == ast.NUM or (node.type == ast.EXP and node[1].type == ast.NUM)
+end
+
+--[[ Writes the factors of a product from index `from`, juxtaposed. WHEN A DOT IS NEEDED: `ab`
+needs nothing between it, but the parse reads bare digits in a row as one numeral, a power's base
+included - `2 3` written `23` is twenty-three, `5 10^{2}` written `510^{2}` is 510 squared. So a
+dot goes before any numeric factor that is not the first, and before a numeral or a power of one
+whenever digits stand right in front of it: a numeral factor's, or the digits the caller wrote just
+ahead of the run, which `after_digits` reports (a sum term's coefficient). A digit under a power
+ends its numeral, so `2^{3}4^{5}` needs no dot. It never changes the meaning, and verify() proves
+it. @date 19-10-2026-22:31 ]]
+local function emit_factors(ctx_write, node, from, after_digits)
+    local run, digits_before = {}, after_digits
     for i = from, #node do
         local child = node[i]
         local sub, err = emit(ctx_write, child, PREC[ast.MUL])
         if not sub then
             return nil, err
         end
-        if #run > 0 and child.type == ast.NUM then
+        if (#run > 0 and child.type == ast.NUM)
+                or (digits_before and starts_with_numeral(child)) then
             -- The centred dot the parser reads as multiplication (MUL_OPS), not an asterisk, which
             -- it reads as nothing at all.
             run[#run + 1] = glyph_desc(ctx_write, "\\cdot")
         end
         append(run, sub)
+        digits_before = child.type == ast.NUM
     end
     return run
 end
@@ -361,7 +382,7 @@ local function emit_sum(ctx_write, node)
         local err
         if from == 2 then
             local tail
-            tail, err = emit_factors(ctx_write, child, 2)
+            tail, err = emit_factors(ctx_write, child, 2, #part > 0)
             if not tail then
                 return nil, err
             end
@@ -380,11 +401,20 @@ end
 --[[ A power: the exponent rides on the base's LAST slot - which is the CLOSING BRACKET when the
 base needed one, exactly how this editor draws and parses `(a+b)^{2}`. The exponent is a row of its
 own, one size step smaller (SUB_SIZE_DELTA), so a built power and a typed one are the same tree.
-@date 2026-09-12 02:00 ]]
+A CELL base is bracketed too, around its own pair: the parse reads a base's outermost pair as the
+power's, so `((a+b))^{2}` is EXP(CELL(ADD)), and the CELL's pair alone read back as EXP(ADD)
+(found 18-10-2026).
+@date 18-10-2026-21:50 ]]
 local function emit_power(ctx_write, node)
     local base, err = emit(ctx_write, node[1], ATOM_PREC)
     if not base then
         return nil, err
+    end
+    if node[1].type == ast.CELL then
+        base, err = bracketed(ctx_write, base)
+        if not base then
+            return nil, err
+        end
     end
     local sup_sz = math.min(ctx_write.sz + mformula_new.SUB_SIZE_DELTA, mexpru.MAX_SIZE_INDEX)
     local inner
@@ -461,10 +491,12 @@ and under, the body as the rest of the term's factors.
 
 THE OPERATOR: a word ("lim", "argmax") builds the same 1-tall vert typing builds - loose letters
 would reparse as a product; a glyph operator ("\\sum") builds its glyph WITH any size boost, the
-from_latex rule. THE LIMITS are emitted by the ordinary emitters, so a name inside them copies
-its ink through `origins` exactly as it does everywhere else - a copied `n` stays the drawn `n`,
-not a rebuilt one; more than one constraint on a side becomes a VERT of rows, the one shape
-constraint_rows reads back as several. THE BODY emits at product order, the settled bigop rule:
+from_latex rule. THE LIMITS are emitted by the ordinary emitters one size step down, where loading
+and typing put every side, so a name inside them copies its ink through `origins` exactly as it
+does everywhere else - a copied `n` stays the drawn `n`, not a rebuilt one; more than one
+constraint on a side becomes a VERT of rows, the one shape constraint_rows reads back as several.
+Written at the operator's own size, a built `=` and `0` stood full height beside a copied `k`
+(found 18-10-2026). THE BODY emits at product order, the settled bigop rule:
 `\sum_i i^2` swallows its whole term, and an add-like body brackets itself through emit's own
 precedence path. THE TUPLE'S VAR SLOTS ARE NOT EMITTED - a declaration has no ink; its ink is the
 references (the `i` in `i=0`, the `i` in the body), which copy through the parse's tags.
@@ -473,7 +505,7 @@ No SOURCE node is taken beyond the standard maps: the operator, the vert and the
 built (one `\sum` is every `\sum`); the constraints and the body recurse through `emit`, and the
 names inside them resolve through `origins`/`var_origins` - the reason a copied factor of a
 distributed body still draws the user's own glyphs.
-@date 2026-09-15 17:00 ]]
+@date 18-10-2026-20:45 ]]
 local function emit_bigop(ctx_write, node)
     local n_vars, n_sup, n_sub = node[1], node[2], node[3]
     local spelling = ast.GROUP_BIGOP_DRAW[node.type]
@@ -498,17 +530,18 @@ local function emit_bigop(ctx_write, node)
     --[[ Each side's constraint rows: node[base+1] .. node[base+count]. One constraint is one row;
     several become a vert of rows, because constraint_rows reads exactly that back. An absent side
     (n == 0) answers nil and the supsub simply has no anchor there. ]]
+    local side_ctx, side_sz = side_write_ctx(ctx_write)
     local function side(base, count)
         local rows = {}
         for k = 1, count do
-            local run, err = emit(ctx_write, node[base + k], 1)
+            local run, err = emit(side_ctx, node[base + k], 1)
             if not run then
                 return nil, err
             end
-            rows[#rows + 1] = mexpru.horiz(ctx_write.fs, run, ctx_write.sz)
+            rows[#rows + 1] = mexpru.horiz(ctx_write.fs, run, side_sz)
         end
         if count > 1 then
-            return mexpru.vert(ctx_write.fs, rows, ctx_write.sz)
+            return mexpru.vert(ctx_write.fs, rows, side_sz)
         end
         return rows[1]
     end

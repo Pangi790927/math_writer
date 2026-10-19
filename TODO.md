@@ -281,7 +281,9 @@ rule; a genuinely new mechanism is a smell, not a requirement.
 - **Fraction transforms**, once the writer handles DIV: common-denominator addition, cancel in
   fraction (`ab/ac -> b/c`), multiply through by a denominator.
 - **Swap/commute as an explicit step** — real, not a normalization, precisely because
-  multiplication is not assumed commutative; a cross-product swap is a derivation step.
+  multiplication is not assumed commutative; a cross-product swap is a derivation step. The sum
+  half was built 2026-10-19 as the `reorder` plugin, reached only by dragging a term selector
+  (DESIGN.md, "Term selectors, drag reorder"). Moving a factor of a product is still open.
 
 ---
 

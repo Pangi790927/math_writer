@@ -12,15 +12,14 @@
 -- |     sealed {add = <ast id of the sum>} that offer built.
 -- |
 -- | --- internal, not on the module table ---------------------------------------------------------
--- |     is_one, is_unit_magnitude, is_sign_carrier    what a number must look like to be
--- |         dropped, folded, or read as a sign
 -- |     through_cells, sum_at_sign                    from a term's sign coefficient to the sum,
 -- |         and the product around it
--- |     split_term, product_of, term_with_coeff       the algebra of one distributed term
 -- |     replace_in, splice_up                         placing the expanded sum back into the tree
 -- |     PARAMS_FIELDS, PARAMS_SHAPE
+-- |     is_unit_magnitude, split_term, product_of,    the algebra of one distributed term, bound
+-- |         term_with_coeff                           from transform_utils, which shares it
 -- |
--- | @date 2026-09-19 13:05
+-- | @date 19-10-2026-20:35
 -- | ===============================================================================================
 --]]
 
@@ -45,9 +44,18 @@
 local ast = require("ast")
 local sealed = require("sealed")
 local transforms = require("transforms")
+local transform_utils = require("transform_utils")
 
 local check = transforms.check
 local check_ctx = transforms.check_ctx
+
+--[[ @brief Binds the algebra of one term, which lives in transform_utils so that other plugins
+-- |        can assemble it too. @date 19-10-2026-20:35
+--]]
+local is_unit_magnitude = transform_utils.is_unit_magnitude
+local split_term = transform_utils.split_term
+local product_of = transform_utils.product_of
+local term_with_coeff = transform_utils.term_with_coeff
 
 --[[ @brief Holds what apply receives beyond the tree: the sum's ast id.
 -- |
@@ -60,50 +68,6 @@ local PARAMS_FIELDS = {
     add = "ast id of the ADD to multiply out; its parent must be the MUL",
 }
 local PARAMS_SHAPE = sealed.declare("distribute", "params", PARAMS_FIELDS)
-
---[[ @brief Is this exactly the number 1 - the factor a product may drop without changing?
--- |
--- | Only +1 over 1 is it. A -1 carries a sign, and an infinity shares the magnitude while
--- | changing everything it multiplies, so both survive the cleanup that drops this one.
--- |
--- | @param node  node - any factor of a product
--- | @return boolean
--- |
--- | @date 2026-09-19 11:20
---]]
-local function is_one(node)
-    return node.type == ast.NUM and node[1] == 1 and node[2] == 1 and node[3] == 1
-end
-
---[[ @brief Is this a number of magnitude 1 and finite - +1 or -1 - able to stand as a coefficient?
--- |
--- | The sign is left open, which is what separates this from is_one above: a coefficient's whole
--- | job is to carry one. The parse stamps a term's sign as exactly this number - the unit leading
--- | the term's product - so a term's sign coefficient answers yes here.
--- |
--- | @param node  node
--- | @return boolean
--- |
--- | @date 2026-09-19 12:10
---]]
-local function is_unit_magnitude(node)
-    return node.type == ast.NUM and node[1] == 1 and node[2] == 1
-end
-
---[[ @brief Is this a number carrying nothing but a sign - magnitude 1, finite or infinite?
--- |
--- | +1, -1, and the two infinities, which are +1 and -1 over 0. A sign meeting one of these as a
--- | coefficient folds with it, infinity included, so `-(-inf)` becomes `+inf` and never a product
--- | of two minus-ones. Wider than is_unit_magnitude by exactly the infinities.
--- |
--- | @param node  node
--- | @return boolean
--- |
--- | @date 2026-09-19 11:20
---]]
-local function is_sign_carrier(node)
-    return node.type == ast.NUM and node[1] == 1 and (node[2] == 1 or node[2] == 0)
-end
 
 --[[ @brief Finds the first non-CELL ancestor above `node`, and its child on the way down.
 -- |
@@ -135,10 +99,12 @@ end
 -- |
 -- | Every term of a sum but the first carries its sign as a leading unit number, so `node` is
 -- | such a coefficient exactly when it is a number of unit magnitude, its parent is the term's
--- | product, and it is that product's first factor. From there the sum is the first non-CELL
--- | ancestor of the term's product, and the product distribution needs is the first non-CELL
--- | ancestor of the sum: both must exist, for distribution needs a term of a sum and that sum
--- | held by a product - `a+b` standing alone has neither.
+-- | product, and it is that product's first factor - or, for a term of magnitude one, when it is
+-- | a later term of the sum itself: the parse folds the digit of `+1` into the sign's number, so
+-- | that number is the whole term. From there the sum is the first non-CELL ancestor of the term,
+-- | and the product distribution needs is the first non-CELL ancestor of the sum: both must
+-- | exist, for distribution needs a term of a sum and that sum held by a product - `a+b`
+-- | standing alone has neither.
 -- |
 -- | @param node     node - any node of the tree
 -- | @param parents  table - child id -> parent node
@@ -148,14 +114,19 @@ end
 -- | @note The first term of a sum carries no sign, so a sum is reached through the signs of its
 -- |       later terms only.
 -- |
--- | @date 2026-09-19 13:05
+-- | @date 18-10-2026-22:15
 --]]
 local function sum_at_sign(node, parents)
-    local mul = parents[node.id]
-    if not (is_unit_magnitude(node) and mul and mul.type == ast.MUL and mul[1] == node) then
+    if not is_unit_magnitude(node) then
         return nil
     end
-    local add = through_cells(parents, mul)
+    local holder = parents[node.id]
+    local add
+    if holder and holder.type == ast.MUL and holder[1] == node then
+        add = through_cells(parents, holder)
+    elseif holder and holder.type == ast.ADD and holder[1] ~= node then
+        add = holder
+    end
     if not (add and add.type == ast.ADD) then
         return nil
     end
@@ -164,135 +135,6 @@ local function sum_at_sign(node, parents)
         return nil
     end
     return add
-end
-
---[[ Splits a sum's term into its sign and its factors - the grammar of every term distribute
-multiplies through:
-
-    b             ->  no sign, factors {b}
-    MUL(1, c)     ->  sign +1, factors {c}
-    MUL(-1, 2, x) ->  sign -1, factors {2, x}   (a sign is its own factor, never folded)
-    3             ->  the number is the whole term and its own coefficient
-
-@date 2026-09-19 13:05 ]]
-local function split_term(t_node)
-    if t_node.type == ast.NUM then
-        return t_node, {}
-    end
-    if t_node.type == ast.MUL then
-        --[[ A MUL with a leading NUM splits sign-from-factors; a MUL without one splices its
-        -- | children flat into the surrounding factor list. The parse builds products flat - a
-        -- | MUL inside a MUL is not a shape the tree keeps, and a result carrying one writes the
-        -- | same ink but fails the reparse verify on flat-vs-nested. The bare case arrives here
-        -- | as the first term of a bracketed sum; every term after the first carries its sign
-        -- | coefficient and takes the branch above. ]]
-        local rest = {}
-        if t_node[1].type == ast.NUM then
-            for k = 2, #t_node do
-                rest[#rest + 1] = t_node[k]
-            end
-            return t_node[1], rest
-        end
-        for k = 1, #t_node do
-            rest[#rest + 1] = t_node[k]
-        end
-        return nil, rest
-    end
-    return nil, {t_node}
-end
-
---[[ @brief Builds a product of `factors`, tidied: 1s dropped, a one-factor product unwrapped.
--- |
--- | Distribution routinely leaves a product of one factor, or a stray 1 where a term was the
--- | unit; carrying those forward would make every later step read around debris this
--- | transformation created, so the cleanup happens in the same step that builds the product.
--- |
--- | The order of factors is preserved: multiplication is not assumed commutative - a vector
--- | product does not commute - and distribution is valid without commutativity while reordering
--- | is a different transformation altogether.
--- |
--- | @param ns       ast.ns - mints the replacement 1, when every factor was dropped
--- | @param factors  node[] - in order; not modified
--- | @return node - a MUL of what survived, the single survivor unwrapped, or the number 1, so a
--- |         caller never special-cases a one-factor product
--- |
--- | @date 2026-09-19 13:05
---]]
-local function product_of(ns, factors)
-    local kept = {}
-    for _, f in ipairs(factors) do
-        if not is_one(f) then
-            kept[#kept + 1] = f
-        end
-    end
-    if #kept == 0 then
-        return ast.new_num(ns, 1, 1, 1)
-    end
-    if #kept == 1 then
-        return kept[1]
-    end
-    return ast.new_mul(ns, table.unpack(kept))
-end
-
---[[ @brief Builds a distributed term: `coeff` attached to the front of `term`, in the shape the
--- |        parse would have produced.
--- |
--- | A coefficient never merges into another numeral - magnitudes never multiply, and `-2` times
--- | `x` stays a product rather than becoming a numeral of magnitude 2. What folds is signs only:
--- | a unit coefficient meeting a term that already leads with a sign carrier folds the two into
--- | one (auto-reduced, for now), and the folded number keeps its own denominator, so infinity
--- | stays over 0. A unit +1 arriving on a first term is dropped outright: a plain term is what an
--- | unsigned term of a sum is.
--- |
--- | @param ns     ast.ns - where replacement numbers are minted
--- | @param coeff  node | nil - the term's leading NUM, or nil when it had none
--- | @param term   node - the distributed term before its coefficient is attached
--- | @param first  boolean - this term lands first in its sum
--- | @return node
--- |
--- | @note `coeff` may be placed into the result as it stands, so a caller handing the same node
--- |       to two calls can put one id in two places - splice_up mints a fresh unit per term for
--- |       exactly that reason.
--- |
--- | @date 2026-09-19 13:05
---]]
-local function term_with_coeff(ns, coeff, term, first)
-    if not coeff then
-        return term
-    end
-    if is_unit_magnitude(coeff) and term.type == ast.MUL and is_sign_carrier(term[1]) then
-        --[[ Fold: the two signs become one, on a fresh number, so the term keeps a single
-        -- | leading sign. A first term folding to a plain +1 over 1 needs no sign at all, and
-        -- | comes back tidied through product_of. ]]
-        local signs = (coeff[3] or 1) * (term[1][3] or 1)
-        if first and signs == 1 and term[1][2] == 1 then
-            local bare = {}
-            for k = 2, #term do
-                bare[#bare + 1] = term[k]
-            end
-            return product_of(ns, bare)
-        end
-        local args = {ast.new_num(ns, 1, term[1][2], signs)}
-        for k = 2, #term do
-            args[#args + 1] = term[k]
-        end
-        return ast.new_mul(ns, table.unpack(args))
-    end
-    --[[ Drop: a first term is what an unsigned term of a sum is, so a unit +1 arriving on one
-    -- | is noise rather than a factor. ]]
-    if first and is_unit_magnitude(coeff) and coeff[3] == 1 then
-        return term
-    end
-    --[[ Attach: every other coefficient leads the term as a factor in its own right, prepended
-    -- | to the term's own factors when there is a product to lead. ]]
-    if term.type == ast.MUL then
-        local args = {coeff}
-        for k = 1, #term do
-            args[#args + 1] = term[k]
-        end
-        return ast.new_mul(ns, table.unpack(args))
-    end
-    return ast.new_mul(ns, coeff, term)
 end
 
 --[[ @brief Rebuilds the path from `root` down to `old`, with `new` in its place.
@@ -330,6 +172,7 @@ end
 --[[ @brief Places the expanded sum where its product sat - the grammar of the two endings:
 -- |
 -- |     in a product or at the root:  a(b+c)                   ->  ab + ac
+-- |                                  (y(b+c))d                ->  (yb + yc)d
 -- |     a whole term of a sum:        x + a(b+c) at the inner  ->  x + ab + ac
 -- |                                  a(b-(c+d)) at the inner   ->  a(b-c-d)
 -- |
@@ -338,6 +181,10 @@ end
 -- | its own result - so the expanded terms take their product's place among the enclosing sum's
 -- | terms, each carrying the sign of the position it lands in. Nothing new is distributed; the one
 -- | distribution done is only expressed where its result lives.
+-- |
+-- | The replacement takes ONE bracket pair with it when the product sat in exactly one and that
+-- | pair is among a product's factors: the pair is the one the sum now needs, which the parse
+-- | builds no CELL for (as_factor). A second pair stays a CELL, as it reads back.
 -- |
 -- | The position's sign is a unit handed to term_with_coeff, which folds it with whatever sign
 -- | the term already leads with. A FRESH unit per term, because that coefficient may be placed
@@ -350,11 +197,15 @@ end
 -- | @param expanded  node - the ADD the distribution produced, taking the product's place
 -- | @return node - the new root
 -- |
--- | @date 2026-09-19 13:05
+-- | @date 18-10-2026-21:10
 --]]
 local function splice_up(ns, root, parents, mul, expanded)
     local outer, slot = through_cells(parents, mul)
     if not (outer and outer.type == ast.ADD) then
+        -- `slot` is the product's own parent only when exactly one CELL sits between them.
+        if outer and outer.type == ast.MUL and parents[mul.id] == slot then
+            return replace_in(ns, root, parents, slot, expanded)
+        end
         return replace_in(ns, root, parents, mul, expanded)
     end
     -- The product's place in the sum is its slot's index - always found, because the slot is a

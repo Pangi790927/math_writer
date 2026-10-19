@@ -175,6 +175,89 @@ function run_test()
         end
     end
 
+    -- ------------------------------------------------------------------ and over the user's pair
+    do
+        --[[ A BASE IN THE USER'S OWN BRACKETS keeps them. The parse reads a base's outermost pair
+        as the power's, so `((a+b))^{2}` is EXP(CELL(ADD)) and both pairs have to be written; with
+        the CELL's pair alone it read back as EXP(ADD), one pair lost on every transform of a
+        formula holding it (found 18-10-2026). @date 18-10-2026-21:50 ]]
+        for _, s in ipairs({"((a+b))^{2}c", "((ab))^{2}"}) do
+            local src, node, ns = parse(s)
+            check("setup: " .. s .. " parses", node ~= nil)
+            local out, err = write_back(src, ns, node)
+            check(s .. " can be written back", out ~= nil, err)
+            if out then
+                check("...and parses back to the same tree", out.ok,
+                        tostring(out.want) .. "  vs  " .. tostring(out.got))
+            end
+        end
+    end
+
+    -- ------------------------------------------------------------------ digits against digits
+    do
+        --[[ DIGITS WRITTEN AGAINST DIGITS READ AS ONE NUMERAL, a power's base included: a reorder
+        of `x+y+5\cdot 10^{2}` committed the box `y+x+510^{2}`, 510 squared, and one of
+        `x+2\cdot 3` committed `23+x` (found 19-10-2026). Each case reads back as the tree it was
+        written from, written unchanged and after the transformation that made the wrong box. A
+        power of a numeral after anything but digits keeps its plain juxtaposition, which already
+        read back right. @date 19-10-2026-22:27 ]]
+        local function round_trips(label, src, ns, tree)
+            local out, err = write_back(src, ns, tree)
+            check(label .. " can be written back", out ~= nil, err)
+            if out then
+                check(label .. " parses back to the same tree", out.ok,
+                        tostring(out.latex) .. ": " .. tostring(out.want) .. "  vs  "
+                        .. tostring(out.got))
+            end
+            return out
+        end
+        for _, s in ipairs({"5\\cdot 10^{2}", "2\\cdot 10^{3}+x+y", "2\\cdot 3+a+b",
+                "x+(2)(3)^{2}", "2\\cdot 3^{2}", "x+5\\cdot 2y"}) do
+            local src, node, ns = parse(s)
+            check("setup: " .. s .. " parses", node ~= nil)
+            if node then
+                round_trips(s, src, ns, node)
+            end
+        end
+        for _, s in ipairs({"x10^{2}", "3^{2}10^{3}"}) do
+            local src, node, ns = parse(s)
+            local out = node and round_trips(s, src, ns, node)
+            check(s .. " is written without a dot", out ~= nil and out.latex:find("cdot") == nil,
+                    out and out.latex)
+        end
+
+        check("setup: the reorder plugin is registered", transforms.get("reorder") ~= nil)
+        -- Each case is {source, the term that moves, the term it lands in front of}.
+        -- @date 19-10-2026-22:37
+        for _, case in ipairs({{"x+2\\cdot 3", 2, 1}, {"x+y+5\\cdot 10^{2}", 2, 1},
+                {"2\\cdot 10^{3}+x+y", 3, 2}, {"2\\cdot 3+a+b", 3, 2},
+                {"x+(2)(3)^{2}", 2, 1}, {"x+5\\cdot 2y", 2, 1}}) do
+            local s, t, b = case[1], case[2], case[3]
+            local src, node, ns = parse(s)
+            local result, err
+            if node and transforms.get("reorder") then
+                result, err = transforms.apply("reorder", ns, node,
+                        {term = node[t].id, before = node[b].id})
+            end
+            check("the reorder of " .. s .. " produces a tree", result ~= nil, err)
+            if result then
+                round_trips(s .. " reordered", src, ns, result)
+            end
+        end
+
+        local src, node, ns = parse("2(3+x)")
+        local add = node and node[2]
+        local option = add and add.type == ast.ADD and transforms.offers(ns, node, add[2][1])[1]
+        check("setup: distribute offers itself in 2(3+x)", option ~= nil and option ~= false)
+        if option then
+            local result, err = transforms.apply(option.id, ns, node, option.params)
+            check("distribute of 2(3+x) produces a tree", result ~= nil, err)
+            if result then
+                round_trips("2(3+x) distributed", src, ns, result)
+            end
+        end
+    end
+
     -- ------------------------------------------------------------------ as a container
     do
         --[[ WHAT THE NEXT STAGE WILL HOLD. A written tree has to arrive as something an editor can

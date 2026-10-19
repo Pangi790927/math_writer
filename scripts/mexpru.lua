@@ -375,6 +375,8 @@ local CONTAINER_FIELDS = {
                     .. "and its references - refreshed by every parse, nil after a failed one",
     _contour_cache   = "the vert contours last computed for this tree",
     _graph_cache     = "the reachable-position graph last computed for this tree",
+    _selector_cache  = "term_selectors' geometry for this tree, keyed on version, root, size and "
+                    .. "wrap width",
 }
 local CONTAINER_SHAPE = sealed.declare("mexpru", "container", CONTAINER_FIELDS)
 

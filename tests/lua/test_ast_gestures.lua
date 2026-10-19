@@ -28,6 +28,7 @@ local vc = require("virt_composer")
 local char = require("char")
 local mexpru = require("mexpru")
 local mformula_latex = require("mformula_latex")
+local mformula_new = require("mformula_new")
 local mexpr_ast = require("mexpr_ast")
 local ast_gestures = require("ast_gestures")
 local ast = require("ast")
@@ -178,14 +179,24 @@ function run_test()
         check("a minus in front of a bare number reaches it too",
                 ids(ast_gestures.options(fs, bare_number, {}, glyph(bare_number, "-")))
                         == "distribute")
+
+        --[[ A TERM OF MAGNITUDE ONE IS ITS SIGN: the parse folds the digit of `+1` into the sign's
+        number, so that number is the term and leads no product. The digit's own number is not in
+        the tree, so the digit still offers nothing - only signs are buttons. Until 18-10-2026 the
+        sign offered nothing either, and `a(b+1)` could not be distributed at all.
+        @date 18-10-2026-22:10 ]]
+        local unit_term = row("a(b+1)")
+        local at_plus = ast_gestures.options(fs, unit_term, {}, glyph(unit_term, "+"))
+        check("a plus in front of a 1 reaches the sum", ids(at_plus) == "distribute", ids(at_plus))
+        check("...and the 1 itself offers nothing",
+                #ast_gestures.options(fs, unit_term, {}, glyph(unit_term, "1")) == 0)
     end
 
     -- ------------------------------------------------------------------ the cache
     do
         --[[ REBUILT ONLY WHEN THE BOX MOVED. Keyed on the container's own `version`, which every
-        real edit bumps - the same arrangement editor_definition uses for a name. The point is that
-        nothing has to remember to invalidate: a cache cannot go stale without the version moving.
-        ]]
+        real edit bumps, and on its root, which a zoom replaces without bumping it. The point is
+        that nothing has to remember to invalidate. @date 18-10-2026-20:20 ]]
         local c = row("a(b+c)")
         local first = select(1, ast_gestures.ast_for(fs, c, {}))
         local again = select(1, ast_gestures.ast_for(fs, c, {}))
@@ -194,6 +205,21 @@ function run_test()
         c.version = (c.version or 0) + 1
         local after = select(1, ast_gestures.ast_for(fs, c, {}))
         check("...and rebuilt once the box moves", not rawequal(first, after))
+    end
+
+    -- ------------------------------------------------------------------ a zoom is not an edit
+    do
+        --[[ A ZOOM REPLACES THE TREE WITHOUT MOVING THE VERSION. mformula_new.rescale builds new
+        nodes, and a parse tags only the nodes it read, so a parse served from the cache after a
+        zoom names no glyph on screen. Found live 18-10-2026: after one Ctrl+Wheel step every
+        right-click opened an empty menu. @date 18-10-2026-20:10 ]]
+        local c = row("a(b+c)")
+        local before = select(1, ast_gestures.ast_for(fs, c, {}))
+        mformula_new.rescale(c, fs)
+        check("a zoomed row is parsed again",
+                not rawequal(before, (ast_gestures.ast_for(fs, c, {}))))
+        local opts = ast_gestures.options(fs, c, {}, glyph(c, "+"))
+        check("...and its + still offers distribute", ids(opts) == "distribute", ids(opts))
     end
 
     -- ------------------------------------------------------------------ running an option
@@ -230,6 +256,15 @@ function run_test()
         local opts2 = ast_gestures.options(fs, c, {}, glyph(c, "+"))
         check("a moved box recomputes the result",
                 not rawequal(first, (ast_gestures.preview(fs, c, {}, opts2[1]))))
+
+        --[[ NOR DOES IT OUTLIVE A ZOOM, which moves no version. The cached result was minted into
+        the parse the zoom retired, and handing it back beside the new parse's namespace pairs a
+        tree with a namespace it was never built in. @date 18-10-2026-20:10 ]]
+        local kept = ast_gestures.preview(fs, c, {}, opts2[1])
+        mformula_new.rescale(c, fs)
+        local opts3 = ast_gestures.options(fs, c, {}, glyph(c, "+"))
+        check("a zoomed box recomputes the result", opts3[1] ~= nil
+                and not rawequal(kept, (ast_gestures.preview(fs, c, {}, opts3[1]))))
     end
 
     if checks_failed == 0 then

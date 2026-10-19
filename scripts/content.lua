@@ -37,7 +37,7 @@
 -- | draw(state_doc: content.state_doc, fontset: fontset, pos: {x,y}, opts: table) -> nothing
 -- | handle_input(state_doc: content.state_doc, fontset: fontset, pos: {x,y}) -> nothing
 -- |     The panels swallow the frame first; then box routing, the radial
--- |     menu and the right-click transform menu.
+-- |     menu, the right-click transform menu and the term selectors' drag.
 -- | customiser_open(state_doc: content.state_doc) -> boolean
 -- |
 -- | FOR THE HELP PAGE
@@ -53,9 +53,9 @@
 -- |                    attached; STATE_FIELDS beside it declares the shape
 -- |     declarations_before() is public above and is THE ONE creator of the `decls`
 -- |     container every parse and gesture downstream receives
--- |     the rail, the transform menu, the AST overlays and box layout
+-- |     the rail, the transform menu, the term drag, the AST overlays and box layout
 -- |
--- | @date 2026-09-13 20:30
+-- | @date 19-10-2026-20:47
 -- | ===============================================================================================
 --]]
 
@@ -108,6 +108,10 @@ local editor_common = require("editor")
 --[[ The flight recorder. A gesture that declines is invisible on screen by design, so it says why
 HERE - which is the log that gets read when "it does nothing" is reported. ]]
 local input_recorder = require("input_recorder")
+--[[ term_selectors draws the handles under a locked formula's sums and says what a drag of one
+means; this file only routes the press, owns the frame while a term is held and commits the drop.
+@date 19-10-2026-21:02 ]]
+local term_selectors = require("term_selectors")
 
 local content = {}
 
@@ -134,7 +138,7 @@ local MIN_FONT_SIZE, MAX_FONT_SIZE = 1, mexpru.MAX_SIZE_INDEX -- char.lua's own 
 local CLOSE_SIZE  = 16   -- close ("x") button, sits just above each box's top-right corner
 local WIREFRAME_SIZE = 16 -- wireframe-toggle button, sits just left of the close button
 local GRAPH_SIZE = 16    -- graph-toggle button, sits just left of the wireframe button
-local LOCK_SIZE = 16     -- lock button (formula boxes only), leftmost in that row
+local LOCK_SIZE = 16     -- lock button (formula boxes only), and the star and selectors buttons
 local LOCK_FRAME_COLOR = 0xff888888 -- the button's border, the same gray as the siblings
 local LOCK_RED = 0xff6666ff -- the padlock glyph when UNLOCKED: open, hollow - not verified
                             -- (0xAABBGGRR: alpha,B,G,R)
@@ -337,6 +341,8 @@ local STATE_FIELDS = {
     radial            = "the open new-box menu, or nil. While set it owns all input for the frame.",
     transform_menu    = "the open right-click transform menu, or nil",
     transform_pick    = "which row of that menu is under the pointer",
+    term_drag         = "the term a press on a term selector holds, or nil. While set it owns "
+                        .. "all input for the frame.",
 }
 
 --[[ Declared through sealed.lua, like every other container here. @date 2026-09-12 05:45 ]]
@@ -922,6 +928,30 @@ local function scroll_into_view(state_doc, pos, index)
     state_doc.scroll_y = math.max(0, math.min(max_scroll, state_doc.scroll_y))
 end
 
+--[[ Keeps scroll_y between the top of the stack and the point where a stack `total` pixels tall
+ends at the bottom of the view. @date 19-10-2026-22:51 ]]
+local function clamp_scroll(state_doc, pos, total)
+    local display_size = vc.ImGui_GetDisplaySize()
+    local viewport_h = (display_size and display_size.y or (pos.y + 700)) - pos.y
+    state_doc.scroll_y = math.max(0, math.min(math.max(0, total - viewport_h), state_doc.scroll_y))
+end
+
+--[[ Scrolls down by the distance from box `index` to the box a transformation has just put below
+it, so the new box stands on screen where its source stood (the author, 19-10-2026: "the camera
+shuld scroll down the same distance such that it focuses the newly created one"). The distance is
+the source's height and one gap, from the last frame's layout. The new box is not laid out yet, so
+the stack the scroll is clamped against counts it at its source's height: a stack that still fits
+the view does not move, and none scrolls past its end. @date 19-10-2026-22:51 ]]
+local function scroll_to_derived(state_doc, pos, index)
+    local r = state_doc.last_layout and state_doc.last_layout[index]
+    if not r then
+        return
+    end
+    local step = r.h + BOX_GAP
+    state_doc.scroll_y = state_doc.scroll_y + step
+    clamp_scroll(state_doc, pos, state_doc.last_total_height + step)
+end
+
 -- #################################################################################################
 -- The radial "which kind of box?" menu
 -- #################################################################################################
@@ -1467,32 +1497,19 @@ local function menu_row_at(menu, pos)
     return row
 end
 
---[[ Runs the chosen transformation and lands its result as a NEW CELL below the one it came from.
-
-A NEW CELL, NEVER AN EDIT. A formula cell is a step in a derivation, immutable, with a link to what
-it came from (docs/phase2_design.md section 1) - so a transformation adds a step rather than changing
-one. The source stays exactly as it was, on screen, above its own consequence.
-
-THE CELL CARRIES BOTH ITS TREE AND ITS TEXT. `latex` is a cell's committed truth - editor_formula
-rebuilds from it whenever an edit has to be discarded - but the freshly BUILT formula is handed over
-too, because that one copied its names' glyphs from the source and a rebuild from text would
-re-render them. Both agree at this instant; the built one is simply the better of the two.
-
-FOCUS MOVES WITH IT. The interaction ends where its result is, which is also what stops the menu's
-own click reaching the cell it was opened over.
-
-Returns true when a cell was made. A refusal - the tree cannot be written back yet - leaves the
-document alone, keeps the pick so F6 can still show what WOULD have come out, and says why in the
-recorder. That combination is deliberate: the transformation succeeded and only the drawing did not,
-and those are worth telling apart.
-@date 2026-09-12 03:00 ]]
-local function commit_transform(state_doc, fontset, menu, option)
+--[[ Gives what a transformation makes of the formula `menu` names, written back as glyphs, or nil
+with the reason in the recorder: the transformation refused, the writer cannot draw its result yet,
+or the drawing reads back as a different tree. The last is refused like the others because the box
+it would become is locked and trusted, and a refusal is a correct answer where a wrong drawing is
+not (ast_mexpr's own rule). A built-in call such as \sin is one today: its name is written as
+letters, which read back as a product (found 19-10-2026). @date 19-10-2026-22:25 ]]
+local function transformed_formula(state_doc, fontset, menu, option)
     local container = menu.container
     local decls = content.declarations_before(state_doc, menu.index)
     local new_root, ns, err = ast_gestures.preview(fontset, container, decls.order, option)
     if not new_root then
         input_recorder.log_event("transform: " .. option.id .. " refused: " .. tostring(err))
-        return false
+        return nil
     end
 
     local sz = mexpru.u(container.root).sz or mexpru.DEFAULT_SIZE
@@ -1500,6 +1517,41 @@ local function commit_transform(state_doc, fontset, menu, option)
     if not built then
         input_recorder.log_event("transform: " .. option.id
                 .. " cannot be drawn yet: " .. tostring(werr))
+        return nil
+    end
+    local same, want, got = ast_mexpr.verify(fontset, built, decls.order, ns, new_root)
+    if not same then
+        input_recorder.log_event("transform: " .. option.id .. " cannot be drawn yet: the "
+                .. "drawing reads back as " .. tostring(got) .. ", not " .. tostring(want))
+        return nil
+    end
+    return built
+end
+
+--[[ Runs the chosen transformation and lands its result as a NEW CELL below the one it came from.
+
+A NEW CELL, NEVER AN EDIT. A formula cell is a step in a derivation, immutable, with a link to what
+it came from (docs/phase2_design.md section 1) - so a transformation adds a step rather than
+changing one. The source stays exactly as it was, on screen, above its own consequence.
+
+THE CELL CARRIES BOTH ITS TREE AND ITS TEXT. `latex` is a cell's committed truth - editor_formula
+rebuilds from it whenever an edit has to be discarded - but the freshly BUILT formula is handed over
+too, because that one copied its names' glyphs from the source and a rebuild from text would
+re-render them. Both agree at this instant; the built one is simply the better of the two.
+
+FOCUS MOVES WITH IT, and so does the view: the interaction ends where its result is, which is also
+what stops the menu's own click reaching the cell it was opened over, and the view scrolls down by
+the distance to the new cell, so it stands where its source stood. `pos` is the draw origin, which
+the scroll needs to size the view.
+
+Returns the new cell's index when one was made, and false otherwise. A refusal - the result cannot
+be written back faithfully yet - leaves the document alone, keeps the pick so F6 can still show
+what WOULD have come out, and says why in the recorder. That combination is deliberate: the
+transformation succeeded and only the drawing did not, and those are worth telling apart.
+@date 19-10-2026-22:51 ]]
+local function commit_transform(state_doc, fontset, menu, option, pos)
+    local built = transformed_formula(state_doc, fontset, menu, option)
+    if not built then
         return false
     end
 
@@ -1518,7 +1570,8 @@ local function commit_transform(state_doc, fontset, menu, option)
     to keep the chain copies first (ctrl+d) and unlocks the copy. ]]
     box.fml.locked = true
     state_doc.active_index = index
-    return true
+    scroll_to_derived(state_doc, pos, menu.index)
+    return index
 end
 
 --[[ One frame of input while the menu is open - it owns the frame, exactly as the radial does.
@@ -1532,7 +1585,7 @@ out of the transformed tree and moving focus into it - needs `ast -> mexpr`, whi
 and was explicitly left until this half was finished. So the pick is carried as far as it can
 currently go, and the panel is where it shows.
 @date 2026-09-11 21:45 ]]
-local function transform_menu_input(state_doc, fontset)
+local function transform_menu_input(state_doc, fontset, pos)
     local menu = state_doc.transform_menu
     menu.hover = menu_row_at(menu, vc.ImGui_GetMousePos())
 
@@ -1567,7 +1620,7 @@ local function transform_menu_input(state_doc, fontset)
             --[[ The result arrives as a cell. F6 is opened only when it could NOT - there the pick
             is all there is to show, and a panel saying what would have come out beats nothing
             happening at all. ]]
-            if not commit_transform(state_doc, fontset, menu, pick) then
+            if not commit_transform(state_doc, fontset, menu, pick, pos) then
                 state_doc.show_ast_result = true
                 state_doc.show_ast = false
             end
@@ -1594,15 +1647,122 @@ local function draw_transform_menu(menu)
     end
 end
 
+-- #################################################################################################
+-- The term selectors' drag
+-- #################################################################################################
+
+--[[ A press on a term selector becomes a drag once the pointer has travelled this far from it; a
+release short of it is a click and does nothing. @date 19-10-2026-21:02 ]]
+local TERM_ARM_DIST = 4
+
+--[[ Holds a term when a left press lands on one of its selectors, and answers whether it did.
+
+IT TRIES ANY BOX THE LAST FRAME DREW, not only the active one: a selector is a handle on the
+formula, and a handle needs no focus. The box must be locked and showing its selectors, and its
+record must still describe its tree. A taken press never reaches the box activation, the caret or
+the selection. @date 19-10-2026-21:02 ]]
+local function press_term_selector(state_doc, mpos)
+    for i, r in ipairs(state_doc.last_layout) do
+        local fml = r.close and state_doc.boxes[i] and state_doc.boxes[i].fml
+        local rec = fml and fml.locked and fml.selectors and fml.selector_hit
+        local sel = term_selectors.current(rec, fml and fml.formula)
+                and term_selectors.selector_at(rec, mpos)
+        if sel then
+            state_doc.term_drag = {fml = fml, record = rec, add = sel.add, term = sel.term,
+                    press = {x = mpos.x, y = mpos.y}, armed = false}
+            return true
+        end
+    end
+    return false
+end
+
+--[[ Finds the index and state of the box a drag holds a term of, while that box is still locked and
+holds the tree the drag began on; nil once it was removed or its tree moved.
+@date 19-10-2026-21:02 ]]
+local function term_drag_source(state_doc)
+    local drag = state_doc.term_drag
+    for i, box in ipairs(state_doc.boxes) do
+        if rawequal(box.fml, drag.fml) then
+            if box.fml.locked and term_selectors.current(drag.record, box.fml.formula) then
+                return i, box.fml
+            end
+            return nil
+        end
+    end
+    return nil
+end
+
+--[[ Carries out a release. A press that never armed was a click and does nothing. A drop on no gap
+among the term's siblings is refused, with its reason in the recorder. A drop that changes the
+order is committed like a menu pick: a new locked box below the source with focus moving there, or
+a refusal in the recorder when the result cannot be drawn. Unlike a menu pick's box or a Ctrl+D
+copy, the box a drag creates starts with its selectors on, so the derivation can be dragged on
+down (the author's ruling, 19-10-2026). A drop on a gap that changes nothing does nothing,
+silently. @date 19-10-2026-22:25 ]]
+local function release_term_drag(state_doc, fontset, index, fml, drag, pos)
+    if not drag.armed then
+        return
+    end
+    if not drag.drop then
+        input_recorder.log_event("reorder: refused - " .. tostring(drag.why))
+        return
+    end
+    local made = drag.drop.option and commit_transform(state_doc, fontset,
+            {container = fml.formula, index = index}, drag.drop.option, pos)
+    if made then
+        state_doc.boxes[made].fml.selectors = true
+    end
+end
+
+--[[ Runs one frame of input while a term is held. It owns the frame, as the radial and the
+transform menu do, from the press until the button comes up.
+
+ESCAPE READS AS `radial.cancel`, the way the radial menu reads it, and never through an action
+under the formula's own prefixes: one of those firing would make a locked box's keyboard whitelist
+refuse the frame (editor_formula.locked_allows).
+
+THE END IS THE BUTTON NOT BEING DOWN, rather than a release event, so a release the window never
+saw cannot leave a term held. The drag is cancelled, and says so in the recorder, when the source
+box is removed or its tree changes under it.
+@date 19-10-2026-21:02 ]]
+local function term_drag_input(state_doc, fontset, pos)
+    local drag = state_doc.term_drag
+    local index, fml = term_drag_source(state_doc)
+    if not index then
+        state_doc.term_drag = nil
+        input_recorder.log_event("reorder: cancelled - the formula changed under the drag")
+        return
+    end
+    if keymap.pressed("radial.cancel") then
+        state_doc.term_drag = nil
+        return
+    end
+    local mpos = vc.ImGui_GetMousePos()
+    if mpos then
+        local dx, dy = mpos.x - drag.press.x, mpos.y - drag.press.y
+        drag.armed = drag.armed or dx * dx + dy * dy >= TERM_ARM_DIST * TERM_ARM_DIST
+        if drag.armed then
+            drag.drop, drag.why = term_selectors.drop_at(fml.selector_hit, fontset, drag.add,
+                    drag.term, mpos)
+        end
+    end
+    if not vc.ImGui_IsMouseDown("ImGuiMouseButton_Left") then
+        state_doc.term_drag = nil
+        release_term_drag(state_doc, fontset, index, fml, drag, pos)
+    end
+end
+
 --[[ @brief One frame of input for the whole document.
 -- |
 -- | THE PANELS COME FIRST AND SWALLOW EVERYTHING. While F1 or F2 is up, no input reaches any box,
 -- | so nothing can be typed into or clicked through from behind a full-screen overlay. Opening one
--- | closes the other rather than stacking them; closing F2 drops its half-finished edits.
+-- | closes the other rather than stacking them, and lets go of a held term; closing F2 drops its
+-- | half-finished edits.
 -- |
 -- | THEN BOX-LEVEL ROUTING: which box has the caret, and the frame handed to it - plus the gestures
 -- | about the document rather than a formula: the radial new-box menu, box movement, derivation,
--- | and the right-click transform menu.
+-- | the right-click transform menu, and the drag of a term by its selector, whose drop on a new
+-- | place among its siblings derives the reordered formula as a new box.
 -- |
 -- | @param state_doc  content.state_doc - checked; everything this does is to it
 -- | @param fontset    fontset
@@ -1611,7 +1771,7 @@ end
 -- |
 -- | @note Nothing is saved here: main.lua owns every file path.
 -- |
--- | @date 2026-09-13 20:30
+-- | @date 19-10-2026-20:47
 --]]
 function content.handle_input(state_doc, fontset, pos)
     STATE_SHAPE.check(state_doc)
@@ -1619,14 +1779,18 @@ function content.handle_input(state_doc, fontset, pos)
     -- input this frame is swallowed here (nothing forwarded to any box) so it can't be typed into
     -- or clicked through from behind the panel. Opening one closes the other, rather than letting
     -- them stack - only one overlay makes sense on screen at a time.
+    --[[ Toggling F1 or F2 lets go of a held term, so a release made behind the panel can never
+    commit a drop once it closes. @date 19-10-2026-22:25 ]]
     if keymap.pressed("app.help") then
         state_doc.show_help = not state_doc.show_help
         state_doc.show_alt_help = false
+        state_doc.term_drag = nil
         return
     end
     if keymap.pressed("app.customiser") then
         state_doc.show_alt_help = not state_doc.show_alt_help
         state_doc.show_help = false
+        state_doc.term_drag = nil
         if not state_doc.show_alt_help then
             --[[ Closing drops any half-finished recording so it cannot reappear next time, and
             bumps the revision so the help page re-resolves its key names. The SAVE itself is
@@ -1721,7 +1885,14 @@ function content.handle_input(state_doc, fontset, pos)
     (two menus are never open at once - the radial is modal too) and ahead of every box-facing
     shortcut. ]]
     if state_doc.transform_menu then
-        transform_menu_input(state_doc, fontset)
+        transform_menu_input(state_doc, fontset, pos)
+        return
+    end
+    --[[ A held term owns the frame from its press until the button comes up, as the radial and the
+    transform menu do while open: neither its press nor its release reaches the formula under it.
+    @date 19-10-2026-22:25 ]]
+    if state_doc.term_drag then
+        term_drag_input(state_doc, fontset, pos)
         return
     end
     if keymap.pressed("math.transform_menu") then
@@ -1954,6 +2125,20 @@ function content.handle_input(state_doc, fontset, pos)
                 state_doc.show_bounds = not state_doc.show_bounds
                 return
             end
+            -- The selectors' flag belongs to the box, unlike the wireframe, graph and bounds
+            -- toggles, which are global. @date 19-10-2026-22:25
+            if r.selectors_btn and point_in_rect(mpos.x, mpos.y, r.selectors_btn.x,
+                    r.selectors_btn.y, r.selectors_btn.w, r.selectors_btn.h) then
+                local fml = state_doc.boxes[i].fml
+                fml.selectors = not fml.selectors
+                return
+            end
+        end
+
+        --[[ A press on a term selector is taken here, before the box under it activates and before
+        its formula places a caret or starts a selection. @date 19-10-2026-20:47 ]]
+        if press_term_selector(state_doc, mpos) then
+            return
         end
 
         local hit = nil
@@ -2526,6 +2711,34 @@ function content.declarations_before(state_doc, index)
     return {by_text = by_text, order = order}
 end
 
+--[[ Gives what box `i`'s draw needs for its term selectors, or nil when it shows none: a function
+giving the declarations in scope, for a parse the selectors find missing, and which term is held -
+the dragged one on the box a drag holds, none on any other box while a drag runs, and otherwise the
+one under the pointer. The declarations are a function because working them out walks every box
+above, and the selectors need them only when their cached layout is rebuilt.
+@date 19-10-2026-21:18 ]]
+local function selector_view(state_doc, i, fml)
+    if not (fml.locked and fml.selectors) then
+        return nil
+    end
+    local drag, held = state_doc.term_drag, nil
+    if drag then
+        held = rawequal(drag.fml, fml) and drag.term or false
+    end
+    return {decls_of = function() return content.declarations_before(state_doc, i).order end,
+            held = held}
+end
+
+--[[ Draws a held term's ghost and its drop's marker over the page, once the drag has armed.
+@date 19-10-2026-21:02 ]]
+local function draw_term_drag(state_doc)
+    local drag = state_doc.term_drag
+    local rec = drag.armed and drag.fml.selector_hit
+    if rec then
+        term_selectors.draw_drag(rec, drag, vc.ImGui_GetMousePos())
+    end
+end
+
 --[[ @brief Draws the whole document - or, while F1 or F2 is open, that panel instead.
 -- |
 -- | THE DOCUMENT: every box stacked down from `pos`, each connected to the rail, with derivation
@@ -2685,7 +2898,7 @@ function content.draw(state_doc, fontset, pos, opts)
                 local content_h = editor_formula.draw(box.fml, fontset, {x = box_x + BOX_PADDING,
                         y = box_y + BOX_PADDING}, state_doc.font_size,
                         content_w, is_active, state_doc.show_wireframe, state_doc.show_graph,
-                        state_doc.show_bounds)
+                        state_doc.show_bounds, selector_view(state_doc, i, box.fml))
                 box_h = math.max((content_h or 0) + 2 * BOX_PADDING, EMPTY_BOX_HEIGHT)
             else
                 box_h = EMPTY_BOX_HEIGHT
@@ -2746,7 +2959,7 @@ function content.draw(state_doc, fontset, pos, opts)
             end
             end -- box.editor: wireframe/graph buttons
 
-            --[[ THE LOCK BUTTON, leftmost in the row and only on a formula box: that box's own
+            --[[ THE LOCK BUTTON, only on a formula box, left of the graph button: that box's own
             EDIT/TRANSFORM toggle (editor_formula.lock). The button's border is the same gray as
             the siblings'; inside it a small padlock, GREEN when the box is a transform cell
             (closed and filled - verified) and RED when it is a mathbox (open and hollow) - the
@@ -2754,16 +2967,16 @@ function content.draw(state_doc, fontset, pos, opts)
             is an ARC, the upper half of its circle riding the body's top edge - it used to be a
             full circle with the body's fill meant to cover the lower half, which only worked while
             the body was filled: a hollow body let the whole ring show (reported live 2026-09-16,
-            "the circle thing is not an arc, it's a circle"). ]]
+            "the circle thing is not an arc, it's a circle"). @date 19-10-2026-22:39 ]]
             local lock_btn, bounds_btn
             if box.fml then
-                --[[ THE BOUNDS TOGGLE, leftmost of the row (the author, 2026-09-16: "desabled/
+                --[[ THE BOUNDS TOGGLE, left of the padlock (the author, 2026-09-16: "desabled/
                 enabled like the draw graph with a new button, left of the lock one... a mini
                 4-node in a star shape graph drawn with blue"): one centre node and three leaves,
                 the picture of a declaration linking its references. Blue at the arc colour, lit
-                when the drawing is on and dimmed when off, exactly as the graph button beside it
-                dims - the state is a standing fact, and an unlit icon for an on-drawing would
-                lie about it. ]]
+                when the drawing is on and dimmed when off, exactly as the graph button dims - the
+                state is a standing fact, and an unlit icon for an on-drawing would lie about it.
+                @date 19-10-2026-22:39 ]]
                 bounds_btn = {x = gr.x - 2 * LOCK_SIZE - 8, y = box_y - LOCK_SIZE - 2,
                         w = LOCK_SIZE, h = LOCK_SIZE}
                 vc.ImGui_AddRect({x=bounds_btn.x, y=bounds_btn.y},
@@ -2798,15 +3011,31 @@ function content.draw(state_doc, fontset, pos, opts)
                 end
             end
 
+            --[[ THE TERM SELECTORS' TOGGLE SITS LEFT OF THE BOUNDS STAR, on a LOCKED formula box
+            only: only a locked box transforms (the author, 2026-09-15), and the selectors are
+            handles for a transformation. It flips the box's own flag (the author, 19-10-2026:
+            "per box, as you suggested"), and its picture is a selector, lit when on.
+            @date 19-10-2026-21:02 ]]
+            local selectors_btn
+            if box.fml and box.fml.locked then
+                selectors_btn = {x = gr.x - 3 * LOCK_SIZE - 12, y = box_y - LOCK_SIZE - 2,
+                        w = LOCK_SIZE, h = LOCK_SIZE}
+                vc.ImGui_AddRect({x=selectors_btn.x, y=selectors_btn.y},
+                        {x=selectors_btn.x+selectors_btn.w, y=selectors_btn.y+selectors_btn.h},
+                        LOCK_FRAME_COLOR, 3, 1)
+                term_selectors.draw_icon(selectors_btn, box.fml.selectors)
+            end
+
             layout[i] = {x=box_x, y=box_y, w=box_w, h=box_h, close=close, wireframe_btn=wf,
-                    graph_btn=gr, lock_btn=lock_btn, bounds_btn=bounds_btn}
+                    graph_btn=gr, lock_btn=lock_btn, bounds_btn=bounds_btn,
+                    selectors_btn=selectors_btn}
             y = box_y + box_h + BOX_GAP
         else
             -- Culled: nothing drawn this frame - just carry its own last-known height forward so
             -- everything stacked below it still lands in the right place. Width needs no carrying
             -- (every box is the full column - see box_w above), only the height it last measured.
             layout[i] = {x=box_x, y=box_y, w=box_w, h=cached_h, close=nil, wireframe_btn=nil,
-                    graph_btn=nil, lock_btn=nil, bounds_btn=nil}
+                    graph_btn=nil, lock_btn=nil, bounds_btn=nil, selectors_btn=nil}
             y = box_y + cached_h + BOX_GAP
         end
     end
@@ -2876,6 +3105,11 @@ function content.draw(state_doc, fontset, pos, opts)
     end
     if state_doc.transform_menu then
         draw_transform_menu(state_doc.transform_menu)
+    end
+    -- A held term's ghost and drop marker are drawn after every box, so they sit on top of the
+    -- page. @date 19-10-2026-22:25
+    if state_doc.term_drag then
+        draw_term_drag(state_doc)
     end
 
     overlay()

@@ -49,6 +49,14 @@
 -- |     MARK_STATUSES carries the three statuses a parse mark may take: ok,
 -- |     work, bad. It is declared here and checked by the drawing side at load,
 -- |     so the two cannot drift.
+-- | CELL_LEAF                               {ast type -> true}
+-- |     CELL_LEAF holds the node types whose brackets the parse drops when
+-- |     they lead their product, so a transformation that moves a term into
+-- |     first place can build the shape the parse would give it.
+-- | is_sign_atom(atom: node | nil)          -> boolean
+-- |     Answers whether an atom is a `+` or `-` glyph, the test the parse
+-- |     splits a row into terms by, so a reader of the row can split it
+-- |     where the parse does.
 -- |
 -- | parse_number(text: string)              -> {m, n, sign} | nil
 -- |     Reads a written decimal as an exact rational, or nil if it is not one.
@@ -63,7 +71,7 @@
 -- |     the unit list, the parser cascade (build_sum -> build_product ->
 -- |     read_factor), the pattern trie, the ast tagging and the declared-name paint
 -- |
--- | @date 2026-09-14
+-- | @date 19-10-2026-22:23
 -- | ===============================================================================================
 --]]
 
@@ -186,6 +194,24 @@ one was typed reads the same here.
 local function is_sign(d)
     return d == "-" or d == "+"
 end
+
+--[[ @brief Answers whether an atom is a `+` or `-` glyph, the glyphs the parse splits a row's terms
+-- |        at.
+-- |
+-- | IT READS THE GLYPH THE WAY THE PARSE DOES when it splits a row into terms, so a reader that
+-- | has to split a row where the parse does - term_selectors, finding each term's glyphs - cannot
+-- | drift from it.
+-- |
+-- | @param atom  node | nil - a row slot's atom, as mexpru.slot_atom gives it; nil, or an atom
+-- |              that is not a glyph, answers false
+-- | @return boolean
+-- |
+-- | @date 19-10-2026-22:23
+--]]
+local function is_sign_atom(atom)
+    return is_sign(atom_desc(atom))
+end
+mexpr_ast.is_sign_atom = is_sign_atom
 
 --[[ The units' descs concatenated - the text a run of units spells, for matching a literal and for
 error messages alike. ]]
@@ -2596,6 +2622,9 @@ carrying them is what lets a transform write `af(x)` back instead of collapsing 
 there being nothing in front of it for the parens to group WITH.
 @date 2026-09-16 10:30 ]]
 local CELL_LEAF = {[ast.NUM] = true, [ast.VAR] = true, [ast.VREF] = true}
+--[[ Exported because the reorder plugin must give a term moved into first place the brackets this
+rule leaves it, and one table cannot drift from itself. @date 19-10-2026-21:10 ]]
+mexpr_ast.CELL_LEAF = CELL_LEAF
 
 local function maybe_cell(ctx_parse, node, in_product, preceded)
     if in_product and node.type == ast.ADD then

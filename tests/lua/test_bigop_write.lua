@@ -56,6 +56,15 @@ local function roundtrip(fs, src)
     return rebuilt, nil, node, ns, c
 end
 
+-- A row's size, then each of its children's, as one string to compare. @date 18-10-2026-20:40
+local function sizes(row)
+    local out = {tostring(mexpru.u(row).sz)}
+    for _, child in ipairs(mexpru.u(row).children) do
+        out[#out + 1] = tostring(mexpru.u(child).sz)
+    end
+    return table.concat(out, ",")
+end
+
 function run_test()
     local fs = char.load_font_set()
 
@@ -82,6 +91,28 @@ function run_test()
         -- precedence path: \sum_{i=0}^{n} (i + i) has an ADD body.
         r, err = roundtrip(fs, "\\sum \\limits_{i=0}^{n} (i+i)")
         check("an add-like body round-trips through its brackets", r ~= nil, err)
+    end
+
+    -- ------------------------------------------------------------------ the limits' size
+    do
+        --[[ THE LIMITS SIT ONE SIZE STEP DOWN, where loading and typing put every sup and sub.
+        Written at the operator's own size, the built `=` and `0` came out full height beside the
+        copied `i`, which keeps the size it was drawn at (found live 18-10-2026 on a distributed
+        \sum). @date 18-10-2026-20:40 ]]
+        local src = "\\sum \\limits_{i=0}^{n} i"
+        local r, err = roundtrip(fs, src)
+        check("setup: the sum writes", r ~= nil, err)
+        if r then
+            local written = mexpru.u(mexpru.u(r.root).children[1])
+            local loaded_root = mformula_latex.from_latex(fs, SZ, src).root
+            local loaded = mexpru.u(mexpru.u(loaded_root).children[1])
+            check("the written lower limit is sized as the loaded one",
+                    sizes(written.sub) == sizes(loaded.sub),
+                    sizes(written.sub) .. " vs " .. sizes(loaded.sub))
+            check("...and so is the upper",
+                    sizes(written.sup) == sizes(loaded.sup),
+                    sizes(written.sup) .. " vs " .. sizes(loaded.sup))
+        end
     end
 
     -- ------------------------------------------------------------------ the report, end to end

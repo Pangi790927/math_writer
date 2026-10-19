@@ -113,3 +113,26 @@ TYPED: ctrl+/ makes the empty fraction, and a `/` typed into its empty numerator
 `d` over `d` with the caret between the denominator's d and the variable slot. THE AST NODE is
 the fourth binder - INT's shape in kind: order from the sign's exponent, variables from the
 denominator's letters, body read at product order like a bigop's.
+
+---
+
+## Term selectors, drag reorder    (2026-10-19)
+
+A locked formula box can show TERM SELECTORS, a small ring and an underline under each term of a
+sum. They are neither glyphs nor offers - the author: "the right click is for now for symbols and
+those selectors are meta-info regarding the structure of the formula and also handles for this
+dragging operation". The sign stays THE BUTTON for the right-click menu; the selectors are a
+second way in, and they only drag.
+
+A drag moves a term, and the move is a transformation - the author: "you would be able to drag
+the term around. as a result of a drag, a transformation would happen and the term would be
+placed in it's new spot. That transformation will of course result in a new formula box." The
+first move built is the reorder among a term's own siblings, the sketch's 2pi dragged to the
+front of its sum; by the sign rule of "Glyphs draw, transforms walk", the term that lands first
+loses its +1.
+
+The toggle is per box ("per box, as you suggested"): it is not saved, and the box a drag creates
+starts with its selectors on. Sums at one nesting depth share one line ("level when on the same
+level, I think that is for the best"), the innermost nearest the glyphs. On a wrapped formula the
+selectors follow the rows ("no, make the selectors wrap too") while the wrap itself stays as it
+is.

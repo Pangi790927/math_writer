@@ -49,7 +49,7 @@ end
 directory (see test_no_use_before_define's own note); a file missing from here is simply unchecked,
 which is why the count is printed. @date 2026-09-12 04:45 ]]
 local FILES = {"mexpru", "mformula_new", "mformula_latex", "mexpr_ast", "ast_mexpr",
-               "ast_gestures", "editor_definition", "content", "editor_text"}
+               "ast_gestures", "editor_definition", "content", "editor_text", "term_selectors"}
 
 --[[ Blanks comments so prose naming a field is not mistaken for an access. Long comments here are
 full of `u(_).bracket` and similar. @date 2026-09-12 04:45 ]]

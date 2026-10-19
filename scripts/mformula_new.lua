@@ -30,6 +30,9 @@
 -- | node_rects(fontset: fontset, nodes: {node}) -> {rect | false, ...}
 -- | reachable_graph(container: mexpru.container, fontset: fontset, sz: size, wrap_width: number)
 -- |      -> {nodes, edges}
+-- | wrapped_leaves(node: node, wrap_width: number, root: node) -> {{x0, x1, y0, y1, row}, ...}
+-- |     Lists every leaf on the row the drawing wraps it onto, decided the
+-- |     way C++ decides it: by the leaf's own right edge.
 -- |
 -- | POINTING
 -- | hit_test(container: mexpru.container, fontset: fontset, sz: size, click: {x,y},
@@ -40,6 +43,10 @@
 -- |     hit_test SNAPS to the nearest caret position and always lands;
 -- |     node_at answers only for a glyph the point is really on. Different
 -- |     questions, not halves of one.
+-- | tree_point(container: mexpru.container, fontset: fontset, sz: size, click: {x,y},
+-- |            wrap_width: number) -> {x, y}
+-- |     Converts a drawn-frame point into the unwrapped frame node_bbox
+-- |     answers in, leaving the caret alone.
 -- |
 -- | THE CURSOR
 -- | cursor_to_start(container: mexpru.container) -> nothing
@@ -106,7 +113,7 @@
 -- |     the node constructors, the wrap passes, the navigation graph and
 -- |     the bracket pairing
 -- |
--- | @date 2026-09-13 21:45
+-- | @date 19-10-2026-21:02
 -- | ===============================================================================================
 --]]
 
@@ -5200,6 +5207,71 @@ placing ink from node boxes - the bound-variable arcs, editor.lua - must add it 
 half-line off the formula. @date 2026-09-16 ]]
 mformula_new.baseline_correction = baseline_correction
 
+--[[ @brief Lists every leaf of `node` where the drawing puts it once the formula wraps, row by row.
+-- |
+-- | EACH LEAF FINDS ITS OWN ROW from its own unwrapped box, the way mexpr_draw's loop places it: a
+-- | leaf moves down a row, and back by the column width, while its right edge is past the column.
+-- | A leaf straddling the edge therefore lands whole on the next row - a row lower than node_box's
+-- | top-left rule puts it - and the leaves of one compound may land on different rows. A line
+-- | strip (a fraction bar, a tall bracket's stroke) is drawn on every row it crosses and clipped
+-- | to the column, so it comes back once for each row that shows a part of it, cut to that part.
+-- |
+-- | @details Reads the positions update_positions cached and the anchors under them; nothing is
+-- |          drawn, stored or cached.
+-- |
+-- | @param node        node | nil - a node of a laid-out tree; nil, or a node with no position
+-- |                    yet, answers an empty list
+-- | @param wrap_width  number | nil - the column, as a width from the formula's start; nil or
+-- |                    non-positive never wraps
+-- | @param root        node - the formula's root, whose raw height is the row pitch
+-- | @return {{x0, x1, y0, y1, row}, ...} - root-relative boxes in the raw tree frame, wrap applied;
+-- |         `row` counts from 0
+-- |
+-- | @date 19-10-2026-20:41
+--]]
+function mformula_new.wrapped_leaves(node, wrap_width, root)
+    local u = node and mexpru.u(node)
+    if not u or not u.pos then
+        return {}
+    end
+    local wraps = wrap_width ~= nil and wrap_width > 0
+    local skipy = 0
+    if wraps then
+        local rbb = vc.mexpr_get_bb(root)
+        skipy = rbb.br.y - rbb.tl.y
+    end
+    local out = {}
+    local function add(x0, x1, y0, y1, row)
+        out[#out + 1] = {x0 = x0, x1 = x1, y0 = y0 + row * skipy, y1 = y1 + row * skipy, row = row}
+    end
+    local function walk(n, px, py)
+        local count = n:anchor_len()
+        for i = 1, count do
+            local a = n:anchor_at(i)
+            walk(a[1], px + a[2].x, py + a[2].y)
+        end
+        if count > 0 then
+            return
+        end
+        local bb = vc.mexpr_get_bb(n)
+        local x0, x1, y0, y1 = px + bb.tl.x, px + bb.br.x, py + bb.tl.y, py + bb.br.y
+        local wx1, _, row = wrap_point(x1, 0, wrap_width, skipy)
+        if not wraps or n.type ~= vc.MEXPR_TYPE_LINE_STRIP then
+            add(x0 - (x1 - wx1), wx1, y0, y1, row)
+            return
+        end
+        for r = 0, row do
+            local c0 = math.max(x0 - r * wrap_width, 0)
+            local c1 = math.min(x1 - r * wrap_width, wrap_width)
+            if c1 > c0 then
+                add(c0, c1, y0, y1, r)
+            end
+        end
+    end
+    walk(node, u.pos.x, u.pos.y)
+    return out
+end
+
 -- Plain containment test, in whatever frame both were measured in. @date 2026-09-08 09:30
 local function point_in_bbox(pt, box)
     return pt.x >= box.left and pt.x <= box.right and pt.y >= box.top and pt.y <= box.bottom
@@ -5470,6 +5542,30 @@ function mformula_new.node_at(container, fontset, sz, click, wrap_width)
     mexpru.check_container(container)
     return glyph_at(fontset, container.root,
             raw_point(container, fontset, sz, click, wrap_width))
+end
+
+--[[ @brief Gives a point of the formula's drawn frame in the raw, unwrapped tree frame.
+-- |
+-- | THE CONVERSION A CLICK GOES THROUGH before the caret or a glyph is looked up: the draw's
+-- | baseline shift undone, and a point on a wrapped row carried back to where that row's content
+-- | sits unwrapped, its row read off y in bands one row tall. node_bbox answers in the same frame,
+-- | so a caller can compare a pointer with the tree's boxes and leave the caret where it is.
+-- |
+-- | @param container   mexpru.container - checked
+-- | @param fontset     fontset
+-- | @param sz          size - as drawn; the baseline shift is undone with it
+-- | @param click       {x, y} - RELATIVE to the formula's draw origin, y from the baseline
+-- | @param wrap_width  number | nil - a WIDTH, not an edge; nil never wraps
+-- | @return {x, y} - root-relative, raw and unwrapped
+-- |
+-- | @note A point above the first row reads as on the first row, and a point below the last row
+-- |       as on a row after it: nothing clamps at the bottom.
+-- |
+-- | @date 19-10-2026-20:41
+--]]
+function mformula_new.tree_point(container, fontset, sz, click, wrap_width)
+    mexpru.check_container(container)
+    return raw_point(container, fontset, sz, click, wrap_width)
 end
 
 --[[ @brief Places the caret from a click, or extends a selection from a drag.

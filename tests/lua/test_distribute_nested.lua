@@ -72,9 +72,11 @@ function run_test()
             return nil, "no sum #" .. which
         end
         --[[ The click target is the sum's own button - the sign before its second term, which
-        the parse stamps as that term's leading coefficient. Only signs offer. ]]
-        local button = add[2] and add[2][1]
-        if not (button and button.type == ast.NUM) then
+        the parse stamps as that term's leading coefficient, or which IS the term when its
+        magnitude is one (`+1` folds into its sign). Only signs offer. @date 18-10-2026-22:10 ]]
+        local second = add[2]
+        local button = second and (second.type == ast.NUM and second or second[1])
+        if not (type(button) == "table" and button.type == ast.NUM) then
             return nil, "no sign on sum #" .. which
         end
         local option = transforms.offers(ns, root, button)[1]
@@ -112,6 +114,30 @@ function run_test()
         term never exists - every term after the first carries the sign the parse stamped. Two
         spliced terms leading with a placed +1 would be one id in two places, which the sharing
         rule forbids. @date 2026-09-19 11:20 ]]
+        {"x+(a(b+c))", 2, "x+(ab+ac)"},
+        {"(y(b+c))d", 1, "(yb+yc)d"},
+        {"c((a+d)+b)", 1, "c(a+d)+cb"},
+        {"x-((a+d)+b)", 2, "x-(a+d)-b"},
+        --[[ THE FOUR ABOVE END WITH A SUM AMONG FACTORS INSIDE ONE BRACKET PAIR - the user's
+        redundant pair around a product, or a bracketed first term moved into the product. The
+        pair is now the one the sum needs, and the parse builds no CELL for that pair, so a result
+        keeping the CELL drew the same ink and failed the reparse (found 18-10-2026 by a random
+        sweep: 442 of 3646 distributions). @date 18-10-2026-21:05 ]]
+        {"-(2+y)b", 1, "-2b-yb"},
+        {"-(2+y)", 1, "-2-y"},
+        {"x-(2c+d)b", 2, "x-2cb-db"},
+        --[[ A NUMERAL MEETING A SIGN goes behind it: the parse reads `-2b` as MUL(-1, 2, b). In
+        front of the sign it drew `2-1b`, which reads back as 2 - b, or `2\cdot -1cb`, which does
+        not parse at all (found 18-10-2026, same sweep). @date 18-10-2026-21:30 ]]
+        {"a(b+1)", 1, "ab+a"},
+        {"(a+1)c", 1, "ac+c"},
+        {"x-(y+1)", 2, "x-y-1"},
+        {"x-(y-1)", 2, "x-y+1"},
+        {"x-(1+y)", 2, "x-1-y"},
+        --[[ A TERM OF MAGNITUDE ONE IS ITS SIGN: the parse folds the digit of `+1` into the sign's
+        number, so the term is that number and nothing leads a product. These offered nothing -
+        `a(b+1)` could not be distributed at all - and a lone sign meeting such a term drew
+        `x+-1-y` (found 18-10-2026). @date 18-10-2026-22:10 ]]
     }
     for _, case in ipairs(CASES) do
         local src, which, want = case[1], case[2], case[3]

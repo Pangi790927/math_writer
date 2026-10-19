@@ -41,7 +41,7 @@ local MIGRATED = {"editor", "transforms", "transforms_old", "transforms/distribu
                   "ast_gestures", "ast", "ast_mexpr", "editor_formula", "input_recorder",
                   "editor_definition", "mformula_latex", "panel_help", "panel_keymap", "main",
                   "prof", "glyphmap", "content", "keymap", "mexpr_ast", "char", "mexpru", "editor_text", "sealed",
-                  "mformula_new"}
+                  "mformula_new", "term_selectors", "transform_utils", "transforms/reorder"}
 
 --[[ Files the convention has not reached yet. Counted, not failed. Move a name up as it is done.
 @date 2026-09-12 01:25 ]]
@@ -69,7 +69,9 @@ local COMMENT_STYLE_DONE = {["transforms/distribute"] = true, main = true, mform
                             ast_gestures = true, ast_mexpr = true,
                             panel_keymap = true, editor_definition = true,
                             editor_text = true, content = true, char = true,
-                            keymap = true, mexpru = true, ast = true, mformula_new = true}
+                            keymap = true, mexpru = true, ast = true, mformula_new = true,
+                            term_selectors = true, transform_utils = true,
+                            ["transforms/reorder"] = true}
 
 --[[ Blanks long comments, keeping newlines so nothing shifts. Needed because the manifest block
 itself is a comment full of function names - without this, every file would appear to define

@@ -4,9 +4,10 @@
 -- |
 -- | draw(state_formula: editor_formula.state_formula, fontset: fontset, pos: {x,y}, sz: size,
 -- |      width_limit: number, show_cursor: boolean, show_wireframe: boolean, show_graph: boolean,
--- |      show_bounds: boolean) -> height
+-- |      show_bounds: boolean, selectors: table | nil) -> height
 -- |     Draws the box and returns the height it filled, so the caller can
--- |     lay out whatever follows without measuring it again.
+-- |     lay out whatever follows without measuring it again. A locked box
+-- |     showing its term selectors grows below the formula to hold them.
 -- |
 -- | formula_at(state_formula: editor_formula.state_formula, pos: {x,y}) -> {container, hb} | nil
 -- |     The formula under a screen point. This box holds exactly one, so
@@ -45,10 +46,18 @@
 -- |      -> nothing
 -- |     The save format, length-prefixed like editor_definition's.
 -- |
+-- | LOCKED BOX INPUT, EXPORTED FOR TESTS ONLY
+-- | locked_allows()                         -> boolean
+-- | LOCKED_ALLOW                            constant
+-- |     locked_allows answers whether a locked box may act on this frame's
+-- |     keys, and LOCKED_ALLOW holds the action ids such a box admits. A
+-- |     test asks directly, because handle_input() returns false in a
+-- |     locked box whether or not the keys went through.
+-- |
 -- | --- internal, not on the module table ---------------------------------------------------------
 -- |     ensure, push_undo, restore, STATE_FIELDS, STATE_SHAPE, and the field's padding and colours
 -- |
--- | @date 2026-09-15 12:00
+-- | @date 19-10-2026-20:47
 -- | ===============================================================================================
 --]]
 
@@ -121,6 +130,7 @@ local editor = require("editor")  -- the shared formula host; see its header
 local sealed = require("sealed")
 local ast_gestures = require("ast_gestures")
 local mformula_latex = require("mformula_latex")
+local term_selectors = require("term_selectors")
 
 local editor_formula = {}
 
@@ -150,8 +160,6 @@ local LOCKED_ALLOW = {
     ["edit.select_all"] = true, ["edit.copy"] = true,
 }
 
--- Whether every action that fired this frame is one the locked box answers to, and no typed
--- character is waiting - the frame may pass the door, or it may not.
 --[[ ONLY THE MATHBOX'S OWN ACTIONS COUNT, because one physical key fires every action bound to
 it, and the arrows are bound twice on purpose - `radial.formula` rides Left, `radial.text` Up,
 `help.prev_chapter` Left again - for contexts that are closed while a box owns the frame. Those
@@ -161,6 +169,28 @@ such action not in LOCKED_ALLOW refuses the frame. New funnel actions follow the
 arrive refused until whitelisted - additions stay a feature, never a hole (found live 2026-09-16:
 the twins made the whitelist refuse the very arrows it existed to admit). ]]
 local FUNNEL_PREFIX = {["nav."] = true, ["math."] = true, ["text."] = true, ["edit."] = true}
+--[[ THE TEXT EDITOR'S TWINS of math.select_* and math.sprint_*: Shift and Ctrl+Shift with
+Left/Right fire nav.select_* beside them, and the formula never reads nav.select_*. Under the nav.
+prefix they refused every such frame, so a locked box could not select or sprint (found
+19-10-2026). They are skipped like another context's actions rather than listed in LOCKED_ALLOW,
+because a listed id also lifts the refusal of a bare Alt chord: one of these rebound to Alt+S then
+put \sigma into a locked formula through the raw glyph polls. @date 19-10-2026-01:50 ]]
+local TEXT_TWINS = {["nav.select_left"] = true, ["nav.select_right"] = true,
+                    ["nav.select_word_left"] = true, ["nav.select_word_right"] = true}
+--[[ @brief Answers whether a locked formula box may act on this frame's keyboard input.
+-- |
+-- | THE ANSWER IS TRUE ONLY when no typed character is waiting and every action that fired under
+-- | the formula's own prefixes (nav., math., text., edit.) is one LOCKED_ALLOW names; any other
+-- | such action refuses the whole frame. Actions of other contexts and the ids in TEXT_TWINS
+-- | count for nothing either way.
+-- |
+-- | @details Alt without Ctrl is refused unless a listed action fired, because the glyph families
+-- |          are polled raw and fire no action of their own.
+-- |
+-- | @return boolean - true when the box may act on the frame's keys
+-- |
+-- | @date 19-10-2026-01:50
+--]]
 local function locked_allows()
     if #vc.ImGui_input_queue_chars() > 0 then
         return false
@@ -176,7 +206,7 @@ local function locked_allows()
     local saw_allowed, ctrl, _, alt = false, keymap.mods()
     for _, id in ipairs(keymap.fired()) do
         local prefix = id:match("^(%a+%.)")
-        if prefix and FUNNEL_PREFIX[prefix] then
+        if prefix and FUNNEL_PREFIX[prefix] and not TEXT_TWINS[id] then
             if not LOCKED_ALLOW[id] then
                 return false
             end
@@ -188,6 +218,11 @@ local function locked_allows()
     end
     return true
 end
+--[[ Exported for tests only, as editor_text and mformula_new do: handle_input() returns false in a
+locked box whether or not the keys went through, so a test calls locked_allows() itself with keymap
+and the character queue stubbed. @date 19-10-2026-01:50 ]]
+editor_formula.LOCKED_ALLOW = LOCKED_ALLOW
+editor_formula.locked_allows = locked_allows
 
 --[[ THE `state_formula` CONTAINER for a formula box. Declared through sealed.lua; see that file
 for the rule. `formula` is built lazily by ensure() below, which is why it and `latex` are both
@@ -203,6 +238,9 @@ local STATE_FIELDS = {
     locked   = "true in TRANSFORM mode: content frozen, gestures live. nil is EDIT mode",
     undo_stack = "the committed text before each change, oldest first; EDIT mode's Ctrl+Z",
     redo_stack = "what undo stepped back over, for Ctrl+Shift+Z",
+    selectors = "true while a locked box shows its term selectors - per box, never saved, and "
+                .. "off at birth except on the box a drag creates",
+    selector_hit = "the term selectors the last draw left behind, for the next frame's input",
 }
 local STATE_SHAPE = sealed.declare("editor_formula", "state_formula", STATE_FIELDS)
 
@@ -358,23 +396,30 @@ end
 -- | at - because handle_input() runs in a different call and cannot re-derive any of them. An
 -- | empty box records none.
 -- |
+-- | A LOCKED BOX SHOWING ITS TERM SELECTORS draws one under every term of its row's sums, behind
+-- | the glyphs, records them as `selector_hit` for the next frame's input, and grows below the
+-- | formula to hold them. Every other box records none.
+-- |
 -- | @param state_formula   editor_formula.state_formula - checked; builds the formula if missing
 -- | @param fontset         fontset
 -- | @param pos             {x, y} - top-left of the content; the BASELINE is worked out from
 -- |                        measure()'s own `top`
--- | @param sz              size - the logical size to draw at
+-- | @param sz              size - the size index it is drawn at
 -- | @param width_limit     number - how far right content may reach, as a width from pos.x
 -- | @param show_cursor     boolean - this is the active box: the field's edge and the caret
 -- | @param show_wireframe  boolean - passed through: mexpr's debug boxes
 -- | @param show_graph      boolean - passed through: the reachable-position graph
 -- | @param show_bounds     boolean - the bound-variable arcs, behind the glyphs
+-- | @param selectors       table | nil - what the term selectors need from the caller, nil for
+-- |                        none: `decls_of`, a function giving the declarations in scope for a
+-- |                        parse the selectors find missing, and `held`, as term_selectors.draw
+-- |                        takes it
 -- | @return number - the height filled, padding included
 -- |
--- | @date 2026-09-13 19:10
+-- | @date 19-10-2026-21:18
 --]]
 function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_cursor,
-        show_wireframe,
-        show_graph, show_bounds)
+        show_wireframe, show_graph, show_bounds, selectors)
     STATE_SHAPE.check(state_formula)
     ensure(state_formula, fontset)
     local pad = FIELD_PAD
@@ -388,6 +433,7 @@ function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_
                     y = pos.y + h + pad}, SLOT_EDGE_COLOR, 3, 1)
         end
         state_formula.hit = nil
+        state_formula.selector_hit = nil
         return h + 2 * pad
     end
 
@@ -426,6 +472,19 @@ function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_
                 baseline + m.top - pad)
     end
 
+    --[[ THE TERM SELECTORS GO BEHIND THE GLYPHS, like the links. Only a locked box transforms, so
+    only a locked box shows them, and its own flag says whether it does (the author, 19-10-2026:
+    "per box, as you suggested"). Their record sits beside `hit`, at the same origin.
+    @date 19-10-2026-21:02 ]]
+    local sel = selectors and state_formula.locked and state_formula.selectors
+            and term_selectors.layout(fontset, state_formula.formula, sz, width_limit,
+                    selectors.decls_of, pos.x, baseline)
+            or nil
+    state_formula.selector_hit = sel
+    if sel then
+        term_selectors.draw(sel, selectors.held)
+    end
+
     local r = editor.draw_formula(state_formula.formula, fontset, sz, {x = pos.x, y = baseline}, {
         active = show_cursor,
         show_wireframe = show_wireframe,
@@ -438,7 +497,8 @@ function editor_formula.draw(state_formula, fontset, pos, sz, width_limit, show_
         w = (rr - l) + 2 * pad, h = (b - t) + 2 * pad,
         draw_x = pos.x, draw_y = baseline, wrap_edge = pos.x + width_limit,
     }
-    return (m.bottom - m.top) + 2 * pad
+    local bottom = sel and math.max(m.bottom, sel.geom.bottom) or m.bottom
+    return (bottom - m.top) + 2 * pad
 end
 
 --[[ @brief This box's formula, when a screen point is over it.
@@ -578,14 +638,14 @@ end
 
 --[[ @brief Re-lays-out the formula after a zoom.
 -- |
--- | `hit` IS DROPPED rather than adjusted: it holds positions measured at the OLD size, and a click
--- | tested against them would land somewhere other than where the glyph now is. draw() rebuilds it
--- | on the next frame.
+-- | `hit` AND `selector_hit` ARE DROPPED rather than adjusted: they hold positions measured at the
+-- | OLD size, and a click tested against them would land somewhere other than where the glyph now
+-- | is. draw() rebuilds both on the next frame.
 -- |
 -- | @param state_formula  editor_formula.state_formula - checked
 -- | @param fontset        fontset
 -- |
--- | @date 2026-09-13 19:10
+-- | @date 19-10-2026-20:47
 --]]
 function editor_formula.rescale(state_formula, fontset)
     STATE_SHAPE.check(state_formula)
@@ -593,6 +653,7 @@ function editor_formula.rescale(state_formula, fontset)
         mformula.rescale(state_formula.formula, fontset)
     end
     state_formula.hit = nil
+    state_formula.selector_hit = nil
 end
 
 --[[ @brief The box as its saved body.

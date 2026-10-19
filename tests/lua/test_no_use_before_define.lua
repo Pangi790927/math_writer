@@ -79,7 +79,7 @@ local FILES = {"char", "mexpru", "mformula_new", "mformula_latex", "editor",
                check - these eleven files were simply never on it. ]]
                "mexpr_ast", "ast_mexpr", "ast_gestures", "sealed", "glyphmap", "keymap",
                "editor_text", "editor_definition", "editor_formula", "panel_help",
-               "panel_keymap"}
+               "panel_keymap", "term_selectors", "transform_utils", "transforms/reorder"}
 
 function run_test()
     for _, name in ipairs(FILES) do

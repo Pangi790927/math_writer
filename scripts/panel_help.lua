@@ -209,8 +209,9 @@ instead, and formulas you have already typed resize with it rather than only new
 ]]},
 
 {title = "The buttons above a box", sub = true, body = [[
-Every box carries three small buttons just above its top-right corner, and they are the
-same three whatever the box holds:
+Small buttons sit just above every box's top-right corner. Every box carries the same
+three at the right end of the row; a formula box adds two more to their left, and a
+locked formula box one more again:
 
 @box
 
@@ -218,7 +219,7 @@ THE X CLOSES THAT BOX, the same as {box.close} does for the one you are in. Ther
 confirmation and no undo - undo lives inside a box, so closing one takes its history
 with it.
 
-THE OTHER TWO ARE DEBUGGING VIEWS for the formulas in the box, and they are global
+THE NEXT TWO ARE DEBUGGING VIEWS for the formulas in the box, and they are global
 rather than per box: turning one on shows it everywhere. They are worth knowing about
 because they explain what the editor thinks the shape of a formula is, which is often
 the answer when something moves in a way you did not expect.
@@ -227,11 +228,32 @@ THE BOXES VIEW draws the bounding box of every piece of a formula - each glyph, 
 slot, each compound. Two things that look adjacent but belong to different levels stop
 looking adjacent.
 
-THE GRAPH VIEW draws where the caret can actually go and how the positions connect. If
-an arrow key seems to skip somewhere or refuse to leave, this is the view that shows
-why: the positions are the model, and the keys only walk between them.
+THE GRAPH VIEW draws where the caret can actually go in the formula you are in, and how
+the positions connect. If an arrow key seems to skip somewhere or refuse to leave, this
+is the view that shows why: the positions are the model, and the keys only walk between
+them.
 
 Neither changes the document. They draw on top of it.
+
+THE PADLOCK, on a formula box, locks and unlocks it, the same as {formula.lock} does for
+the box you are in. Open and red, the formula is yours to edit; closed and green, it is
+frozen, and transformations act on it. A formula that does not parse stays unlocked.
+
+THE STAR, left of the padlock, draws every bound variable's links - an arc from where
+the variable is declared to each place it is used. Like the two views, it is global.
+
+THE SELECTORS BUTTON, left of the star, appears on a locked box only, and it belongs to
+that box alone. It puts a small ring with an underline under every term of every sum
+written on the formula's own line - not the sums inside an exponent, a fraction or a
+limit. A sum nested in another gets a line of its own, nearer the glyphs, and sums
+nested equally deep share one. Where the formula wraps, a term broken across rows is
+underlined on each.
+
+Drag a term by its ring or its underline to another place among the terms of its own
+sum, and a new locked box appears below, derived from this one, with the terms in that
+order. A drop anywhere else changes nothing, and {radial.cancel} lets go of a term
+mid-drag. A formula the program cannot write back yet - one holding a fraction, or a
+function such as sin - makes no box, and the log says why.
 ]]},
 
 {title = "The three kinds of box", body = [[

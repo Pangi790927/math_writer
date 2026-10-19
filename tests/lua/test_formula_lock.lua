@@ -99,6 +99,63 @@ function run_test()
                 editor_formula.redo(box, fs) and box.latex == "x+y ", box.latex)
     end
 
+    -- ------------------------------------------------------------------ the door
+    do
+        --[[ A WHITELISTED CHORD PASSES WITH ITS TWINS. A key fires every action bound to it, so
+        for each bind of each whitelisted action the door is fed every action holding that bind,
+        with that bind's own modifiers held. Shift and Ctrl+Shift with Left/Right also fire the
+        text side's nav.select_*, and the door refused those frames, so a locked box could not
+        select or sprint (found 19-10-2026).
+
+        AND NOTHING ELSE OPENS A BARE ALT CHORD, because the glyph families are polled raw behind
+        the door: every other action, fired alone under Alt, is refused. The twins are also asked
+        by name, because a whitelisted id is never asked that question - and listing the twins as
+        allowed is how one rebound to Alt+S put \sigma into a locked formula (found in review,
+        19-10-2026). @date 19-10-2026-01:50 ]]
+        local vc = require("virt_composer")
+        local keymap = require("keymap")
+        local real_fired, real_mods = keymap.fired, keymap.mods
+        local real_chars = vc.ImGui_input_queue_chars
+        local fired, held = {}, {}
+        keymap.fired = function() return fired end
+        keymap.mods = function() return held.ctrl == true, held.shift == true, held.alt == true end
+        vc.ImGui_input_queue_chars = function() return {} end
+
+        local by_bind = {}
+        keymap.each(function(id, action)
+            for _, bind in ipairs(action.binds) do
+                local text = keymap.format(bind)
+                by_bind[text] = by_bind[text] or {}
+                table.insert(by_bind[text], id)
+            end
+        end)
+        local chords, alone = 0, 0
+        keymap.each(function(id, action)
+            if editor_formula.LOCKED_ALLOW[id] then
+                for _, bind in ipairs(action.binds) do
+                    local text = keymap.format(bind)
+                    fired, held = by_bind[text], bind
+                    chords = chords + 1
+                    check(id .. " on " .. text .. " passes the locked door",
+                            editor_formula.locked_allows(), table.concat(fired, ","))
+                end
+            else
+                fired, held = {id}, {alt = true}
+                alone = alone + 1
+                check(id .. " alone under Alt is refused", not editor_formula.locked_allows())
+            end
+        end)
+        check("the door was asked both ways", chords > 0 and alone > 0, chords .. "/" .. alone)
+        for _, twin in ipairs({"nav.select_left", "nav.select_right", "nav.select_word_left",
+                               "nav.select_word_right"}) do
+            fired, held = {twin}, {alt = true}
+            check(twin .. " alone under Alt is refused", not editor_formula.locked_allows())
+        end
+
+        keymap.fired, keymap.mods = real_fired, real_mods
+        vc.ImGui_input_queue_chars = real_chars
+    end
+
     --[[ NOT TESTED HERE, CANNOT BE: the draw path. The harness has no draw context - a bare
     vc.ImGui_AddRectFilled with correct arguments fails headlessly (probed 2026-09-15) - so no
     test can run editor_formula.draw. That is how a wrong-arity AddRect shipped green through the

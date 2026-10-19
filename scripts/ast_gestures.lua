@@ -54,17 +54,17 @@ WHAT IT DELIBERATELY DOES NOT DO:
 
 THE AST IS SCRATCH, AND CACHED. Author, 2026-09-11: "ast is scratch until the new operation comes,
 so it persists for a time and at a request it reparses to update". So it is rebuilt whenever the
-container's own `version` has moved and kept otherwise - the same arrangement editor_definition's
-sync_arity already uses for a definition's name, and for the same reason: the cache cannot go stale
-without the version moving, so nothing has to remember to invalidate it.
+container's tree has changed - its `version` moved, or a zoom replaced its root - and kept
+otherwise, so nothing has to remember to invalidate it.
 
 A CLICK PERSISTS UNTIL A CHOICE IS MADE, and the choice ends the interaction: the transform makes a
 new cell and focus moves there, so the options list never has to survive an edit to the cell it came
 from. That is what lets an option carry AST IDS rather than a closure over the tree.
-@date 2026-09-12 01:25
+@date 18-10-2026-20:15
 ]]
 
 
+local vc = require("virt_composer")
 local mexpru = require("mexpru")
 local mexpr_ast = require("mexpr_ast")
 local ast = require("ast")
@@ -72,15 +72,16 @@ local transforms = require("transforms")
 
 local ast_gestures = {}
 
---[[ @brief The container's parse, rebuilt only when the container has actually changed.
+--[[ @brief The container's parse, rebuilt only when the container's tree has actually changed.
 -- |
 -- | THE ENTRY EVERY OTHER FUNCTION HERE GOES THROUGH. A gesture needs a tree to resolve against,
 -- | and re-parsing a row on every frame of a held right-click would be both wasteful and wrong -
 -- | the ids a menu is holding would be replaced underneath it between frames.
 -- |
--- | KEYED ON `container.version`, which mformula bumps on every real tree edit and on nothing else,
--- | so nothing has to remember to invalidate it - the same arrangement editor_definition's
--- | sync_arity uses. A cursor move or a click does not bump it: neither changes what the row says.
+-- | KEYED ON THE VERSION AND THE ROOT, so nothing has to remember to invalidate it. mformula bumps
+-- | `container.version` on every real tree edit; a zoom (mformula_new.rescale) replaces the whole
+-- | tree without bumping it, and the parse's tags live on the nodes it read. A cursor move or a
+-- | click changes neither: neither changes what the row says.
 -- |
 -- | @details The cache lives on the container as `_ast_cache`, so it travels with the row and dies
 -- |          with it. A failed parse is cached too; it cannot start parsing until an edit bumps the
@@ -97,7 +98,7 @@ local ast_gestures = {}
 -- |       names resolve to without bumping this container's version, and the old parse is served
 -- |       until the row itself is edited.
 -- |
--- | @date 2026-09-13 19:30
+-- | @date 18-10-2026-20:15
 --]]
 function ast_gestures.ast_for(fontset, container, decls)
     mexpru.check_container(container)
@@ -108,11 +109,17 @@ function ast_gestures.ast_for(fontset, container, decls)
     assert(type(decls) == "table", "ast_for needs a declaration list")
     local cache = container._ast_cache
     local version = container.version or 0
-    if cache and cache.version == version then
+    if cache and cache.version == version
+            and mexpru.same(cache.root:get_obj(), container.root) then
         return cache.node, cache.ns, cache.err
     end
     local node, err, ns = mexpr_ast.build(fontset, container, decls)
-    container._ast_cache = {version = version, node = node, ns = ns, err = err}
+    --[[ The root by WEAK REF: the cache only has to recognise the tree it parsed, and a strong
+    handle would keep a zoomed-away tree alive until the next parse. A dead ref answers nil, so a
+    new root at a freed root's address is never taken for it. Keyed on the version alone, every
+    right-click after a Ctrl+Wheel offered nothing (found 18-10-2026). @date 18-10-2026-20:15 ]]
+    container._ast_cache = {version = version, root = vc.wref_mexpr(container.root), node = node,
+            ns = ns, err = err}
     return node, ns, err
 end
 
@@ -246,8 +253,9 @@ end
 -- | handful per frame and the namespace grows without bound while nothing on screen changes. Seen
 -- | live, 2026-09-11: an untouched preview walked its ids from 368 to 5513 in two screenshots.
 -- |
--- | KEYED ON VERSION AND OPTION, because two options on one unchanged expression are two different
--- | answers, and the ids in an option's params already name nodes in this version's tree.
+-- | KEYED ON THE PARSE AND THE OPTION, because two options on one unchanged expression are two
+-- | different answers, and the result was minted into that parse's namespace: whatever makes
+-- | ast_for parse again - an edit or a zoom - retires it.
 -- |
 -- | @details One entry is kept, `_transform_cache` on the container: previewing two options in
 -- |          alternation re-runs each on every switch. A refusal is cached like a result.
@@ -259,7 +267,7 @@ end
 -- | @return node | nil, ast.ns | nil, string | nil - the new root, the namespace it lives in, and
 -- |         the reason when there is no root: the row did not parse, or the plugin refused
 -- |
--- | @date 2026-09-13 19:30
+-- | @date 18-10-2026-20:20
 --]]
 function ast_gestures.preview(fontset, container, decls, option)
     --[[ Only `option` is checked here. `fontset`, `container` and `decls` go straight into ast_for,
@@ -270,14 +278,13 @@ function ast_gestures.preview(fontset, container, decls, option)
     if not root then
         return nil, nil, err
     end
-    local version = container.version or 0
     local key = option_key(option)
     local cache = container._transform_cache
-    if cache and cache.version == version and cache.key == key then
+    if cache and rawequal(cache.ns, ns) and cache.key == key then
         return cache.root, ns, cache.err
     end
     local new_root, terr = ast_gestures.run(ns, root, option)
-    container._transform_cache = {version = version, key = key, root = new_root, err = terr}
+    container._transform_cache = {ns = ns, key = key, root = new_root, err = terr}
     return new_root, ns, terr
 end
 

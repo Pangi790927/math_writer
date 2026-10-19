@@ -505,8 +505,16 @@ void uninit() {
 
     if (g_client_fd != INVALID_SOCK)
         CLOSESOCK(g_client_fd);
-    if (g_listen_fd != INVALID_SOCK)
+    /*  shutdown() first, because on Linux close() does not wake an accept() blocked in the server
+    thread, and join() below then waited for a connection: Ctrl+Shift+D froze the app when it
+    closed the pipe, and a --test instance hung after `quit` (found 19-10-2026). closesocket()
+    wakes it on Windows. @date 19-10-2026-01:07 */
+    if (g_listen_fd != INVALID_SOCK) {
+#ifndef _WIN32
+        shutdown(g_listen_fd, SHUT_RDWR);
+#endif
         CLOSESOCK(g_listen_fd);
+    }
     g_listen_fd = INVALID_SOCK;
     g_client_fd = INVALID_SOCK;
 

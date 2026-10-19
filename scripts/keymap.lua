@@ -614,8 +614,8 @@ local DEFAULTS = {
     -- Escape takes "+All" everywhere it means LEAVE or CANCEL. Ruled 2026-09-07 for formula.exit
     -- ("this will be escape+all"); the other two are the same gesture and are loose today for the
     -- same accidental reason, so the wildcard preserves them rather than quietly tightening them.
-    {id = "radial.cancel",        desc = "Close the new-box menu",
-                              binds = {"Escape+All"}},
+    {id = "radial.cancel",        desc = "Close the new-box menu, or let go of a dragged term",
+            binds = {"Escape+All"}},
     {id = "radial.text",          desc = "Pick a text box",
                                      binds = {"Up"}},
     {id = "radial.formula",       desc = "Pick a formula box",
